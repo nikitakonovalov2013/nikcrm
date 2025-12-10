@@ -1,0 +1,33 @@
+<div class="modal-header">
+  <h3>Массовая рассылка</h3>
+  <button class="btn-close" onclick="document.dispatchEvent(new CustomEvent('close-modal'))">✕</button>
+</div>
+<div class="modal-body">
+  <form hx-post="/broadcast" hx-target="#modal-body" hx-swap="none" class="form-grid">
+    <label class="col-span-2">
+      Текст сообщения
+      <textarea name="text" rows="4" placeholder="Введите текст..." required></textarea>
+    </label>
+    <div class="col-span-2">
+      <p class="muted">Получатели (одобрены). Оставьте пустым, чтобы отправить всем.</p>
+      <div class="chips">
+        {% for u in users %}
+          <label class="chip">
+            <input type="checkbox" value="{{ u.id }}" onchange="collectIds()" />
+            <span>#{{ u.id }} {{ u.first_name or '' }} {{ u.last_name or '' }} ({{ u.tg_id }})</span>
+          </label>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="user_ids" id="broadcast_ids" />
+    </div>
+    <div class="form-row">
+      <button class="btn" type="submit">Отправить</button>
+    </div>
+  </form>
+</div>
+<script>
+  function collectIds(){
+    const ids = Array.from(document.querySelectorAll('.chip input:checked')).map(i=>i.value).join(',');
+    document.getElementById('broadcast_ids').value = ids;
+  }
+</script>

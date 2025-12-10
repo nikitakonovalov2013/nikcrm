@@ -1,0 +1,61 @@
+<div class="modal-header">
+  <h3>Пользователь #{{ user.id }}</h3>
+  <button class="btn-close" onclick="document.dispatchEvent(new CustomEvent('close-modal'))">✕</button>
+</div>
+<div class="modal-body">
+  <form hx-post="/users/{{ user.id }}/update" hx-target="#modal-body" hx-swap="innerHTML" class="form-grid">
+    <label>
+      Имя
+      <input type="text" name="first_name" value="{{ user.first_name or '' }}" />
+    </label>
+    <label>
+      Фамилия
+      <input type="text" name="last_name" value="{{ user.last_name or '' }}" />
+    </label>
+    <label>
+      Дата рождения
+      <input type="date" name="birth_date" value="{{ user.birth_date }}" />
+    </label>
+    <label>
+      Ставка (к)
+      <input type="number" name="rate_k" value="{{ user.rate_k or '' }}" />
+    </label>
+    <label>
+      График
+      <select name="schedule">
+        <option value="">—</option>
+        <option value="2/2" {% if user.schedule and user.schedule.value == '2/2' %}selected{% endif %}>2/2</option>
+        <option value="5/2" {% if user.schedule and user.schedule.value == '5/2' %}selected{% endif %}>5/2</option>
+        <option value="4/3" {% if user.schedule and user.schedule.value == '4/3' %}selected{% endif %}>4/3</option>
+      </select>
+    </label>
+    <label>
+      Должность
+      <select name="position">
+        <option value="">—</option>
+        <option value="Руководитель" {% if user.position and user.position.value == 'Руководитель' %}selected{% endif %}>Руководитель</option>
+        <option value="Сборщик заказов" {% if user.position and user.position.value == 'Сборщик заказов' %}selected{% endif %}>Сборщик заказов</option>
+        <option value="Упаковщик" {% if user.position and user.position.value == 'Упаковщик' %}selected{% endif %}>Упаковщик</option>
+        <option value="Мастер" {% if user.position and user.position.value == 'Мастер' %}selected{% endif %}>Мастер</option>
+      </select>
+    </label>
+    <label>
+      Статус
+      <select name="status_value">
+        {% for s in ['PENDING','APPROVED','REJECTED','BLACKLISTED'] %}
+        <option value="{{ s }}" {% if user.status.value == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="form-row">
+      <button class="btn" type="submit">Сохранить</button>
+      <button class="btn-warn" hx-post="/users/{{ user.id }}/blacklist" hx-target="#modal-body" hx-swap="innerHTML" type="button">В черный список</button>
+      <button class="btn-danger" hx-post="/users/{{ user.id }}/delete" hx-target="closest tr" hx-swap="outerHTML:remove" type="button">Удалить</button>
+    </div>
+  </form>
+  <div class="divider"></div>
+  <form hx-post="/users/{{ user.id }}/message" hx-target="#modal-body" hx-swap="none" class="form-row">
+    <input type="text" name="text" placeholder="Текст сообщения" class="flex-1" />
+    <button class="btn-outline" type="submit">Отправить</button>
+  </form>
+</div>

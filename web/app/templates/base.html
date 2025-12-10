@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Админ панель{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg">
+  <header class="container py">
+    <h1 class="title">Админ панель</h1>
+  </header>
+  <main class="container card">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="modal" class="modal hidden" x-data="{open:false}" x-show="open" x-transition @close-modal.window="open=false">
+    <div class="modal-backdrop" @click="open=false"></div>
+    <div class="modal-content" x-trap.noscroll="open" @keyup.escape.window="open=false">
+      <div id="modal-body"></div>
+    </div>
+  </div>
+  <script>
+    document.addEventListener('htmx:afterSwap', (e) => {
+      if (e.detail.target.id === 'modal-body') {
+        const modal = document.getElementById('modal').__x;
+        if (modal) modal.$data.open = true;
+      }
+    });
+    document.addEventListener('htmx:beforeSwap', (e) => {
+      if (e.detail.xhr.status === 204 && e.detail.target && e.detail.target.id === 'modal-body') {
+        const modal = document.getElementById('modal').__x;
+        if (modal) modal.$data.open = false;
+      }
+    });
+  </script>
+</body>
+</html>

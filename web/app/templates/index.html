@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Сотрудники{% endblock %}
+{% block content %}
+<div class="actions">
+  <button class="btn" hx-get="/broadcast" hx-target="#modal-body" hx-swap="innerHTML">Массовая рассылка</button>
+</div>
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>TG ID</th>
+        <th>Имя</th>
+        <th>Фамилия</th>
+        <th>Дата рождения</th>
+        <th>Ставка</th>
+        <th>График</th>
+        <th>Должность</th>
+        <th>Статус</th>
+        <th>Зарегистрирован</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr class="row-hover">
+        <td>{{ u.id }}</td>
+        <td>{{ u.tg_id }}</td>
+        <td>{{ u.first_name or '' }}</td>
+        <td>{{ u.last_name or '' }}</td>
+        <td>{{ u.birth_date or '' }}</td>
+        <td>{{ u.rate_k or '' }}</td>
+        <td>{{ u.schedule or '' }}</td>
+        <td>{{ u.position or '' }}</td>
+        <td><span class="badge {{ u.status }}">{{ u.status }}</span></td>
+        <td>{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '' }}</td>
+        <td>
+          <button class="btn-outline" hx-get="/users/{{ u.id }}" hx-target="#modal-body" hx-swap="innerHTML">Открыть</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
