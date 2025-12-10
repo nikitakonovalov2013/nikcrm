@@ -5,16 +5,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
+# 1) Метаданные и миграции (для кеша слоёв)
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -U pip && pip install --no-cache-dir -e .
-
-COPY shared ./shared
+COPY alembic.ini ./ 
 COPY migrations ./migrations
-COPY alembic.ini ./alembic.ini
-COPY web /app/web
 
+# 2) Исходники пакетов ДО установки editable
+COPY shared ./shared
+COPY web ./web
+# Если в pyproject указан пакет bot — добавь:
+COPY bot ./bot
+
+# 3) Установка проекта
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -e .
+
+# 4) Entrypoint
 COPY web/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
