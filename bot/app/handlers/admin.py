@@ -24,7 +24,7 @@ async def employees_link(message: Message):
     logging.getLogger(__name__).info("admin requested employees link", extra={"tg_id": message.from_user.id})
     token = create_admin_jwt(message.from_user.id)
     url = f"{settings.WEB_BASE_URL}/auth?token={token}"
-    await message.answer(f"Ссылка на панель администратора: {url}")
+    await message.answer(f"Ссылка на панель администратора:\n{url}")
 
 
 @router.callback_query(F.data.startswith("approve:"))
