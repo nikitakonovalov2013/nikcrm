@@ -15,19 +15,29 @@
   <main class="container card">
     {% block content %}{% endblock %}
   </main>
-  <div id="modal" class="modal" x-data="{open:false}" x-cloak x-show="open" x-transition @close-modal.window="open=false; try{ window.refreshUsers && window.refreshUsers(); }catch(_){}" @open-modal.window="open=true" x-init="$watch('open', (v) => { if (!v) { try { window.refreshUsers && window.refreshUsers(); } catch (_) {} } })">
+  <div id="modal" class="modal" x-data="{open:false}" x-cloak x-show="open" x-transition @close-modal.window="open=false" @open-modal.window="open=true">
     <div class="modal-backdrop" @click="open=false"></div>
     <div class="modal-content" x-trap.noscroll="open" @keyup.escape.window="open=false">
       <div id="modal-body"></div>
     </div>
   </div>
   <script>
-    // Global helper to refresh users table tbody
-    window.refreshUsers = function() {
+    // Global helper: refetch users tbody and optionally close modal after swap
+    window.refreshUsers = function(closeAfter = false) {
       try {
-        if (window.htmx) {
-          window.htmx.ajax('GET', '/', { target: '#users-tbody', swap: 'outerHTML', select: '#users-tbody' });
+        if (!window.htmx) return;
+        const once = (ev) => {
+          if (ev.detail && ev.detail.target && ev.detail.target.id === 'users-tbody') {
+            document.removeEventListener('htmx:afterSwap', once);
+            if (closeAfter) {
+              window.dispatchEvent(new CustomEvent('close-modal'));
+            }
+          }
+        };
+        if (closeAfter) {
+          document.addEventListener('htmx:afterSwap', once, { once: true });
         }
+        window.htmx.ajax('GET', '/', { target: '#users-tbody', swap: 'outerHTML', select: '#users-tbody' });
       } catch (e) { /* noop */ }
     };
     // Open lightweight confirm delete modal without loading edit form
@@ -72,18 +82,17 @@
       const isModalBody = target && target.id === 'modal-body';
       const is2xx = xhr.status >= 200 && xhr.status < 300;
       const isPost = requestConfig && requestConfig.verb && requestConfig.verb.toLowerCase() === 'post';
-      // For successful POSTs triggered from inside modal: close modal and refresh table
+      // For successful POSTs triggered from inside modal: refetch tbody and close when swapped
       if (isInModal && is2xx && isPost) {
-        try { window.refreshUsers && window.refreshUsers(); } catch (_) {}
-        console.debug('[HTMX] auto-close (inside modal) on success POST', xhr.status);
-        window.dispatchEvent(new CustomEvent('close-modal'));
+        try { window.refreshUsers && window.refreshUsers(true); } catch (_) {}
+        console.debug('[HTMX] refetch tbody after success POST', xhr.status);
         if (isModalBody) { e.detail.shouldSwap = false; }
         return;
       }
       // Keep explicit close on 204 when swapping modal-body
       if (isModalBody && xhr.status === 204) {
-        console.debug('[HTMX] auto-close modal on 204');
-        window.dispatchEvent(new CustomEvent('close-modal'));
+        console.debug('[HTMX] refetch tbody on 204 delete');
+        try { window.refreshUsers && window.refreshUsers(true); } catch (_) {}
         e.detail.shouldSwap = false;
       }
     });
@@ -103,9 +112,7 @@
       const is2xx = xhr.status >= 200 && xhr.status < 300;
       const isPost = requestConfig && requestConfig.verb && requestConfig.verb.toLowerCase() === 'post';
       if (isInModal && is2xx && isPost) {
-        try { window.refreshUsers && window.refreshUsers(); } catch (_) {}
-        console.debug('[HTMX] afterRequest close modal', xhr.status);
-        window.dispatchEvent(new CustomEvent('close-modal'));
+        // no-op here; handled in beforeSwap to ensure close happens after tbody swap
       }
     });
   </script>
