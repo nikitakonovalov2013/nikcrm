@@ -69,7 +69,7 @@ async def auth(token: str):
             raise HTTPException(status_code=403)
     except JWTError:
         raise HTTPException(status_code=401)
-    resp = RedirectResponse(url="/", status_code=302)
+    resp = RedirectResponse(url="/crm", status_code=302)
     resp.set_cookie("admin_token", token, httponly=True, secure=False, samesite="lax")
     return resp
 
