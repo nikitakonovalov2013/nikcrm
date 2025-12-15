@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from shared.config import settings
 from shared.logging import setup_logging
@@ -11,7 +12,7 @@ from bot.app.handlers.admin import router as admin_router
 async def main() -> None:
     setup_logging(service_name="bot", log_dir="/var/log/app/bot", level=settings.LOG_LEVEL)
     logging.getLogger(__name__).info("bot starting")
-    bot = Bot(token=settings.BOT_TOKEN, parse_mode="HTML")
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.include_router(registration_router)

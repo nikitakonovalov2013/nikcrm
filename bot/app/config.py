@@ -9,4 +9,4 @@ class BotConfig(BaseModel):
 
 
 def get_config() -> BotConfig:
-    return BotConfig(token=shared_settings.BOT_TOKEN, admin_ids=shared_settings.ADMIN_IDS)
+    return BotConfig(token=shared_settings.BOT_TOKEN, admin_ids=shared_settings.admin_ids)

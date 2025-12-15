@@ -1,11 +1,13 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
-from typing import List
+from typing import List, Any, Iterable
+import json
 
 
 class Settings(BaseSettings):
     BOT_TOKEN: str = ""
-    ADMIN_IDS: List[int] = Field(default_factory=list)
+    # Telegram admin IDs stored as Python ints (can hold int64). Alias allows env var ADMIN_IDS.
+    admin_ids: List[int] = Field(default_factory=list, alias="ADMIN_IDS")
 
     POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432
@@ -26,17 +28,42 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = True
 
-    @field_validator("ADMIN_IDS", mode="before")
+    @field_validator("admin_ids", mode="before")
     @classmethod
-    def parse_admin_ids(cls, v):
-        if isinstance(v, list):
-            return [int(x) for x in v]
-        if isinstance(v, str):
-            parts = [p.strip() for p in v.split(",") if p.strip()]
-            return [int(p) for p in parts]
+    def parse_admin_ids(cls, v: Any) -> List[int]:
+        # None -> []
         if v is None:
             return []
-        return v
+        # Already a list/iterable -> coerce elements to int
+        if isinstance(v, (list, tuple, set)):
+            return [int(x) for x in v]
+        # Single int -> [int]
+        if isinstance(v, int):
+            return [int(v)]
+        # String handling
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return []
+            # Try JSON first if looks like JSON array
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    data = json.loads(s)
+                    if isinstance(data, Iterable):
+                        return [int(x) for x in data]
+                except Exception:
+                    pass
+            # If contains comma -> CSV
+            if "," in s:
+                parts = [p.strip() for p in s.split(",") if p.strip()]
+                return [int(p) for p in parts]
+            # Otherwise single numeric string
+            return [int(s)]
+        # Fallback: attempt to cast to list[int]
+        try:
+            return [int(v)]
+        except Exception:
+            return []
 
 
 settings = Settings()

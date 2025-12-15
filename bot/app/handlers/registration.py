@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import CommandStart
 from aiogram.utils.markdown import hbold
@@ -9,9 +9,11 @@ from shared.db import get_async_session
 from shared.enums import UserStatus, Schedule, Position
 from shared.models import User
 from bot.app.states.registration import RegistrationState
-from bot.app.keyboards.reply import main_menu
+from bot.app.keyboards.main import main_menu_kb
+from bot.app.keyboards.inline import schedule_kb, position_kb
 from bot.app.utils.parsing import parse_birth_date
 from bot.app.repository.users import UserRepository
+from shared.utils import format_date
 
 router = Router()
 
@@ -26,14 +28,12 @@ async def cmd_start(message: Message, state: FSMContext):
     from shared.config import settings
 
     try:
-        is_admin = message.from_user.id in settings.ADMIN_IDS
+        is_admin = message.from_user.id in settings.admin_ids
     except Exception:
         is_admin = False
 
-    approved = user is not None and user.status == UserStatus.APPROVED if user else False
-
     await message.answer(
-        "Добро пожаловать!", reply_markup=main_menu(is_admin=is_admin, approved=approved)
+        "Добро пожаловать!", reply_markup=main_menu_kb(user.status if user else None, message.from_user.id)
     )
 
 
@@ -81,7 +81,7 @@ async def reg_birth_date(message: Message, state: FSMContext):
     logging.getLogger(__name__).debug("step birth_date", extra={"tg_id": message.from_user.id, "value": str(d)})
     await state.update_data(birth_date=d)
     await state.set_state(RegistrationState.rate_k)
-    await message.answer("Введите ставку (в тысячах рублей), только число:")
+    await message.answer("Введите ставку, ₽ (только число):")
 
 
 @router.message(RegistrationState.rate_k)
@@ -95,42 +95,47 @@ async def reg_rate(message: Message, state: FSMContext):
     logging.getLogger(__name__).debug("step rate_k", extra={"tg_id": message.from_user.id, "value": rate})
     await state.update_data(rate_k=rate)
     await state.set_state(RegistrationState.schedule)
-    await message.answer("Выберите график: 2/2, 5/2, 4/3")
+    await message.answer("Выберите график работы:", reply_markup=schedule_kb())
 
 
-@router.message(RegistrationState.schedule)
-async def reg_schedule(message: Message, state: FSMContext):
-    val = message.text.strip()
+@router.callback_query(RegistrationState.schedule, F.data.startswith("schedule:"))
+async def reg_schedule_cb(cb: CallbackQuery, state: FSMContext):
+    _, val = cb.data.split(":", 1)
     if val not in {s.value for s in Schedule}:
-        logging.getLogger(__name__).warning("invalid schedule", extra={"tg_id": message.from_user.id, "raw": val})
-        await message.answer("Неверное значение. Доступно: 2/2, 5/2, 4/3")
+        logging.getLogger(__name__).warning("invalid schedule", extra={"tg_id": cb.from_user.id, "raw": val})
+        await cb.answer("Неверный график", show_alert=True)
         return
-    logging.getLogger(__name__).debug("step schedule", extra={"tg_id": message.from_user.id, "value": val})
+    logging.getLogger(__name__).debug("step schedule", extra={"tg_id": cb.from_user.id, "value": val})
     await state.update_data(schedule=Schedule(val))
     await state.set_state(RegistrationState.position)
-    await message.answer("Выберите должность: Руководитель, Сборщик заказов, Упаковщик, Мастер")
+    try:
+        await cb.message.edit_text("Выберите должность:", reply_markup=position_kb())
+    except Exception:
+        await cb.message.answer("Выберите должность:", reply_markup=position_kb())
+    await cb.answer()
 
 
-@router.message(RegistrationState.position)
-async def reg_position(message: Message, state: FSMContext):
-    val = message.text.strip()
+@router.callback_query(RegistrationState.position, F.data.startswith("position:"))
+async def reg_position_cb(cb: CallbackQuery, state: FSMContext):
+    _, val = cb.data.split(":", 1)
     if val not in {p.value for p in Position}:
-        logging.getLogger(__name__).warning("invalid position", extra={"tg_id": message.from_user.id, "raw": val})
-        await message.answer("Неверная должность. Доступно: Руководитель, Сборщик заказов, Упаковщик, Мастер")
+        logging.getLogger(__name__).warning("invalid position", extra={"tg_id": cb.from_user.id, "raw": val})
+        await cb.answer("Неверная должность", show_alert=True)
         return
-    logging.getLogger(__name__).debug("step position", extra={"tg_id": message.from_user.id, "value": val})
+    logging.getLogger(__name__).debug("step position", extra={"tg_id": cb.from_user.id, "value": val})
     await state.update_data(position=Position(val))
 
     data = await state.get_data()
     async with get_async_session() as session:
         repo = UserRepository(session)
-        exists = await repo.get_by_tg_id(message.from_user.id)
+        exists = await repo.get_by_tg_id(cb.from_user.id)
         if exists and exists.status == UserStatus.BLACKLISTED:
-            await message.answer("Вы в черном списке и не можете зарегистрироваться.")
+            await cb.message.answer("Вы в черном списке и не можете зарегистрироваться.")
             await state.clear()
+            await cb.answer()
             return
         user = await repo.create_pending(
-            tg_id=message.from_user.id,
+            tg_id=cb.from_user.id,
             first_name=data["first_name"],
             last_name=data["last_name"],
             birth_date=data["birth_date"],
@@ -140,8 +145,21 @@ async def reg_position(message: Message, state: FSMContext):
         )
 
     await state.clear()
-    await message.answer("Данные отправлены на рассмотрение администратору.")
-    logging.getLogger(__name__).info("registration saved and sent to admins", extra={"tg_id": message.from_user.id, "user_id": user.id})
+    try:
+        await cb.message.edit_text("Данные отправлены на рассмотрение администратору.")
+    except Exception:
+        await cb.message.answer(
+            "Данные отправлены на рассмотрение администратору.",
+            reply_markup=main_menu_kb(user.status, cb.from_user.id),
+        )
+    else:
+        # If edit_text succeeded (no keyboard possible), send a follow-up message to update the keyboard
+        await cb.message.answer(
+            "Меню обновлено в соответствии со статусом заявки.",
+            reply_markup=main_menu_kb(user.status, cb.from_user.id),
+        )
+    logging.getLogger(__name__).info("registration saved and sent to admins", extra={"tg_id": cb.from_user.id, "user_id": user.id})
+    await cb.answer()
 
     # notify admins
     from shared.config import settings
@@ -149,22 +167,24 @@ async def reg_position(message: Message, state: FSMContext):
     from bot.app.keyboards.inline import approve_reject_kb
 
     bot = Bot(token=settings.BOT_TOKEN)
+    bd = format_date(user.birth_date)
+    rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
     text = (
         f"Новая заявка\n"
         f"TG: {user.tg_id}\n"
         f"Имя: {user.first_name}\n"
         f"Фамилия: {user.last_name}\n"
-        f"Дата рождения: {user.birth_date}\n"
-        f"Ставка: {user.rate_k}к\n"
+        f"Дата рождения: {bd}\n"
+        f"Ставка: {rate}\n"
         f"График: {user.schedule}\n"
         f"Должность: {user.position}"
     )
-    for admin_id in settings.ADMIN_IDS:
+    for admin_id in settings.admin_ids:
         try:
             await bot.send_message(chat_id=admin_id, text=text, reply_markup=approve_reject_kb(user.id))
-            logging.getLogger(__name__).debug("sent application to admin", extra={"tg_id": message.from_user.id, "admin_tg_id": admin_id})
+            logging.getLogger(__name__).debug("sent application to admin", extra={"tg_id": cb.from_user.id, "admin_tg_id": admin_id})
         except Exception:
-            logging.getLogger(__name__).exception("failed to notify admin", extra={"tg_id": message.from_user.id, "admin_tg_id": admin_id})
+            logging.getLogger(__name__).exception("failed to notify admin", extra={"tg_id": cb.from_user.id, "admin_tg_id": admin_id})
     await bot.session.close()
 
 
@@ -183,14 +203,23 @@ async def profile(message: Message):
     if user.status != UserStatus.APPROVED:
         await message.answer("Ваша заявка ещё не подтверждена.")
         return
+    bd = format_date(user.birth_date)
+    rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
+    status_map = {
+        UserStatus.PENDING: 'На рассмотрении',
+        UserStatus.APPROVED: 'Одобрен',
+        UserStatus.REJECTED: 'Отклонён',
+        UserStatus.BLACKLISTED: 'В чёрном списке',
+    }
+    status_ru = status_map.get(user.status, '')
     text = (
         f"Ваш профиль:\n"
         f"Имя: {user.first_name}\n"
         f"Фамилия: {user.last_name}\n"
-        f"Дата рождения: {user.birth_date}\n"
-        f"Ставка: {user.rate_k}к\n"
+        f"Дата рождения: {bd}\n"
+        f"Ставка: {rate}\n"
         f"График: {user.schedule}\n"
         f"Должность: {user.position}\n"
-        f"Статус: {user.status}"
+        f"Статус: {status_ru}"
     )
     await message.answer(text)

@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from shared.enums import Schedule, Position
 
 
 def approve_reject_kb(user_id: int) -> InlineKeyboardMarkup:
@@ -10,3 +11,19 @@ def approve_reject_kb(user_id: int) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def schedule_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=val.value, callback_data=f"schedule:{val.value}")]
+        for val in (Schedule.TWO_TWO, Schedule.FIVE_TWO, Schedule.FOUR_THREE)
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def position_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=val.value, callback_data=f"position:{val.value}")]
+        for val in (Position.MANAGER, Position.PICKER, Position.PACKER, Position.MASTER)
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

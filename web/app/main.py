@@ -21,11 +21,21 @@ from shared.enums import AdminActionType
 app = FastAPI(title="Admin Panel")
 app.mount("/static", StaticFiles(directory="web/app/static"), name="static")
 templates = Jinja2Templates(directory="web/app/templates")
+# Register Jinja helper(s)
+from shared.utils import format_date  # noqa: E402
+templates.env.globals["format_date"] = format_date
 
 
 async def get_db() -> AsyncSession:
     async with get_async_session() as session:
         yield session
+
+async def load_user(session: AsyncSession, user_id: int) -> User:
+    res = await session.execute(select(User).where(User.id == user_id))
+    user = res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404)
+    return user
 
 
 def require_admin(request: Request):
@@ -37,7 +47,7 @@ def require_admin(request: Request):
         if data.get("role") != "admin":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         sub = int(data.get("sub"))
-        if sub not in settings.ADMIN_IDS:
+        if sub not in settings.admin_ids:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         exp = data.get("exp")
         if exp and datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(timezone.utc):
@@ -55,7 +65,7 @@ async def auth(token: str):
         if data.get("role") != "admin":
             raise HTTPException(status_code=403)
         sub = int(data.get("sub"))
-        if sub not in settings.ADMIN_IDS:
+        if sub not in settings.admin_ids:
             raise HTTPException(status_code=403)
     except JWTError:
         raise HTTPException(status_code=401)
@@ -73,11 +83,15 @@ async def index(request: Request, admin_id: int = Depends(require_admin), sessio
 
 @app.get("/users/{user_id}", response_class=HTMLResponse)
 async def user_modal(user_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
-    res = await session.execute(select(User).where(User.id == user_id))
-    user = res.scalar_one_or_none()
-    if not user:
-        raise HTTPException(404)
-    return templates.TemplateResponse("partials/user_modal.html", {"request": request, "user": user})
+    user = await load_user(session, user_id)
+    old_status = user.status
+    confirm_q = request.query_params.get("confirm")
+    confirm_initial = False
+    if confirm_q is not None and str(confirm_q).lower() in ("1", "true", "yes", "y"): 
+        confirm_initial = True
+    return templates.TemplateResponse(
+        "partials/user_modal.html", {"request": request, "user": user, "confirm_initial": confirm_initial}
+    )
 
 
 @app.post("/users/{user_id}/update", response_class=HTMLResponse)
@@ -94,10 +108,7 @@ async def user_update(
     admin_id: int = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    res = await session.execute(select(User).where(User.id == user_id))
-    user = res.scalar_one_or_none()
-    if not user:
-        raise HTTPException(404)
+    user = await load_user(session, user_id)
     if first_name is not None:
         user.first_name = first_name or None
     if last_name is not None:
@@ -123,28 +134,71 @@ async def user_update(
     # log edit
     repo = AdminLogRepo(session)
     await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.EDIT, payload=None)
-    # return refreshed modal
-    return await user_modal(user_id, request)
+    # if status changed, notify user with updated keyboard
+    try:
+        if old_status != user.status:
+            from aiogram import Bot  # local import to avoid unnecessary dependency at startup
+            from bot.app.keyboards.main import main_menu_kb
+            bot = Bot(token=settings.BOT_TOKEN)
+            try:
+                await bot.send_message(
+                    user.tg_id,
+                    "Ваш статус обновлён.",
+                    reply_markup=main_menu_kb(user.status, user.tg_id),
+                )
+            finally:
+                await bot.session.close()
+    except Exception:
+        # non-fatal
+        pass
+    # return refreshed table row as OOB swap
+    return templates.TemplateResponse(
+        "partials/user_row.html",
+        {"request": request, "u": user, "is_oob": True},
+    )
 
 
 @app.post("/users/{user_id}/blacklist", response_class=HTMLResponse)
 async def user_blacklist(user_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
-    res = await session.execute(select(User).where(User.id == user_id))
-    user = res.scalar_one_or_none()
-    if not user:
-        raise HTTPException(404)
+    user = await load_user(session, user_id)
     user.status = UserStatus.BLACKLISTED
     await session.flush()
     repo = AdminLogRepo(session)
     await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.BLACKLIST, payload=None)
-    return await user_modal(user_id, request)
+    # notify user about status change with updated keyboard
+    try:
+        from aiogram import Bot  # local import to avoid heavy import at startup
+        from bot.app.keyboards.main import main_menu_kb
+        bot = Bot(token=settings.BOT_TOKEN)
+        try:
+            await bot.send_message(
+                user.tg_id,
+                "Ваш статус обновлён.",
+                reply_markup=main_menu_kb(user.status, user.tg_id),
+            )
+        finally:
+            await bot.session.close()
+    except Exception:
+        # non-fatal
+        pass
+    return templates.TemplateResponse(
+        "partials/user_row.html",
+        {"request": request, "u": user, "is_oob": True},
+    )
 
 
 @app.post("/users/{user_id}/delete")
 async def user_delete(user_id: int, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
-    await session.execute(delete(User).where(User.id == user_id))
+    # Ensure user exists first
+    res = await session.execute(select(User).where(User.id == user_id))
+    user = res.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404)
+    # Log BEFORE deletion to keep user_id referencing existing row
     repo = AdminLogRepo(session)
-    await repo.log(admin_tg_id=admin_id, user_id=user_id, action=AdminActionType.BLACKLIST, payload={"delete": True})
+    await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.BLACKLIST, payload={"delete": True})
+    # Now delete the user
+    await session.execute(delete(User).where(User.id == user_id))
     return Response(status_code=204)
 
 

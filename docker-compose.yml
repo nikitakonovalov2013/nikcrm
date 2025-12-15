@@ -12,10 +12,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    #ports:
-    #  - "5432:5432"
+    ports:
+      - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+
+  migrator:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
 
   bot:
     build:
@@ -27,6 +38,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   web:
@@ -41,6 +54,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:

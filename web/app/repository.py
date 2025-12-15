@@ -9,7 +9,7 @@ class AdminLogRepo:
         self.session = session
 
     async def log(self, admin_tg_id: int, user_id: int | None, action: AdminActionType, payload: dict | None = None):
-        rec = AdminAction(admin_tg_id=admin_tg_id, user_id=user_id if user_id is not None else 0, action=action, payload=payload)
+        rec = AdminAction(admin_tg_id=admin_tg_id, user_id=user_id, action=action, payload=payload)
         self.session.add(rec)
         await self.session.flush()
         logging.getLogger(__name__).info(
