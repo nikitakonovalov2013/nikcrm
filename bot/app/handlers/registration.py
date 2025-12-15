@@ -195,13 +195,23 @@ async def profile(message: Message):
         repo = UserRepository(session)
         user = await repo.get_by_tg_id(message.from_user.id)
     if not user:
-        await message.answer("Вы ещё не зарегистрированы.")
+        await message.answer(
+            "Вы не зарегистрированы, нажмите \"Зарегистрироваться\".",
+            reply_markup=main_menu_kb(None, message.from_user.id),
+        )
         return
     if user.status == UserStatus.BLACKLISTED:
-        await message.answer("Вы в черном списке.")
+        # Вести себя как для незарегистрированного: показать кнопку "Зарегистрироваться"
+        await message.answer(
+            "Вы не зарегистрированы, нажмите \"Зарегистрироваться\".",
+            reply_markup=main_menu_kb(None, message.from_user.id),
+        )
         return
     if user.status != UserStatus.APPROVED:
-        await message.answer("Ваша заявка ещё не подтверждена.")
+        await message.answer(
+            "Ваша заявка ещё не подтверждена.",
+            reply_markup=main_menu_kb(user.status, message.from_user.id),
+        )
         return
     bd = format_date(user.birth_date)
     rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
@@ -222,4 +232,4 @@ async def profile(message: Message):
         f"Должность: {user.position}\n"
         f"Статус: {status_ru}"
     )
-    await message.answer(text)
+    await message.answer(text, reply_markup=main_menu_kb(user.status, message.from_user.id))
