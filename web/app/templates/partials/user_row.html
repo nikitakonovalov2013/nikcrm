@@ -20,7 +20,7 @@
       class="icon-btn"
       title="Редактировать"
       aria-label="Редактировать"
-      hx-get="/users/{{ u.id }}"
+      hx-get="users/{{ u.id }}"
       hx-target="#modal-body"
       hx-swap="innerHTML"
       hx-on:click="event.stopPropagation(); (function(){ const b=document.getElementById('modal-body'); if(b){ b.innerHTML='<div class=\'modal-loading\'>Загрузка…</div>'; } })()"

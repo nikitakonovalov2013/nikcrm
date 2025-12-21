@@ -4,7 +4,7 @@
 </div>
 <div class="modal-body" x-data="{confirm: {{ 'true' if confirm_initial else 'false' }} }">
   <form
-    hx-post="/users/{{ user.id }}/update"
+    hx-post="users/{{ user.id }}/update"
     hx-target="#modal-body"
     hx-swap="none"
     class="form-grid"
@@ -65,7 +65,7 @@
       <button class="btn" type="submit">Сохранить</button>
       <button
         class="btn-warn"
-        hx-post="/users/{{ user.id }}/blacklist"
+        hx-post="users/{{ user.id }}/blacklist"
         hx-target="#modal-body"
         hx-swap="none"
         hx-on:htmx:beforeRequest="this.disabled=true"
@@ -81,7 +81,7 @@
     </div>
   </form>
   <div class="divider"></div>
-  <form hx-post="/users/{{ user.id }}/message" hx-target="#modal-body" hx-swap="none" class="form-row" style="display:flex; gap:8px; align-items:center;">
+  <form hx-post="users/{{ user.id }}/message" hx-target="#modal-body" hx-swap="none" class="form-row" style="display:flex; gap:8px; align-items:center;">
     <input type="text" name="text" placeholder="Текст сообщения" class="flex-1" />
     <button class="btn-outline" type="submit">Отправить</button>
   </form>
@@ -95,14 +95,14 @@
           <button
             class="btn-danger"
             type="button"
-            hx-post="/users/{{ user.id }}/delete"
+            hx-post="users/{{ user.id }}/delete"
             hx-target="#modal-body"
             hx-swap="none"
             hx-on:htmx:beforeRequest="this.disabled=true"
-            hx-on:htmx:afterRequest="this.disabled=false; if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); }"
-            hx-on:htmx:beforeSwap="if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); event.detail.shouldSwap=false; }"
+            hx-on:htmx:afterRequest="this.disabled=false; if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(true); }"
+            hx-on:htmx:beforeSwap="if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(true); event.detail.shouldSwap=false; }"
             hx-trigger="click"
-            onclick="event.preventDefault(); try { htmx.ajax('POST', '/users/{{ user.id }}/delete', { target: '#modal-body', swap: 'none' }); } catch (e) { fetch('/users/{{ user.id }}/delete', { method: 'POST' }).then(()=>{ window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); }); }"
+            onclick="event.preventDefault(); try { htmx.ajax('POST', 'users/{{ user.id }}/delete', { target: '#modal-body', swap: 'none' }); } catch (e) { fetch('users/{{ user.id }}/delete', { method: 'POST' }).then(()=>{ window.refreshUsers && window.refreshUsers(true); }); }"
           >Удалить</button>
         </div>
       </div>

@@ -17,7 +17,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+asyncpg://app:app@db:5432/app"
 
-    WEB_BASE_URL: str = "http://localhost:8000"
+    WEB_BASE_URL: str = "http://localhost:8000/crm"
+    # Public admin panel base URL (with /crm prefix), e.g. https://domain/crm
+    admin_panel_url: str = Field(default="http://localhost:8000/crm", alias="WEB_BASE_URL")
     WEB_JWT_SECRET: str = "change_me"
     JWT_TTL_MINUTES: int = 10
 

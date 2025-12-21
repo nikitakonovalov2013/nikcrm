@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Админ панель{% endblock %}</title>
-  <link rel="stylesheet" href="/crm/static/style.css" />
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -26,6 +26,7 @@
     window.refreshUsers = function(closeAfter = false) {
       try {
         if (!window.htmx) return;
+        const path = window.location.pathname || '/crm/';
         const once = (ev) => {
           if (ev.detail && ev.detail.target && ev.detail.target.id === 'users-tbody') {
             document.removeEventListener('htmx:afterSwap', once);
@@ -37,7 +38,7 @@
         if (closeAfter) {
           document.addEventListener('htmx:afterSwap', once, { once: true });
         }
-        window.htmx.ajax('GET', '/', { target: '#users-tbody', swap: 'outerHTML', select: '#users-tbody' });
+        window.htmx.ajax('GET', path, { target: '#users-tbody', swap: 'outerHTML', select: '#users-tbody' });
       } catch (e) { /* noop */ }
     };
     // Open lightweight confirm delete modal without loading edit form
@@ -52,13 +53,13 @@
             '<div style="display:flex; gap:8px; justify-content:center;">' +
               '<button class="btn-outline" type="button" onclick="window.dispatchEvent(new CustomEvent(\'close-modal\'))">Отмена</button>' +
               '<button class="btn-danger" type="button" ' +
-                'hx-post="/users/' + String(userId) + '/delete" ' +
+                'hx-post="users/' + String(userId) + '/delete" ' +
                 'hx-target="#modal-body" ' +
                 'hx-swap="none" ' +
                 'hx-trigger="click" ' +
                 'hx-on:htmx:beforeRequest="this.disabled=true" ' +
                 'hx-on:htmx:afterRequest="this.disabled=false" ' +
-                'onclick="try{ if(window.htmx){ window.htmx.ajax(\'POST\', \'/users/' + String(userId) + '/delete\', { target: \'#modal-body\', swap: \'none\' }); return; } }catch(e){} fetch(\'/users/' + String(userId) + '/delete\', { method: \'POST\' }).then(function(){ try{ window.refreshUsers && window.refreshUsers(); }catch(_){} window.dispatchEvent(new CustomEvent(\'close-modal\')); });" ' +
+                'onclick="try{ if(window.htmx){ window.htmx.ajax(\'POST\', \'users/' + String(userId) + '/delete\', { target: \'#modal-body\', swap: \'none\' }); return; } }catch(e){} fetch(\'users/' + String(userId) + '/delete\', { method: \'POST\' }).then(function(){ try{ window.refreshUsers && window.refreshUsers(); }catch(_){} window.dispatchEvent(new CustomEvent(\'close-modal\')); });" ' +
               '>Удалить</button>' +
             '</div>' +
           '</div>'

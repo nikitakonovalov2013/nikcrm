@@ -3,7 +3,7 @@
   <button class="btn-close" onclick="document.dispatchEvent(new CustomEvent('close-modal'))">✕</button>
 </div>
 <div class="modal-body">
-  <form hx-post="/broadcast" hx-target="#modal-body" hx-swap="none" class="form-grid">
+  <form hx-post="broadcast" hx-target="#modal-body" hx-swap="none" class="form-grid">
     <label class="col-span-2">
       Текст сообщения
       <textarea name="text" rows="4" placeholder="Введите текст..." required></textarea>

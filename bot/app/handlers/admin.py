@@ -23,7 +23,9 @@ async def employees_link(message: Message):
         return
     logging.getLogger(__name__).info("admin requested employees link", extra={"tg_id": message.from_user.id})
     token = create_admin_jwt(message.from_user.id)
-    url = f"{settings.WEB_BASE_URL}/auth?token={token}"
+    # Use public admin panel URL that already includes /crm prefix
+    base = settings.admin_panel_url.rstrip("/")
+    url = f"{base}/auth?token={token}"
     await message.answer(f"Ссылка на панель администратора:\n{url}")
 
 

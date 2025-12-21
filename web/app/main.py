@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -18,9 +19,22 @@ from .services.messenger import Messenger
 from .repository import AdminLogRepo
 from shared.enums import AdminActionType
 
-app = FastAPI(title="Admin Panel")
-app.mount("/static", StaticFiles(directory="web/app/static"), name="static")
-templates = Jinja2Templates(directory="web/app/templates")
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates" 
+
+print("STATIC_DIR:", STATIC_DIR)
+print("TEMPLATES_DIR:", TEMPLATES_DIR)
+
+app = FastAPI(title="Admin Panel", root_path="/crm")
+
+# Make app aware of reverse proxy (X-Forwarded-Proto/Host) so url_for builds https URLs behind nginx
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Register Jinja helper(s)
 from shared.utils import format_date  # noqa: E402
 templates.env.globals["format_date"] = format_date
@@ -58,7 +72,7 @@ def require_admin(request: Request):
 
 
 @app.get("/auth")
-async def auth(token: str):
+async def auth(token: str, request: Request):
     # Validate token, set cookie, redirect to index
     try:
         data = jwt.decode(token, settings.WEB_JWT_SECRET, algorithms=["HS256"])
@@ -69,7 +83,8 @@ async def auth(token: str):
             raise HTTPException(status_code=403)
     except JWTError:
         raise HTTPException(status_code=401)
-    resp = RedirectResponse(url="/crm", status_code=302)
+    # Redirect to index using url_for to respect root_path (/crm)
+    resp = RedirectResponse(url=request.url_for("index"), status_code=302)
     resp.set_cookie("admin_token", token, httponly=True, secure=False, samesite="lax")
     return resp
 
