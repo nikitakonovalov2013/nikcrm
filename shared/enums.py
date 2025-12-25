@@ -28,3 +28,9 @@ class AdminActionType(StrEnum):
     EDIT = "EDIT"
     MESSAGE = "MESSAGE"
     BROADCAST = "BROADCAST"
+
+
+class PurchaseStatus(StrEnum):
+    PENDING = "PENDING"
+    DONE = "DONE"
+    REJECTED = "REJECTED"

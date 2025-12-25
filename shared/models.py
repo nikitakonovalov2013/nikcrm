@@ -3,7 +3,7 @@ from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, Date
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from datetime import datetime, date
 from .db import Base
-from .enums import UserStatus, Schedule, Position, AdminActionType
+from .enums import UserStatus, Schedule, Position, AdminActionType, PurchaseStatus
 
 
 class User(Base):
@@ -71,3 +71,26 @@ class AdminAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     user: Mapped[User] = relationship(back_populates="actions")
+
+
+class Purchase(Base):
+    __tablename__ = "purchases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    text: Mapped[str] = mapped_column(String(2000))
+    status: Mapped[PurchaseStatus] = mapped_column(
+        PG_ENUM(
+            PurchaseStatus,
+            name="purchase_status_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=PurchaseStatus.PENDING,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    user: Mapped[User] = relationship()

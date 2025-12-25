@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     BOT_TOKEN: str = ""
     # Telegram admin IDs stored as Python ints (can hold int64). Alias allows env var ADMIN_IDS.
     admin_ids: List[int] = Field(default_factory=list, alias="ADMIN_IDS")
+    PURCHASES_CHAT_ID: int = Field(default=0, alias="PURCHASES_CHAT_ID")
 
     POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432

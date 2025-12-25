@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from shared.config import settings
 from shared.logging import setup_logging
 from bot.app.handlers.registration import router as registration_router
 from bot.app.handlers.admin import router as admin_router
+from bot.app.handlers.purchases import router as purchases_router
 
 
 async def main() -> None:
@@ -17,6 +19,22 @@ async def main() -> None:
 
     dp.include_router(registration_router)
     dp.include_router(admin_router)
+    dp.include_router(purchases_router)
+
+    # Register bot commands for private and group chats
+    try:
+        commands = [
+            BotCommand(command="start", description="Запуск бота"),
+            BotCommand(command="register", description="Зарегистрироваться"),
+            BotCommand(command="profile", description="Профиль"),
+            BotCommand(command="purchases", description="Закупки"),
+            BotCommand(command="staff", description="Сотрудники (админ)"),
+        ]
+        await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllPrivateChats())
+        await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllGroupChats())
+    except Exception:
+        # Do not fail startup if commands setup fails
+        pass
 
     try:
         await dp.start_polling(bot)

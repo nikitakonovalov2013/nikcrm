@@ -1,7 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.utils.markdown import hbold
 import logging
 
@@ -38,7 +38,8 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
-@router.message(F.text == "Зарегистрироваться")
+@router.message(F.text.in_({"Зарегистрироваться", "📝 Зарегистрироваться"}))
+@router.message(Command("register"))
 async def start_registration(message: Message, state: FSMContext):
     logging.getLogger(__name__).info("registration start", extra={"tg_id": message.from_user.id})
     async with get_async_session() as session:
@@ -169,9 +170,10 @@ async def reg_position_cb(cb: CallbackQuery, state: FSMContext):
     # notify admins
     from shared.config import settings
     from aiogram import Bot
+    from aiogram.client.default import DefaultBotProperties
     from bot.app.keyboards.inline import approve_reject_kb
 
-    bot = Bot(token=settings.BOT_TOKEN)
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     bd = format_date(user.birth_date)
     rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
     text = (
@@ -193,7 +195,8 @@ async def reg_position_cb(cb: CallbackQuery, state: FSMContext):
     await bot.session.close()
 
 
-@router.message(F.text == "Профиль")
+@router.message(F.text.in_({"Профиль", "🧾 Профиль"}))
+@router.message(Command("profile"))
 async def profile(message: Message):
     logging.getLogger(__name__).info("profile requested", extra={"tg_id": message.from_user.id})
     async with get_async_session() as session:

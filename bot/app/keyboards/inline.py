@@ -27,3 +27,20 @@ def position_kb() -> InlineKeyboardMarkup:
         for val in (Position.MANAGER, Position.PICKER, Position.PACKER, Position.MASTER)
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def purchases_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="purchase:cancel")]]
+    )
+
+
+def purchases_admin_kb(purchase_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Сделано", callback_data=f"purchase:{purchase_id}:done"),
+                InlineKeyboardButton(text="🚫 Отклонить", callback_data=f"purchase:{purchase_id}:rejected"),
+            ]
+        ]
+    )

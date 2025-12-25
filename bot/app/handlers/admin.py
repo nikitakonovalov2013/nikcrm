@@ -1,4 +1,5 @@
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from shared.db import get_async_session
@@ -9,6 +10,7 @@ from bot.app.services.jwt_links import create_admin_jwt
 from shared.config import settings
 import logging
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 
 router = Router()
 
@@ -17,7 +19,8 @@ def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
 
 
-@router.message(F.text == "Сотрудники")
+@router.message(F.text.in_({"Сотрудники", "👥 Сотрудники"}))
+@router.message(Command("staff"))
 async def employees_link(message: Message):
     if not is_admin(message.from_user.id):
         return
@@ -47,7 +50,7 @@ async def cb_approve(call: CallbackQuery):
         await arepo.log(call.from_user.id, user.id, AdminActionType.APPROVE, None)
     # notify user
     try:
-        bot = Bot(token=settings.BOT_TOKEN)
+        bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
         await bot.send_message(user.tg_id, "Ваша заявка подтверждена. Доступен профиль в боте.")
         await bot.session.close()
     except Exception:
@@ -74,7 +77,7 @@ async def cb_reject(call: CallbackQuery):
         await arepo.log(call.from_user.id, user.id, AdminActionType.REJECT, None)
     # notify user
     try:
-        bot = Bot(token=settings.BOT_TOKEN)
+        bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
         await bot.send_message(user.tg_id, "Ваша заявка отклонена. Дальнейшее использование бота ограничено.")
         await bot.session.close()
     except Exception:
