@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}Остатки — Дашборд{% endblock %}
+{% block content %}
+<h2 class="subtitle">Остатки · Дашборд</h2>
+
+<form class="filters" method="get" action="{{ url_for('stocks_dashboard') }}">
+  <div class="filters-grid">
+    <label>
+      Дата с
+      <input type="date" name="date_from" value="{{ date_from }}" />
+    </label>
+    <label>
+      Дата по
+      <input type="date" name="date_to" value="{{ date_to }}" />
+    </label>
+    <div class="filters-actions">
+      <button class="btn" type="submit">Показать</button>
+    </div>
+  </div>
+</form>
+
+<div class="dashboard-grid dashboard-top">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Общая статистика расходов/приходов</div>
+      <div class="muted">за период</div>
+    </div>
+    <div class="panel-body chart-body">
+      <canvas id="barChart" height="180"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">История</div>
+      <div class="muted">последние события</div>
+    </div>
+    <div class="panel-body history-body">
+      <div class="history-scroll">
+        <div class="history">
+        {% for h in history %}
+          <div class="history-item">
+            <div class="history-top">
+              <span class="history-kind {{ 'in' if h.kind == 'in' else 'out' }}">{{ 'Приход' if h.kind == 'in' else 'Расход' }}</span>
+              <span class="history-ts">{{ h.ts_str }}</span>
+            </div>
+            <div class="history-main">
+              <span class="history-material">{{ h.material_name }}</span>
+              <span class="history-amount">{{ h.amount }}</span>
+            </div>
+            <div class="muted">{{ h.actor }}</div>
+          </div>
+        {% endfor %}
+        {% if history|length == 0 %}
+          <div class="muted">Нет данных за выбранный период.</div>
+        {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="dashboard-grid bottom">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Остатки на складе</div>
+      <div class="muted">распределение</div>
+    </div>
+    <div class="panel-body">
+      <canvas id="pieChart" height="220"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Остатки и прогноз</div>
+      <div class="muted">средний расход за 4 дня</div>
+    </div>
+    <div class="panel-body" style="padding:0">
+      <div class="table-wrap" style="border:none; border-radius:0">
+        <table class="table" id="stocks-forecast-table">
+          <thead>
+            <tr>
+              <th>Материал</th>
+              <th>Текущий остаток</th>
+              <th>Средний расход/день</th>
+              <th>Прогноз (дней)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in stock_rows %}
+              <tr class="{{ 'low-stock' if r.is_low else '' }}">
+                <td>{{ r.material_name }}</td>
+                <td>{{ r.current_stock_str }}</td>
+                <td>{{ r.avg_daily_out_str }}</td>
+                <td>
+                  {% if r.forecast_days is none %}
+                    —
+                  {% else %}
+                    <span class="badge {{ 'REJECTED' if r.is_low else 'APPROVED' }}">{{ r.forecast_days }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="chart-data">{{ chart_json | safe }}</script>
+<script type="application/json" id="pie-data">{{ pie_json | safe }}</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  function parseJsonScript(id) {
+    const el = document.getElementById(id);
+    if (!el) return [];
+    try {
+      return JSON.parse(el.textContent || '[]');
+    } catch (e) {
+      console.error('[stocks-dashboard] failed to parse json', id, e);
+      return [];
+    }
+  }
+
+  function initCharts() {
+    const chartRows = parseJsonScript('chart-data');
+    const pieRows = parseJsonScript('pie-data');
+
+    const labels = chartRows.map(r => r.material_name);
+    const inData = chartRows.map(r => Number(r.total_in));
+    const outData = chartRows.map(r => Number(r.total_out));
+
+    const barEl = document.getElementById('barChart');
+    const pieEl = document.getElementById('pieChart');
+    if (!barEl || !pieEl || !window.Chart) return;
+
+    const barChart = new Chart(barEl, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Приход', data: inData, backgroundColor: 'rgba(37, 99, 235, 0.75)' },
+          { label: 'Расход', data: outData, backgroundColor: 'rgba(239, 68, 68, 0.75)' }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { stacked: false },
+          y: { beginAtZero: true }
+        }
+      }
+    });
+
+    const pieLabels = pieRows.map(r => r.label);
+    const pieValues = pieRows.map(r => Number(r.value));
+
+    const pieChart = new Chart(pieEl, {
+      type: 'doughnut',
+      data: {
+        labels: pieLabels,
+        datasets: [{
+          data: pieValues,
+          backgroundColor: [
+            '#2563eb','#0ea5e9','#22c55e','#f59e0b','#ef4444','#a855f7','#14b8a6','#64748b','#e11d48','#84cc16'
+          ]
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom' } }
+      }
+    });
+
+    // After flex/grid layout settles, force Chart.js to measure containers.
+    requestAnimationFrame(() => {
+      try {
+        barChart.resize();
+        barChart.update();
+        pieChart.resize();
+        pieChart.update();
+      } catch (_) {}
+      try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCharts, { once: true });
+  } else {
+    initCharts();
+  }
+</script>
+{% endblock %}

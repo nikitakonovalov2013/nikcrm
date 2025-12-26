@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 from jose import jwt, JWTError
 from datetime import datetime, timezone
 from typing import Optional, List
+import json
 
 from shared.config import settings
 from shared.db import get_async_session
@@ -21,6 +22,14 @@ from shared.services.material_stock import (
     recalculate_material_stock,
     update_stock_on_new_consumption,
     update_stock_on_new_supply,
+)
+
+from .services.stocks_dashboard import (
+    build_chart_rows,
+    build_history_rows,
+    build_pie_data,
+    build_stock_rows,
+    format_dt_ru,
 )
 
 from .config import get_config
@@ -384,6 +393,80 @@ async def materials_list(request: Request, admin_id: int = Depends(require_admin
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse("materials/materials.html", {"request": request, "materials": materials, "types": types})
+
+
+@app.get("/stocks", response_class=HTMLResponse, name="stocks_dashboard")
+async def stocks_dashboard(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    from datetime import date as _date, timedelta as _timedelta
+
+    def _parse_date(val: str | None) -> _date | None:
+        if not val:
+            return None
+        try:
+            return datetime.strptime(val, "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    today = _date.today()
+    date_to = _parse_date(request.query_params.get("date_to")) or today
+    date_from = _parse_date(request.query_params.get("date_from")) or (date_to - _timedelta(days=29))
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    chart_rows = await build_chart_rows(session, date_from=date_from, date_to=date_to)
+    history_rows = await build_history_rows(session, actor_label=f"Админ #{admin_id}")
+    stock_rows = await build_stock_rows(session)
+    pie_rows = await build_pie_data(session)
+
+    chart_json = json.dumps(
+        [
+            {
+                "material_name": r.material_name,
+                "total_in": str(r.total_in),
+                "total_out": str(r.total_out),
+            }
+            for r in chart_rows
+        ],
+        ensure_ascii=False,
+    )
+
+    pie_json = json.dumps(pie_rows, ensure_ascii=False)
+
+    history = [
+        {
+            "ts_str": format_dt_ru(r.ts),
+            "actor": r.actor,
+            "kind": r.kind,
+            "amount": str(r.amount),
+            "material_name": r.material_name,
+        }
+        for r in history_rows
+    ]
+
+    stock_rows_view = []
+    for r in stock_rows:
+        stock_rows_view.append(
+            {
+                "material_name": r.material_name,
+                "current_stock_str": str(r.current_stock),
+                "avg_daily_out_str": "—" if r.avg_daily_out is None else str(r.avg_daily_out.quantize(Decimal('0.001'))),
+                "forecast_days": r.forecast_days,
+                "is_low": r.is_low,
+            }
+        )
+
+    return templates.TemplateResponse(
+        "stocks/dashboard.html",
+        {
+            "request": request,
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "chart_json": chart_json,
+            "pie_json": pie_json,
+            "history": history,
+            "stock_rows": stock_rows_view,
+        },
+    )
 
 
 # Modal endpoints for Materials CRUD

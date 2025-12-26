@@ -20,6 +20,7 @@
           {% set path = request.url.path %}
           <a class="menu-link {{ 'active' if path == '/crm/' else '' }}" href="{{ request.url_for('index') }}">Сотрудники</a>
           <div class="menu-section">Остатки</div>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/stocks') else '' }}" href="{{ request.url_for('stocks_dashboard') }}">Дашборд</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/materials/types') else '' }}" href="/crm/materials/types">Типы материалов</a>
           <a class="menu-link {{ 'active' if path == '/crm/materials' else '' }}" href="/crm/materials">Материалы</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/materials/consumptions') else '' }}" href="/crm/materials/consumptions">Расходы</a>

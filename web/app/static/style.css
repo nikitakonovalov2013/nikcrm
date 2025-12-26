@@ -124,3 +124,43 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
   .modal-actions{padding:12px 16px}
   .form-grid{grid-template-columns:1fr}
 }
+
+/* Stocks dashboard */
+.filters{margin-bottom:14px}
+.filters-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;gap:12px;align-items:end}
+.filters-grid label{display:flex;flex-direction:column;font-size:14px;color:#334155;gap:6px}
+.filters-grid input{border:1px solid #cbd5e1;border-radius:10px;padding:10px;outline:none;background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03)}
+.filters-actions{display:flex;justify-content:flex-end}
+
+.dashboard-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
+.dashboard-grid.bottom{grid-template-columns:1fr 2fr}
+.panel{border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;background:#fff}
+.panel-header{padding:14px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.panel-title{font-weight:700;color:#0f172a}
+.panel-body{padding:14px 16px}
+
+/* Keep top row panels the same height; scroll only history content */
+.dashboard-top .panel{display:flex;flex-direction:column;height:460px}
+.dashboard-top .panel-body{flex:1;min-height:0}
+.dashboard-top .chart-body{min-height:280px}
+.history-body{padding:14px 16px}
+.history-scroll{height:100%;overflow-y:auto;overflow-x:hidden}
+
+.history{display:flex;flex-direction:column;gap:10px}
+.history-item{border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;background:#fff}
+.history-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.history-kind{font-size:12px;font-weight:700;padding:3px 8px;border-radius:999px;border:1px solid transparent}
+.history-kind.in{background:#eef2ff;border-color:#c7d2fe;color:#1e3a8a}
+.history-kind.out{background:#fef2f2;border-color:#fecaca;color:#991b1b}
+.history-ts{font-size:12px;color:#64748b}
+.history-main{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.history-material{font-weight:600;color:#0f172a}
+.history-amount{font-weight:700}
+
+tr.low-stock{background:#fff7ed}
+
+@media (max-width: 900px){
+  .filters-grid{grid-template-columns:1fr;align-items:stretch}
+  .dashboard-grid,.dashboard-grid.bottom{grid-template-columns:1fr}
+  .dashboard-top .panel{height:auto}
+}
