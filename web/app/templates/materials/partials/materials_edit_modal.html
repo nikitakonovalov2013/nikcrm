@@ -1,0 +1,40 @@
+<div class="modal-header">Редактировать материал</div>
+<form hx-post="{{ url_for('materials_update', material_id=m.id) }}"
+      hx-target="#modal-body"
+      hx-swap="innerHTML"
+      class="form-grid">
+  <div>
+    <label>Название</label>
+    <input type="text" name="name" value="{{ name if name is defined else m.name }}" required />
+    {% if errors and errors.get('name') %}
+      <div class="field-error">{{ errors.get('name') }}</div>
+    {% endif %}
+  </div>
+  <div>
+    <label>Короткое</label>
+    <input type="text" name="short_name" value="{{ short_name if short_name is defined else (m.short_name or '') }}" />
+  </div>
+  <div>
+    <label>Тип</label>
+    <select name="material_type_id" required>
+      {% for t in types %}
+        {% set selected_id = material_type_id if material_type_id is defined else m.material_type_id %}
+        <option value="{{ t.id }}" {% if t.id == selected_id %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label>Ед.</label>
+    <input type="text" name="unit" value="{{ unit if unit is defined else m.unit }}" />
+  </div>
+  <div class="checkbox-field">
+    <label class="checkbox-row">
+      <input type="checkbox" name="is_active" {% set active_val = is_active if is_active is defined else m.is_active %}{% if active_val %}checked{% endif %} />
+      <span>Активен</span>
+    </label>
+  </div>
+  <div class="modal-actions" style="grid-column: 1 / -1;">
+    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <button type="submit" class="btn">Сохранить</button>
+  </div>
+</form>

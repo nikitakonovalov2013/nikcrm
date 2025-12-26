@@ -1,0 +1,37 @@
+<div class="table-wrap" id="materials-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
+  <table class="table" id="materials-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Название</th>
+        <th>Короткое</th>
+        <th>Тип</th>
+        <th>Ед.</th>
+        <th>Активен</th>
+        <th>Остаток</th>
+        <th class="actions-cell">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in materials %}
+      <tr>
+        <td>{{ m.id }}</td>
+        <td>{{ m.name }}</td>
+        <td>{{ m.short_name or '' }}</td>
+        <td>{{ m.material_type.name if m.material_type else '' }}</td>
+        <td>{{ m.unit }}</td>
+        <td>{{ 'Да' if m.is_active else 'Нет' }}</td>
+        <td>{{ m.current_stock }} {{ m.unit }}</td>
+        <td class="actions-cell">
+          <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
+                  hx-get="{{ url_for('materials_modal_edit', material_id=m.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">✏️</button>
+          <button class="icon-btn warn has-tooltip" data-tooltip="Удалить"
+                  hx-get="{{ url_for('materials_modal_delete', material_id=m.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">🗑</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

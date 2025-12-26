@@ -1,0 +1,33 @@
+<div class="table-wrap" id="consumptions-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
+  <table class="table" id="consumptions-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Дата</th>
+        <th>Материал</th>
+        <th>Сотрудник</th>
+        <th>Количество</th>
+        <th class="actions-cell">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td>{{ format_date(r.date) }}</td>
+        <td>{{ r.material.short_name or r.material.name }}</td>
+        <td>{{ (r.employee.first_name or '') ~ ' ' ~ (r.employee.last_name or '') }}</td>
+        <td>{{ r.amount }}</td>
+        <td class="actions-cell">
+          <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
+                  hx-get="{{ url_for('consumptions_modal_edit', item_id=r.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">✏️</button>
+          <button class="icon-btn warn has-tooltip" data-tooltip="Удалить"
+                  hx-get="{{ url_for('consumptions_modal_delete', item_id=r.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">🗑</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

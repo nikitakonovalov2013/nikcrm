@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Материалы{% endblock %}
+{% block content %}
+<h2 class="subtitle">Остатки · Материалы</h2>
+<div class="actions">
+  <button class="btn"
+          hx-get="{{ url_for('materials_modal_create') }}"
+          hx-target="#modal-body" hx-swap="innerHTML">+ Создать</button>
+</div>
+{% include "materials/partials/materials_table.html" %}
+{% endblock %}

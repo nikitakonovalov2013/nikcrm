@@ -9,16 +9,38 @@
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body class="bg">
-  <header class="container py">
-    <h1 class="title">Админ панель</h1>
-  </header>
-  <main class="container card">
-    {% block content %}{% endblock %}
-  </main>
+  <div class="container py" x-data="{sidebarOpen:false}">
+    <div class="layout">
+      <aside class="sidebar" :class="{'open': sidebarOpen}">
+        <div class="sidebar-header">
+          <div class="sidebar-title">Админ панель</div>
+          <button class="sidebar-close" @click="sidebarOpen=false">✕</button>
+        </div>
+        <nav class="menu">
+          {% set path = request.url.path %}
+          <a class="menu-link {{ 'active' if path == '/crm/' else '' }}" href="{{ request.url_for('index') }}">Сотрудники</a>
+          <div class="menu-section">Остатки</div>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/materials/types') else '' }}" href="/crm/materials/types">Типы материалов</a>
+          <a class="menu-link {{ 'active' if path == '/crm/materials' else '' }}" href="/crm/materials">Материалы</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/materials/consumptions') else '' }}" href="/crm/materials/consumptions">Расходы</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/materials/supplies') else '' }}" href="/crm/materials/supplies">Пополнения</a>
+        </nav>
+      </aside>
+      <section class="content">
+        <div class="content-header">
+          <button class="burger" @click="sidebarOpen=true">☰ Меню</button>
+        </div>
+        <div class="card">
+          {% block content %}{% endblock %}
+        </div>
+      </section>
+    </div>
+  </div>
   <div id="modal" class="modal" x-data="{open:false}" x-cloak x-show="open" x-transition @close-modal.window="open=false" @open-modal.window="open=true">
     <div class="modal-backdrop" @click="open=false"></div>
     <div class="modal-content" x-trap.noscroll="open" @keyup.escape.window="open=false">
-      <div id="modal-body"></div>
+      <button class="modal-close" aria-label="Закрыть модалку" @click="open=false">✕</button>
+      <div id="modal-body" class="modal-body"></div>
     </div>
   </div>
   <script>
@@ -74,24 +96,45 @@
         window.dispatchEvent(new CustomEvent('open-modal'));
       }
     });
+    // Hide tooltips when modal opens/closes
+    window.addEventListener('open-modal', () => {
+      document.body.classList.add('no-tooltips');
+    });
+    window.addEventListener('close-modal', () => {
+      document.body.classList.remove('no-tooltips');
+    });
+    // Hide tooltip on click by removing focus from tooltip elements
+    document.addEventListener('click', (e) => {
+      const el = e.target.closest('.has-tooltip');
+      if (el && typeof el.blur === 'function') {
+        el.blur();
+      }
+    });
     document.addEventListener('htmx:beforeSwap', (e) => {
       if (!(e && e.detail)) return;
       const { xhr, target, requestConfig, elt } = e.detail;
       if (!xhr) return;
+      // Allow rendering validation HTML into modal even when server replies 400/422
+      if (target && target.id === 'modal-body' && (xhr.status === 400 || xhr.status === 422)) {
+        e.detail.shouldSwap = true;
+        return;
+      }
       const modalEl = document.getElementById('modal');
       const isInModal = modalEl && elt ? modalEl.contains(elt) : false;
       const isModalBody = target && target.id === 'modal-body';
       const is2xx = xhr.status >= 200 && xhr.status < 300;
       const isPost = requestConfig && requestConfig.verb && requestConfig.verb.toLowerCase() === 'post';
+      const path = requestConfig && requestConfig.path ? String(requestConfig.path) : '';
+      const isUsersRequest = path.includes('/users/') || path.startsWith('users/');
       // For successful POSTs triggered from inside modal: refetch tbody and close when swapped
-      if (isInModal && is2xx && isPost) {
+      if (isInModal && is2xx && isPost && isUsersRequest) {
         try { window.refreshUsers && window.refreshUsers(true); } catch (_) {}
         console.debug('[HTMX] refetch tbody after success POST', xhr.status);
         if (isModalBody) { e.detail.shouldSwap = false; }
         return;
       }
       // Keep explicit close on 204 when swapping modal-body
-      if (isModalBody && xhr.status === 204) {
+      if (isModalBody && xhr.status === 204 && isUsersRequest) {
         console.debug('[HTMX] refetch tbody on 204 delete');
         try { window.refreshUsers && window.refreshUsers(true); } catch (_) {}
         e.detail.shouldSwap = false;
@@ -100,20 +143,42 @@
     document.addEventListener('htmx:responseError', (e) => {
       if (e.detail && e.detail.target && e.detail.target.id === 'modal-body') {
         const status = e.detail.xhr ? e.detail.xhr.status : 'Ошибка';
-        alert(`Не удалось загрузить данные пользователя. Код: ${status}`);
+        // Don't alert on validation errors which are rendered into the modal (400/422)
+        if (status === 400 || status === 422) return;
+        alert(`Не удалось загрузить данные. Код: ${status}`);
       }
     });
     document.addEventListener('htmx:afterRequest', (e) => {
       if (!(e && e.detail)) return;
       const { xhr, target, requestConfig, elt } = e.detail;
       if (!xhr) return;
+      // Universal autoclose: if server signals close-modal, close regardless of swap settings.
+      try {
+        const trig = xhr.getResponseHeader('HX-Trigger');
+        if (trig && String(trig).includes('close-modal')) {
+          try {
+            const mb = document.getElementById('modal-body');
+            if (mb) mb.innerHTML = '';
+          } catch (_) {}
+          window.dispatchEvent(new CustomEvent('close-modal'));
+          return;
+        }
+      } catch (_) {}
       const modalEl = document.getElementById('modal');
       const isInModal = modalEl && elt ? modalEl.contains(elt) : false;
       const isModalBody = target && target.id === 'modal-body';
       const is2xx = xhr.status >= 200 && xhr.status < 300;
       const isPost = requestConfig && requestConfig.verb && requestConfig.verb.toLowerCase() === 'post';
       if (isInModal && is2xx && isPost) {
-        // no-op here; handled in beforeSwap to ensure close happens after tbody swap
+        // Unified modal autoclose: only close when POST succeeded and we are not swapping modal-body.
+        // This avoids closing the modal when server returns validation HTML into modal-body (e.g. 400).
+        if (!isModalBody) {
+          try {
+            const mb = document.getElementById('modal-body');
+            if (mb) mb.innerHTML = '';
+          } catch (_) {}
+          window.dispatchEvent(new CustomEvent('close-modal'));
+        }
       }
     });
   </script>

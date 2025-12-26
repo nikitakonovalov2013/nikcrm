@@ -1,0 +1,17 @@
+<div class="modal-header">Удалить материал</div>
+<div class="modal-body">
+  {% if (cons or 0) > 0 or (sups or 0) > 0 %}
+    <p>У материала есть связанные записи: Расходы — {{ cons }}, Пополнения — {{ sups }}.</p>
+    <p>Удаление может быть ограничено или повлиять на отчёты.</p>
+  {% endif %}
+  <p>Вы уверены, что хотите удалить материал?</p>
+  <div class="modal-actions">
+    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <form hx-post="{{ url_for('materials_delete', material_id=material_id) }}"
+          hx-target="#modal-body"
+          hx-swap="innerHTML"
+          style="display:inline-block;">
+      <button type="submit" class="btn-danger">Удалить</button>
+    </form>
+  </div>
+</div>

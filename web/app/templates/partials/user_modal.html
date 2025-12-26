@@ -1,16 +1,14 @@
 <div class="modal-header">
   <h3>Пользователь #{{ user.id }}</h3>
-  <button class="btn-close" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">✕</button>
 </div>
 <div class="modal-body" x-data="{confirm: {{ 'true' if confirm_initial else 'false' }} }">
   <form
     hx-post="users/{{ user.id }}/update"
     hx-target="#modal-body"
-    hx-swap="none"
+    hx-swap="innerHTML"
     class="form-grid"
     hx-on:htmx:beforeRequest="this.querySelectorAll('button').forEach(b=>b.disabled=true)"
-    hx-on:htmx:afterRequest="this.querySelectorAll('button').forEach(b=>b.disabled=false); if (event.detail.xhr && event.detail.xhr.status>=200 && event.detail.xhr.status<300) { window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); }"
-    hx-on:htmx:beforeSwap="if (event.detail.xhr && event.detail.xhr.status>=200 && event.detail.xhr.status<300) { window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); event.detail.shouldSwap=false; }"
+    hx-on:htmx:afterRequest="this.querySelectorAll('button').forEach(b=>b.disabled=false)"
   >
     <label>
       Имя
@@ -67,10 +65,9 @@
         class="btn-warn"
         hx-post="users/{{ user.id }}/blacklist"
         hx-target="#modal-body"
-        hx-swap="none"
+        hx-swap="innerHTML"
         hx-on:htmx:beforeRequest="this.disabled=true"
-        hx-on:htmx:afterRequest="this.disabled=false; if (event.detail.xhr && event.detail.xhr.status>=200 && event.detail.xhr.status<300) { window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); }"
-        hx-on:htmx:beforeSwap="if (event.detail.xhr && event.detail.xhr.status>=200 && event.detail.xhr.status<300) { window.refreshUsers && window.refreshUsers(); window.dispatchEvent(new CustomEvent('close-modal')); setTimeout(()=>window.dispatchEvent(new CustomEvent('close-modal')),0); event.detail.shouldSwap=false; }"
+        hx-on:htmx:afterRequest="this.disabled=false"
         type="button"
       >В черный список</button>
       <button
@@ -97,12 +94,11 @@
             type="button"
             hx-post="users/{{ user.id }}/delete"
             hx-target="#modal-body"
-            hx-swap="none"
+            hx-swap="innerHTML"
             hx-on:htmx:beforeRequest="this.disabled=true"
-            hx-on:htmx:afterRequest="this.disabled=false; if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(true); }"
-            hx-on:htmx:beforeSwap="if (event.detail.xhr && event.detail.xhr.status===204) { const row=document.getElementById('row-{{ user.id }}'); if (row) row.remove(); window.refreshUsers && window.refreshUsers(true); event.detail.shouldSwap=false; }"
+            hx-on:htmx:afterRequest="this.disabled=false"
             hx-trigger="click"
-            onclick="event.preventDefault(); try { htmx.ajax('POST', 'users/{{ user.id }}/delete', { target: '#modal-body', swap: 'none' }); } catch (e) { fetch('users/{{ user.id }}/delete', { method: 'POST' }).then(()=>{ window.refreshUsers && window.refreshUsers(true); }); }"
+            onclick="event.preventDefault(); try { htmx.ajax('POST', 'users/{{ user.id }}/delete', { target: '#modal-body', swap: 'innerHTML' }); } catch (e) { fetch('users/{{ user.id }}/delete', { method: 'POST' }); }"
           >Удалить</button>
         </div>
       </div>

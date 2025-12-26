@@ -12,7 +12,16 @@ from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared.enums import UserStatus, Schedule, Position
 from shared.models import User
+from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
 from sqlalchemy import select, delete
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
+from decimal import Decimal
+from shared.services.material_stock import (
+    recalculate_material_stock,
+    update_stock_on_new_consumption,
+    update_stock_on_new_supply,
+)
 
 from .config import get_config
 from .services.messenger import Messenger
@@ -170,6 +179,7 @@ async def user_update(
     return templates.TemplateResponse(
         "partials/user_row.html",
         {"request": request, "u": user, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
     )
 
 
@@ -199,6 +209,7 @@ async def user_blacklist(user_id: int, request: Request, admin_id: int = Depends
     return templates.TemplateResponse(
         "partials/user_row.html",
         {"request": request, "u": user, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
     )
 
 
@@ -214,7 +225,10 @@ async def user_delete(user_id: int, admin_id: int = Depends(require_admin), sess
     await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.BLACKLIST, payload={"delete": True})
     # Now delete the user
     await session.execute(delete(User).where(User.id == user_id))
-    return Response(status_code=204)
+    return HTMLResponse(
+        f'<tr id="row-{user_id}" hx-swap-oob="delete"></tr>',
+        headers={"HX-Trigger": "close-modal"},
+    )
 
 
 @app.post("/users/{user_id}/message")
@@ -231,7 +245,7 @@ async def user_message(user_id: int, text: str = Form(...), admin_id: int = Depe
         raise HTTPException(502, detail="Failed to send message")
     repo = AdminLogRepo(session)
     await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.MESSAGE, payload={"text": text})
-    return Response(status_code=204)
+    return Response(status_code=204, headers={"HX-Trigger": "close-modal"})
 
 
 @app.get("/broadcast", response_class=HTMLResponse)
@@ -259,4 +273,537 @@ async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None),
             ok_count += 1
             repo = AdminLogRepo(session)
             await repo.log(admin_tg_id=admin_id, user_id=u.id, action=AdminActionType.BROADCAST, payload={"text": text})
-    return Response(status_code=204)
+    return Response(status_code=204, headers={"HX-Trigger": "close-modal"})
+
+
+# ========== Materials Admin ==========
+
+@app.get("/materials/types", response_class=HTMLResponse)
+async def materials_types_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res.scalars().all()
+    return templates.TemplateResponse("materials/types.html", {"request": request, "types": types})
+
+
+@app.post("/materials/types/create")
+async def materials_types_create(request: Request, name: str = Form(...), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    mt = MaterialType(name=name)
+    session.add(mt)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        return templates.TemplateResponse(
+            "materials/partials/types_create_modal.html",
+            {"request": request, "name": name, "errors": {"name": "Такое название уже существует"}},
+            status_code=400,
+        )
+    res = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/types_table.html",
+        {"request": request, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/types/{type_id}/update")
+async def materials_types_update(type_id: int, request: Request, name: str = Form(...), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(MaterialType).where(MaterialType.id == type_id))
+    mt = res.scalar_one_or_none()
+    if not mt:
+        raise HTTPException(404)
+    mt.name = name
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        return templates.TemplateResponse(
+            "materials/partials/types_edit_modal.html",
+            {"request": request, "t": mt, "name": name, "errors": {"name": "Такое название уже существует"}},
+            status_code=400,
+        )
+    res2 = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res2.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/types_table.html",
+        {"request": request, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/types/{type_id}/delete")
+async def materials_types_delete(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    # Cascade delete: consumptions/supplies for materials of this type, then materials, then the type
+    from sqlalchemy import select as _select
+    # collect material ids
+    res_mats = await session.execute(_select(Material.id).where(Material.material_type_id == type_id))
+    mat_ids = [mid for (mid,) in res_mats.all()]
+    if mat_ids:
+        await session.execute(delete(MaterialConsumption).where(MaterialConsumption.material_id.in_(mat_ids)))
+        await session.execute(delete(MaterialSupply).where(MaterialSupply.material_id.in_(mat_ids)))
+        await session.execute(delete(Material).where(Material.id.in_(mat_ids)))
+    await session.execute(delete(MaterialType).where(MaterialType.id == type_id))
+    res = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/types_table.html",
+        {"request": request, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+# Modal endpoints for MaterialType CRUD
+@app.get("/materials/types/modal/create", response_class=HTMLResponse)
+async def materials_types_modal_create(request: Request, admin_id: int = Depends(require_admin)):
+    return templates.TemplateResponse("materials/partials/types_create_modal.html", {"request": request})
+
+
+@app.get("/materials/types/{type_id}/modal/edit", response_class=HTMLResponse)
+async def materials_types_modal_edit(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(MaterialType).where(MaterialType.id == type_id))
+    mt = res.scalar_one_or_none()
+    if not mt:
+        raise HTTPException(404)
+    return templates.TemplateResponse("materials/partials/types_edit_modal.html", {"request": request, "t": mt})
+
+
+@app.get("/materials/types/{type_id}/modal/delete", response_class=HTMLResponse)
+async def materials_types_modal_delete(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    from sqlalchemy import func
+    mats = (await session.execute(select(func.count()).select_from(Material).where(Material.material_type_id == type_id))).scalar_one()
+    cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).join(Material, Material.id == MaterialConsumption.material_id).where(Material.material_type_id == type_id))).scalar_one()
+    sups = (await session.execute(select(func.count()).select_from(MaterialSupply).join(Material, Material.id == MaterialSupply.material_id).where(Material.material_type_id == type_id))).scalar_one()
+    return templates.TemplateResponse("materials/partials/types_delete_modal.html", {"request": request, "type_id": type_id, "mats": mats, "cons": cons, "sups": sups})
+
+
+@app.get("/materials", response_class=HTMLResponse)
+async def materials_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+    materials = res.scalars().all()
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse("materials/materials.html", {"request": request, "materials": materials, "types": types})
+
+
+# Modal endpoints for Materials CRUD
+@app.get("/materials/modal/create", response_class=HTMLResponse)
+async def materials_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse("materials/partials/materials_create_modal.html", {"request": request, "types": types})
+
+
+@app.get("/materials/{material_id}/modal/edit", response_class=HTMLResponse)
+async def materials_modal_edit(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(Material).where(Material.id == material_id))
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(404)
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse("materials/partials/materials_edit_modal.html", {"request": request, "m": m, "types": types})
+
+
+@app.get("/materials/{material_id}/modal/delete", response_class=HTMLResponse)
+async def materials_modal_delete(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    from sqlalchemy import func
+    cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).where(MaterialConsumption.material_id == material_id))).scalar_one()
+    sups = (await session.execute(select(func.count()).select_from(MaterialSupply).where(MaterialSupply.material_id == material_id))).scalar_one()
+    return templates.TemplateResponse("materials/partials/materials_delete_modal.html", {"request": request, "material_id": material_id, "cons": cons, "sups": sups})
+
+
+@app.post("/materials/create")
+async def materials_create(
+    request: Request,
+    name: str = Form(...),
+    short_name: str | None = Form(None),
+    unit: str = Form("кг"),
+    material_type_id: int = Form(...),
+    is_active: bool = Form(True),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    m = Material(
+        name=name,
+        short_name=short_name or None,
+        unit=unit or "кг",
+        material_type_id=material_type_id,
+        is_active=is_active,
+    )
+    session.add(m)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+        types = res_t.scalars().all()
+        return templates.TemplateResponse(
+            "materials/partials/materials_create_modal.html",
+            {
+                "request": request,
+                "types": types,
+                "name": name,
+                "short_name": short_name,
+                "unit": unit,
+                "material_type_id": material_type_id,
+                "is_active": is_active,
+                "errors": {"name": "Материал с таким названием уже существует"},
+            },
+            status_code=400,
+        )
+    res = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+    materials = res.scalars().all()
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/materials_table.html",
+        {"request": request, "materials": materials, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/{material_id}/update")
+async def materials_update(
+    material_id: int,
+    request: Request,
+    name: str = Form(...),
+    short_name: str | None = Form(None),
+    unit: str = Form("кг"),
+    material_type_id: int = Form(...),
+    is_active: bool = Form(True),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    res = await session.execute(select(Material).where(Material.id == material_id))
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(404)
+    m.name = name
+    m.short_name = short_name or None
+    m.unit = unit or "кг"
+    m.material_type_id = material_type_id
+    m.is_active = is_active
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        res_m = await session.execute(select(Material).where(Material.id == material_id))
+        m2 = res_m.scalar_one_or_none()
+        if not m2:
+            raise HTTPException(404)
+        res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+        types = res_t.scalars().all()
+        return templates.TemplateResponse(
+            "materials/partials/materials_edit_modal.html",
+            {
+                "request": request,
+                "m": m2,
+                "types": types,
+                "name": name,
+                "short_name": short_name,
+                "unit": unit,
+                "material_type_id": material_type_id,
+                "is_active": is_active,
+                "errors": {"name": "Материал с таким названием уже существует"},
+            },
+            status_code=400,
+        )
+    res2 = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+    materials = res2.scalars().all()
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/materials_table.html",
+        {"request": request, "materials": materials, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/{material_id}/delete")
+async def materials_delete(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    # Cascade delete related records first
+    await session.execute(delete(MaterialConsumption).where(MaterialConsumption.material_id == material_id))
+    await session.execute(delete(MaterialSupply).where(MaterialSupply.material_id == material_id))
+    await session.execute(delete(Material).where(Material.id == material_id))
+    res = await session.execute(select(Material).order_by(Material.name))
+    materials = res.scalars().all()
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/materials_table.html",
+        {"request": request, "materials": materials, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.get("/materials/consumptions", response_class=HTMLResponse)
+async def consumptions_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(
+        select(MaterialConsumption)
+        .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
+        .order_by(MaterialConsumption.date.desc(), MaterialConsumption.id.desc())
+    )
+    items = res.scalars().all()
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    return templates.TemplateResponse("materials/consumptions.html", {"request": request, "items": items, "materials": materials, "users": users})
+
+
+@app.get("/materials/consumptions/modal/create", response_class=HTMLResponse)
+async def consumptions_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    from datetime import date as _date
+    today = _date.today()
+    return templates.TemplateResponse("materials/partials/consumptions_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
+
+
+@app.get("/materials/consumptions/{item_id}/modal/delete", response_class=HTMLResponse)
+async def consumptions_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin)):
+    return templates.TemplateResponse("materials/partials/consumptions_delete_modal.html", {"request": request, "item_id": item_id})
+
+
+@app.get("/materials/consumptions/{item_id}/modal/edit", response_class=HTMLResponse)
+async def consumptions_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(MaterialConsumption).where(MaterialConsumption.id == item_id))
+    rec = res.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(404)
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    return templates.TemplateResponse("materials/partials/consumptions_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
+
+
+@app.post("/materials/consumptions/create")
+async def consumptions_create(
+    request: Request,
+    material_id: int = Form(...),
+    employee_id: int = Form(...),
+    amount: Decimal = Form(...),
+    date: str = Form(...),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime as dt
+    d = dt.strptime(date, "%Y-%m-%d").date()
+    # validate amount > 0
+    try:
+        if Decimal(amount) <= 0:
+            raise HTTPException(400, detail="amount must be > 0")
+    except Exception:
+        raise HTTPException(400, detail="invalid amount")
+    rec = MaterialConsumption(material_id=material_id, employee_id=employee_id, amount=amount, date=d)
+    session.add(rec)
+    await session.flush()
+    await update_stock_on_new_consumption(session, rec)
+    # return updated table partial
+    res = await session.execute(
+        select(MaterialConsumption)
+        .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
+        .order_by(MaterialConsumption.date.desc(), MaterialConsumption.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/consumptions_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/consumptions/{item_id}/delete")
+async def consumptions_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await session.execute(delete(MaterialConsumption).where(MaterialConsumption.id == item_id))
+    res = await session.execute(
+        select(MaterialConsumption)
+        .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
+        .order_by(MaterialConsumption.date.desc(), MaterialConsumption.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/consumptions_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/consumptions/{item_id}/update")
+async def consumptions_update(
+    item_id: int,
+    request: Request,
+    material_id: int = Form(...),
+    employee_id: int = Form(...),
+    amount: Decimal = Form(...),
+    date: str = Form(...),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime as dt
+    d = dt.strptime(date, "%Y-%m-%d").date()
+    res = await session.execute(select(MaterialConsumption).where(MaterialConsumption.id == item_id))
+    rec = res.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(404)
+    # basic validation
+    try:
+        if Decimal(amount) <= 0:
+            raise HTTPException(400, detail="amount must be > 0")
+    except Exception:
+        raise HTTPException(400, detail="invalid amount")
+    rec.material_id = material_id
+    rec.employee_id = employee_id
+    rec.amount = amount
+    rec.date = d
+    await session.flush()
+    res2 = await session.execute(
+        select(MaterialConsumption)
+        .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
+        .order_by(MaterialConsumption.date.desc(), MaterialConsumption.id.desc())
+    )
+    items = res2.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/consumptions_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.get("/materials/supplies", response_class=HTMLResponse)
+async def supplies_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res.scalars().all()
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    return templates.TemplateResponse("materials/supplies.html", {"request": request, "items": items, "materials": materials, "users": users})
+
+
+@app.get("/materials/supplies/modal/create", response_class=HTMLResponse)
+async def supplies_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    from datetime import date as _date
+    today = _date.today()
+    return templates.TemplateResponse("materials/partials/supplies_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
+
+
+@app.get("/materials/supplies/{item_id}/modal/delete", response_class=HTMLResponse)
+async def supplies_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin)):
+    return templates.TemplateResponse("materials/partials/supplies_delete_modal.html", {"request": request, "item_id": item_id})
+
+
+@app.get("/materials/supplies/{item_id}/modal/edit", response_class=HTMLResponse)
+async def supplies_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
+    rec = res.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(404)
+    res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
+    materials = res_m.scalars().all()
+    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    users = res_u.scalars().all()
+    return templates.TemplateResponse("materials/partials/supplies_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
+
+
+@app.post("/materials/supplies/create")
+async def supplies_create(
+    request: Request,
+    material_id: int = Form(...),
+    employee_id: int | None = Form(None),
+    amount: Decimal = Form(...),
+    date: str = Form(...),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime as dt
+    d = dt.strptime(date, "%Y-%m-%d").date()
+    # validate amount > 0
+    try:
+        if Decimal(amount) <= 0:
+            raise HTTPException(400, detail="amount must be > 0")
+    except Exception:
+        raise HTTPException(400, detail="invalid amount")
+    rec = MaterialSupply(material_id=material_id, employee_id=employee_id or None, amount=amount, date=d)
+    session.add(rec)
+    await session.flush()
+    await update_stock_on_new_supply(session, rec)
+    res = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/supplies_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/supplies/{item_id}/delete")
+async def supplies_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await session.execute(delete(MaterialSupply).where(MaterialSupply.id == item_id))
+    res = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/supplies_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/supplies/{item_id}/update")
+async def supplies_update(
+    item_id: int,
+    request: Request,
+    material_id: int = Form(...),
+    employee_id: int | None = Form(None),
+    amount: Decimal = Form(...),
+    date: str = Form(...),
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    from datetime import datetime as dt
+    d = dt.strptime(date, "%Y-%m-%d").date()
+    res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
+    rec = res.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(404)
+    try:
+        if Decimal(amount) <= 0:
+            raise HTTPException(400, detail="amount must be > 0")
+    except Exception:
+        raise HTTPException(400, detail="invalid amount")
+    rec.material_id = material_id
+    rec.employee_id = employee_id or None
+    rec.amount = amount
+    rec.date = d
+    await session.flush()
+    res2 = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res2.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/supplies_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )

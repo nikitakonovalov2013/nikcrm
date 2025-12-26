@@ -21,7 +21,7 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int) -> ReplyKeyboardMarku
     try:
         is_admin = tg_id in settings.admin_ids
         if is_admin:
-            buttons.append(KeyboardButton(text="👥 Сотрудники"))
+            buttons.append(KeyboardButton(text="🛠 Админ-панель"))
         if is_admin or status == UserStatus.APPROVED:
             buttons.append(KeyboardButton(text="🛒 Закупки"))
     except Exception:

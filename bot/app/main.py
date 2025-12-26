@@ -28,7 +28,7 @@ async def main() -> None:
             BotCommand(command="register", description="Зарегистрироваться"),
             BotCommand(command="profile", description="Профиль"),
             BotCommand(command="purchases", description="Закупки"),
-            BotCommand(command="staff", description="Сотрудники (админ)"),
+            BotCommand(command="admin", description="Админ-панель"),
         ]
         await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllPrivateChats())
         await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllGroupChats())

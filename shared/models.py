@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime
+from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index
+from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from datetime import datetime, date
 from .db import Base
@@ -71,6 +72,68 @@ class AdminAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     user: Mapped[User] = relationship(back_populates="actions")
+
+
+class MaterialType(Base):
+    __tablename__ = "material_types"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Material(Base):
+    __tablename__ = "materials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_type_id: Mapped[int] = mapped_column(ForeignKey("material_types.id", ondelete="RESTRICT"), index=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    short_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    unit: Mapped[str] = mapped_column(String(10), default="кг")
+    current_stock: Mapped[Numeric] = mapped_column(Numeric(16, 3), default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    material_type: Mapped[MaterialType] = relationship()
+
+
+class MaterialConsumption(Base):
+    __tablename__ = "material_consumptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"))
+    employee_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    amount: Mapped[Numeric] = mapped_column(Numeric(16, 3))
+    date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    material: Mapped[Material] = relationship()
+    employee: Mapped[User] = relationship()
+
+    __table_args__ = (
+        Index("ix_material_consumptions_material_id", "material_id"),
+        Index("ix_material_consumptions_date", "date"),
+    )
+
+
+class MaterialSupply(Base):
+    __tablename__ = "material_supplies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"))
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    amount: Mapped[Numeric] = mapped_column(Numeric(16, 3))
+    date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    material: Mapped[Material] = relationship()
+    employee: Mapped[User | None] = relationship()
+
+    __table_args__ = (
+        Index("ix_material_supplies_material_id", "material_id"),
+        Index("ix_material_supplies_date", "date"),
+    )
 
 
 class Purchase(Base):

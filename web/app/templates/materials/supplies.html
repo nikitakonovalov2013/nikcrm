@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Пополнения материалов{% endblock %}
+{% block content %}
+<h2 class="subtitle">Остатки · Пополнения</h2>
+<div class="actions">
+  <button class="btn has-tooltip" data-tooltip="Добавить"
+          hx-get="{{ url_for('supplies_modal_create') }}"
+          hx-target="#modal-body" hx-swap="innerHTML">+ Добавить</button>
+</div>
+{% include "materials/partials/supplies_table.html" %}
+{% endblock %}

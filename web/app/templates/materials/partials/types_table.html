@@ -1,0 +1,28 @@
+<div class="table-wrap" id="types-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
+  <table class="table" id="types-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Название</th>
+        <th class="actions-cell">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in types %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.name }}</td>
+        <td class="actions-cell">
+          <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
+                  hx-get="{{ url_for('materials_types_modal_edit', type_id=t.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">✏️</button>
+          <button class="icon-btn warn has-tooltip" data-tooltip="Удалить"
+                  hx-get="{{ url_for('materials_types_modal_delete', type_id=t.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">🗑</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<script>try{window.dispatchEvent(new CustomEvent('open-modal:noop'))}catch(e){}</script>

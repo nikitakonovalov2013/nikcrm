@@ -1,0 +1,20 @@
+<div class="modal-header">Удалить тип материала</div>
+<div class="modal-body">
+  {% if mats and mats > 0 %}
+    <p>Нельзя удалить тип: есть связанные материалы ({{ mats }}).</p>
+    <p>Расходы: {{ cons }}, Пополнения: {{ sups }}</p>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Понятно</button>
+    </div>
+  {% else %}
+    <p>Вы уверены, что хотите удалить тип? Расходы: {{ cons }}, Пополнения: {{ sups }}</p>
+    <form hx-post="{{ url_for('materials_types_delete', type_id=type_id) }}"
+          hx-target="#modal-body"
+          hx-swap="innerHTML">
+      <div class="modal-actions">
+        <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+        <button type="submit" class="btn-danger">Удалить</button>
+      </div>
+    </form>
+  {% endif %}
+</div>

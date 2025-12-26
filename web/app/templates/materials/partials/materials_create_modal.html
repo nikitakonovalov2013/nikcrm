@@ -1,0 +1,39 @@
+<div class="modal-header">Создать материал</div>
+<form hx-post="{{ url_for('materials_create') }}"
+      hx-target="#modal-body"
+      hx-swap="innerHTML"
+      class="form-grid">
+  <div>
+    <label>Название</label>
+    <input type="text" name="name" value="{{ name or '' }}" required />
+    {% if errors and errors.get('name') %}
+      <div class="field-error">{{ errors.get('name') }}</div>
+    {% endif %}
+  </div>
+  <div>
+    <label>Короткое</label>
+    <input type="text" name="short_name" value="{{ short_name or '' }}" />
+  </div>
+  <div>
+    <label>Тип</label>
+    <select name="material_type_id" required>
+      {% for t in types %}
+        <option value="{{ t.id }}" {% if material_type_id and (t.id|string) == (material_type_id|string) %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label>Ед.</label>
+    <input type="text" name="unit" value="{{ unit or 'кг' }}" />
+  </div>
+  <div class="checkbox-field">
+    <label class="checkbox-row">
+      <input type="checkbox" name="is_active" {% if is_active is not defined or is_active %}checked{% endif %} />
+      <span>Активен</span>
+    </label>
+  </div>
+  <div class="modal-actions" style="grid-column: 1 / -1;">
+    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <button type="submit" class="btn">Создать</button>
+  </div>
+</form>

@@ -19,17 +19,26 @@ def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
 
 
-@router.message(F.text.in_({"Сотрудники", "👥 Сотрудники"}))
-@router.message(Command("staff"))
-async def employees_link(message: Message):
+async def send_admin_panel_link(message: Message) -> None:
     if not is_admin(message.from_user.id):
         return
-    logging.getLogger(__name__).info("admin requested employees link", extra={"tg_id": message.from_user.id})
+    logging.getLogger(__name__).info("admin requested admin panel", extra={"tg_id": message.from_user.id})
     token = create_admin_jwt(message.from_user.id)
-    # Use public admin panel URL that already includes /crm prefix
     base = settings.admin_panel_url.rstrip("/")
     url = f"{base}/auth?token={token}"
     await message.answer(f"Ссылка на панель администратора:\n{url}")
+
+
+@router.message(F.text.in_({"🛠 Админ-панель"}))
+@router.message(Command("admin"))
+async def admin_panel_entry(message: Message):
+    await send_admin_panel_link(message)
+
+
+@router.message(F.text.in_({"Сотрудники", "👥 Сотрудники"}))
+@router.message(Command("staff"))
+async def employees_link(message: Message):
+    await send_admin_panel_link(message)
 
 
 @router.callback_query(F.data.startswith("approve:"))

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Типы материалов{% endblock %}
+{% block content %}
+<h2 class="subtitle">Остатки · Типы материалов</h2>
+<div class="actions">
+  <button class="btn" hx-get="{{ url_for('materials_types_modal_create') }}" hx-target="#modal-body" hx-swap="innerHTML">+ Создать</button>
+  <!-- modal will open automatically via base.html listener -->
+  <script>/* no-op: base.html opens modal on #modal-body swap */</script>
+</div>
+{% include "materials/partials/types_table.html" %}
+{% endblock %}

@@ -1,0 +1,15 @@
+<div class="modal-header">Редактировать тип</div>
+<form hx-post="{{ url_for('materials_types_update', type_id=t.id) }}"
+      hx-target="#modal-body"
+      hx-swap="innerHTML"
+      class="form-vertical">
+  <label>Название</label>
+  <input type="text" name="name" value="{{ name if name is defined else t.name }}" required />
+  {% if errors and errors.get('name') %}
+    <div class="field-error">{{ errors.get('name') }}</div>
+  {% endif %}
+  <div class="modal-actions">
+    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <button type="submit" class="btn">Сохранить</button>
+  </div>
+</form>
