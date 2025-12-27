@@ -1,9 +1,16 @@
 version: "3.9"
 
+x-tz-env: &tz-env
+  TZ: Europe/Moscow
+
+x-tz-localtime: &tz-localtime /etc/localtime:/etc/localtime:ro
+x-tz-timezone: &tz-timezone /etc/timezone:/etc/timezone:ro
+
 services:
   db:
     image: postgres:16-alpine
     environment:
+      <<: *tz-env
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -16,25 +23,36 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+      - *tz-localtime
+      - *tz-timezone
 
   migrator:
     build:
       context: .
       dockerfile: web/Dockerfile
     env_file: .env
+    environment:
+      <<: *tz-env
     depends_on:
       db:
         condition: service_healthy
     command: ["alembic", "upgrade", "head"]
     restart: "no"
+    volumes:
+      - *tz-localtime
+      - *tz-timezone
 
   bot:
     build:
       context: .
       dockerfile: bot/Dockerfile
     env_file: .env
+    environment:
+      <<: *tz-env
     volumes:
       - logs_bot:/var/log/app/bot
+      - *tz-localtime
+      - *tz-timezone
     depends_on:
       db:
         condition: service_healthy
@@ -47,10 +65,14 @@ services:
       context: .
       dockerfile: web/Dockerfile
     env_file: .env
+    environment:
+      <<: *tz-env
     ports:
       - "8001:8000"
     volumes:
       - logs_web:/var/log/app/web
+      - *tz-localtime
+      - *tz-timezone
     depends_on:
       db:
         condition: service_healthy

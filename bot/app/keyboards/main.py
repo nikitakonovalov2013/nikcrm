@@ -24,6 +24,10 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int) -> ReplyKeyboardMarku
             buttons.append(KeyboardButton(text="🛠 Админ-панель"))
         if is_admin or status == UserStatus.APPROVED:
             buttons.append(KeyboardButton(text="🛒 Закупки"))
+        if is_admin or status == UserStatus.APPROVED:
+            buttons.append(KeyboardButton(text="📦 Остатки"))
+        if is_admin or status == UserStatus.APPROVED:
+            buttons.append(KeyboardButton(text="📊 Отчёты и напоминания"))
     except Exception:
         pass
 

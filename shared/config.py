@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     admin_ids: List[int] = Field(default_factory=list, alias="ADMIN_IDS")
     PURCHASES_CHAT_ID: int = Field(default=0, alias="PURCHASES_CHAT_ID")
 
+    REPORTS_CHAT_ID: int = Field(default=0, alias="REPORTS_CHAT_ID")
+    TIMEZONE: str = Field(default="Europe/Moscow", alias="TIMEZONE")
+    REMINDERS_ENABLED: bool = Field(default=True, alias="REMINDERS_ENABLED")
+
     POSTGRES_HOST: str = "db"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "app"

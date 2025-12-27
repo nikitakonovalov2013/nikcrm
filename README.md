@@ -132,6 +132,15 @@ Actions logged:
 - Admin link invalid: ensure WEB_BASE_URL and WEB_JWT_SECRET in .env; token expires after JWT_TTL_MINUTES.
 - Database connection: containers depend_on healthcheck; check logs with `docker compose logs db`.
 
+# Timezone (Docker)
+Containers are expected to run in Europe/Moscow timezone so scheduled reminders/reports match local time.
+
+Check inside a running container:
+```
+docker exec -it <container_name> date
+```
+Expected output should reflect Moscow time (MSK, +0300) and correct date/time.
+
 # License
 MIT
 

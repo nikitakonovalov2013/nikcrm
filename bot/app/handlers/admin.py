@@ -3,10 +3,10 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from shared.db import get_async_session
-from shared.enums import UserStatus, AdminActionType
+from shared.enums import UserStatus, AdminActionType, Position
 from bot.app.repository.users import UserRepository
 from bot.app.repository.admin_actions import AdminActionRepository
-from bot.app.services.jwt_links import create_admin_jwt
+from bot.app.services.jwt_links import create_admin_jwt, create_manager_jwt
 from shared.config import settings
 import logging
 from aiogram import Bot
@@ -20,10 +20,22 @@ def is_admin(user_id: int) -> bool:
 
 
 async def send_admin_panel_link(message: Message) -> None:
-    if not is_admin(message.from_user.id):
+    async with get_async_session() as session:
+        urepo = UserRepository(session)
+        user = await urepo.get_by_tg_id(message.from_user.id)
+
+    can = False
+    token = None
+    if is_admin(message.from_user.id):
+        can = True
+        token = create_admin_jwt(message.from_user.id)
+    elif user and user.status == UserStatus.APPROVED and user.position == Position.MANAGER:
+        can = True
+        token = create_manager_jwt(message.from_user.id)
+
+    if not can or not token:
         return
     logging.getLogger(__name__).info("admin requested admin panel", extra={"tg_id": message.from_user.id})
-    token = create_admin_jwt(message.from_user.id)
     base = settings.admin_panel_url.rstrip("/")
     url = f"{base}/auth?token={token}"
     await message.answer(f"Ссылка на панель администратора:\n{url}")

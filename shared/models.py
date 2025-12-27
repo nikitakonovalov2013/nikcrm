@@ -2,7 +2,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
-from datetime import datetime, date
+from datetime import datetime, date, time
 from .db import Base
 from .enums import UserStatus, Schedule, Position, AdminActionType, PurchaseStatus
 
@@ -157,3 +157,17 @@ class Purchase(Base):
     )
 
     user: Mapped[User] = relationship()
+
+
+class ReminderSettings(Base):
+    __tablename__ = "reminder_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reminder_time: Mapped[time] = mapped_column(default=time(16, 0))
+    skip_weekends: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_to_admins: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_to_managers: Mapped[bool] = mapped_column(Boolean, default=True)
+    daily_report_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    daily_report_time: Mapped[time] = mapped_column(default=time(18, 0))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

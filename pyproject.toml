@@ -19,6 +19,7 @@ dependencies = [
   "asyncpg>=0.29",
   # bot
   "aiogram>=3.4",
+  "APScheduler>=3.10",
   # web
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",

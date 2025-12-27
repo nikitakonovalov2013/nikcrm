@@ -39,6 +39,8 @@ from shared.enums import AdminActionType
 
 from pathlib import Path
 
+from .dependencies import require_admin, require_staff, ensure_manager_allowed
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates" 
@@ -70,34 +72,15 @@ async def load_user(session: AsyncSession, user_id: int) -> User:
     return user
 
 
-def require_admin(request: Request):
-    token = request.cookies.get("admin_token")
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    try:
-        data = jwt.decode(token, settings.WEB_JWT_SECRET, algorithms=["HS256"])
-        if data.get("role") != "admin":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        sub = int(data.get("sub"))
-        if sub not in settings.admin_ids:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-        exp = data.get("exp")
-        if exp and datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(timezone.utc):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-        return sub
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-
-
 @app.get("/auth")
 async def auth(token: str, request: Request):
     # Validate token, set cookie, redirect to index
     try:
         data = jwt.decode(token, settings.WEB_JWT_SECRET, algorithms=["HS256"])
-        if data.get("role") != "admin":
+        if data.get("role") not in {"admin", "manager"}:
             raise HTTPException(status_code=403)
         sub = int(data.get("sub"))
-        if sub not in settings.admin_ids:
+        if data.get("role") == "admin" and sub not in settings.admin_ids:
             raise HTTPException(status_code=403)
     except JWTError:
         raise HTTPException(status_code=401)
@@ -108,14 +91,15 @@ async def auth(token: str, request: Request):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def index(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(User).order_by(User.created_at.desc()))
     users: List[User] = res.scalars().all()
     return templates.TemplateResponse("index.html", {"request": request, "users": users, "admin_id": admin_id})
 
 
 @app.get("/users/{user_id}", response_class=HTMLResponse)
-async def user_modal(user_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def user_modal(user_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     user = await load_user(session, user_id)
     old_status = user.status
     confirm_q = request.query_params.get("confirm")
@@ -288,14 +272,16 @@ async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None),
 # ========== Materials Admin ==========
 
 @app.get("/materials/types", response_class=HTMLResponse)
-async def materials_types_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res.scalars().all()
     return templates.TemplateResponse("materials/types.html", {"request": request, "types": types})
 
 
 @app.post("/materials/types/create")
-async def materials_types_create(request: Request, name: str = Form(...), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_create(request: Request, name: str = Form(...), admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     mt = MaterialType(name=name)
     session.add(mt)
     try:
@@ -317,7 +303,8 @@ async def materials_types_create(request: Request, name: str = Form(...), admin_
 
 
 @app.post("/materials/types/{type_id}/update")
-async def materials_types_update(type_id: int, request: Request, name: str = Form(...), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_update(type_id: int, request: Request, name: str = Form(...), admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialType).where(MaterialType.id == type_id))
     mt = res.scalar_one_or_none()
     if not mt:
@@ -342,7 +329,8 @@ async def materials_types_update(type_id: int, request: Request, name: str = For
 
 
 @app.post("/materials/types/{type_id}/delete")
-async def materials_types_delete(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_delete(type_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     # Cascade delete: consumptions/supplies for materials of this type, then materials, then the type
     from sqlalchemy import select as _select
     # collect material ids
@@ -364,12 +352,14 @@ async def materials_types_delete(type_id: int, request: Request, admin_id: int =
 
 # Modal endpoints for MaterialType CRUD
 @app.get("/materials/types/modal/create", response_class=HTMLResponse)
-async def materials_types_modal_create(request: Request, admin_id: int = Depends(require_admin)):
+async def materials_types_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     return templates.TemplateResponse("materials/partials/types_create_modal.html", {"request": request})
 
 
 @app.get("/materials/types/{type_id}/modal/edit", response_class=HTMLResponse)
-async def materials_types_modal_edit(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_modal_edit(type_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialType).where(MaterialType.id == type_id))
     mt = res.scalar_one_or_none()
     if not mt:
@@ -378,7 +368,8 @@ async def materials_types_modal_edit(type_id: int, request: Request, admin_id: i
 
 
 @app.get("/materials/types/{type_id}/modal/delete", response_class=HTMLResponse)
-async def materials_types_modal_delete(type_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_types_modal_delete(type_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     from sqlalchemy import func
     mats = (await session.execute(select(func.count()).select_from(Material).where(Material.material_type_id == type_id))).scalar_one()
     cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).join(Material, Material.id == MaterialConsumption.material_id).where(Material.material_type_id == type_id))).scalar_one()
@@ -387,7 +378,8 @@ async def materials_types_modal_delete(type_id: int, request: Request, admin_id:
 
 
 @app.get("/materials", response_class=HTMLResponse)
-async def materials_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
     materials = res.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
@@ -396,7 +388,8 @@ async def materials_list(request: Request, admin_id: int = Depends(require_admin
 
 
 @app.get("/stocks", response_class=HTMLResponse, name="stocks_dashboard")
-async def stocks_dashboard(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def stocks_dashboard(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     from datetime import date as _date, timedelta as _timedelta
 
     def _parse_date(val: str | None) -> _date | None:
@@ -471,14 +464,16 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_adm
 
 # Modal endpoints for Materials CRUD
 @app.get("/materials/modal/create", response_class=HTMLResponse)
-async def materials_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse("materials/partials/materials_create_modal.html", {"request": request, "types": types})
 
 
 @app.get("/materials/{material_id}/modal/edit", response_class=HTMLResponse)
-async def materials_modal_edit(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_modal_edit(material_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(Material).where(Material.id == material_id))
     m = res.scalar_one_or_none()
     if not m:
@@ -489,7 +484,8 @@ async def materials_modal_edit(material_id: int, request: Request, admin_id: int
 
 
 @app.get("/materials/{material_id}/modal/delete", response_class=HTMLResponse)
-async def materials_modal_delete(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_modal_delete(material_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     from sqlalchemy import func
     cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).where(MaterialConsumption.material_id == material_id))).scalar_one()
     sups = (await session.execute(select(func.count()).select_from(MaterialSupply).where(MaterialSupply.material_id == material_id))).scalar_one()
@@ -504,9 +500,10 @@ async def materials_create(
     unit: str = Form("кг"),
     material_type_id: int = Form(...),
     is_active: bool = Form(True),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
+    await ensure_manager_allowed(request, admin_id, session)
     m = Material(
         name=name,
         short_name=short_name or None,
@@ -555,9 +552,10 @@ async def materials_update(
     unit: str = Form("кг"),
     material_type_id: int = Form(...),
     is_active: bool = Form(True),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(Material).where(Material.id == material_id))
     m = res.scalar_one_or_none()
     if not m:
@@ -604,7 +602,8 @@ async def materials_update(
 
 
 @app.post("/materials/{material_id}/delete")
-async def materials_delete(material_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def materials_delete(material_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     # Cascade delete related records first
     await session.execute(delete(MaterialConsumption).where(MaterialConsumption.material_id == material_id))
     await session.execute(delete(MaterialSupply).where(MaterialSupply.material_id == material_id))
@@ -621,7 +620,8 @@ async def materials_delete(material_id: int, request: Request, admin_id: int = D
 
 
 @app.get("/materials/consumptions", response_class=HTMLResponse)
-async def consumptions_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def consumptions_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(
         select(MaterialConsumption)
         .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
@@ -636,7 +636,8 @@ async def consumptions_list(request: Request, admin_id: int = Depends(require_ad
 
 
 @app.get("/materials/consumptions/modal/create", response_class=HTMLResponse)
-async def consumptions_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def consumptions_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
@@ -647,12 +648,14 @@ async def consumptions_modal_create(request: Request, admin_id: int = Depends(re
 
 
 @app.get("/materials/consumptions/{item_id}/modal/delete", response_class=HTMLResponse)
-async def consumptions_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin)):
+async def consumptions_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     return templates.TemplateResponse("materials/partials/consumptions_delete_modal.html", {"request": request, "item_id": item_id})
 
 
 @app.get("/materials/consumptions/{item_id}/modal/edit", response_class=HTMLResponse)
-async def consumptions_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def consumptions_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialConsumption).where(MaterialConsumption.id == item_id))
     rec = res.scalar_one_or_none()
     if not rec:
@@ -671,9 +674,10 @@ async def consumptions_create(
     employee_id: int = Form(...),
     amount: Decimal = Form(...),
     date: str = Form(...),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
+    await ensure_manager_allowed(request, admin_id, session)
     from datetime import datetime as dt
     d = dt.strptime(date, "%Y-%m-%d").date()
     # validate amount > 0
@@ -701,7 +705,8 @@ async def consumptions_create(
 
 
 @app.post("/materials/consumptions/{item_id}/delete")
-async def consumptions_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def consumptions_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     await session.execute(delete(MaterialConsumption).where(MaterialConsumption.id == item_id))
     res = await session.execute(
         select(MaterialConsumption)
@@ -724,7 +729,7 @@ async def consumptions_update(
     employee_id: int = Form(...),
     amount: Decimal = Form(...),
     date: str = Form(...),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
     from datetime import datetime as dt
@@ -758,7 +763,8 @@ async def consumptions_update(
 
 
 @app.get("/materials/supplies", response_class=HTMLResponse)
-async def supplies_list(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def supplies_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(
         select(MaterialSupply)
         .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
@@ -773,7 +779,8 @@ async def supplies_list(request: Request, admin_id: int = Depends(require_admin)
 
 
 @app.get("/materials/supplies/modal/create", response_class=HTMLResponse)
-async def supplies_modal_create(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def supplies_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
@@ -784,12 +791,14 @@ async def supplies_modal_create(request: Request, admin_id: int = Depends(requir
 
 
 @app.get("/materials/supplies/{item_id}/modal/delete", response_class=HTMLResponse)
-async def supplies_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin)):
+async def supplies_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     return templates.TemplateResponse("materials/partials/supplies_delete_modal.html", {"request": request, "item_id": item_id})
 
 
 @app.get("/materials/supplies/{item_id}/modal/edit", response_class=HTMLResponse)
-async def supplies_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def supplies_modal_edit(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
     rec = res.scalar_one_or_none()
     if not rec:
@@ -808,9 +817,10 @@ async def supplies_create(
     employee_id: int | None = Form(None),
     amount: Decimal = Form(...),
     date: str = Form(...),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
+    await ensure_manager_allowed(request, admin_id, session)
     from datetime import datetime as dt
     d = dt.strptime(date, "%Y-%m-%d").date()
     # validate amount > 0
@@ -837,7 +847,8 @@ async def supplies_create(
 
 
 @app.post("/materials/supplies/{item_id}/delete")
-async def supplies_delete(item_id: int, request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+async def supplies_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
     await session.execute(delete(MaterialSupply).where(MaterialSupply.id == item_id))
     res = await session.execute(
         select(MaterialSupply)
@@ -860,9 +871,10 @@ async def supplies_update(
     employee_id: int | None = Form(None),
     amount: Decimal = Form(...),
     date: str = Form(...),
-    admin_id: int = Depends(require_admin),
+    admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
+    await ensure_manager_allowed(request, admin_id, session)
     from datetime import datetime as dt
     d = dt.strptime(date, "%Y-%m-%d").date()
     res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
