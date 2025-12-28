@@ -142,6 +142,7 @@ class Purchase(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(String(2000))
+    photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[PurchaseStatus] = mapped_column(
         PG_ENUM(
             PurchaseStatus,

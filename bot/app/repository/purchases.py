@@ -8,8 +8,8 @@ class PurchaseRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, user_id: int, text: str) -> Purchase:
-        p = Purchase(user_id=user_id, text=text)
+    async def create(self, user_id: int, text: str, photo_file_id: str | None = None) -> Purchase:
+        p = Purchase(user_id=user_id, text=text, photo_file_id=photo_file_id)
         self.session.add(p)
         await self.session.flush()
         await self.session.refresh(p)
