@@ -1,6 +1,35 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Union, Any
+from zoneinfo import ZoneInfo
+
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def to_moscow(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(MOSCOW_TZ)
+    except Exception:
+        return dt
+
+
+def format_moscow(dt: Optional[datetime], fmt: str = "%d.%m.%Y %H:%M") -> str:
+    d = to_moscow(dt)
+    if d is None:
+        return ""
+    try:
+        return d.strftime(fmt)
+    except Exception:
+        return ""
 
 def format_date(d: Optional[Union[date, datetime]]) -> str:
     """Return date/datetime formatted as DD.MM.YYYY or empty string if None.

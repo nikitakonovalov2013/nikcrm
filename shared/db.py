@@ -4,6 +4,7 @@ from sqlalchemy import MetaData
 from contextlib import asynccontextmanager
 from .config import settings
 import logging
+from collections.abc import Awaitable, Callable
 
 
 convention = {
@@ -30,6 +31,14 @@ AsyncSessionLocal = async_sessionmaker[
 ](bind=engine, expire_on_commit=False, autoflush=False, autocommit=False)
 
 
+def add_after_commit_callback(session: AsyncSession, cb: Callable[[], Awaitable[None]]) -> None:
+    callbacks = session.info.get("after_commit_callbacks")
+    if callbacks is None:
+        callbacks = []
+        session.info["after_commit_callbacks"] = callbacks
+    callbacks.append(cb)
+
+
 @asynccontextmanager
 async def get_async_session() -> AsyncSession:
     session = AsyncSessionLocal()
@@ -38,6 +47,13 @@ async def get_async_session() -> AsyncSession:
         yield session
         await session.commit()
         logging.getLogger(__name__).debug("db session commit")
+
+        callbacks = session.info.pop("after_commit_callbacks", None) or []
+        for cb in callbacks:
+            try:
+                await cb()
+            except Exception:
+                logging.getLogger(__name__).exception("after_commit callback failed")
     except Exception:
         logging.getLogger(__name__).exception("db session rollback due to error")
         await session.rollback()

@@ -10,7 +10,7 @@ from datetime import datetime
 from shared.config import settings
 from shared.db import get_async_session
 from shared.enums import UserStatus, PurchaseStatus
-from shared.utils import format_date
+from shared.utils import format_date, format_moscow, utc_now
 from bot.app.states.purchases import PurchasesState
 from bot.app.keyboards.inline import purchases_cancel_kb, purchases_admin_kb
 from bot.app.keyboards.main import main_menu_kb
@@ -26,7 +26,7 @@ def is_admin(user_id: int) -> bool:
 
 def _purchase_admin_text(user, purchase) -> str:
     created_dt = purchase.created_at
-    created_str = created_dt.strftime("%d.%m.%Y %H:%M") if isinstance(created_dt, datetime) else ""
+    created_str = format_moscow(created_dt) if isinstance(created_dt, datetime) else ""
     fio = f"{user.first_name or ''} {user.last_name or ''}".strip()
     return (
         "🆕 <b>Новая заявка на закупку</b>\n\n"
@@ -304,7 +304,7 @@ async def purchases_admin_actions(cb: CallbackQuery):
             extra={"admin_tg_id": cb.from_user.id, "purchase_id": purchase.id, "status": purchase.status.value},
         )
 
-    processed_at_str = datetime.utcnow().strftime("%d.%m.%Y %H:%M")
+    processed_at_str = format_moscow(utc_now())
 
     # update message in purchases chat (do not rely on current caption/text)
     try:

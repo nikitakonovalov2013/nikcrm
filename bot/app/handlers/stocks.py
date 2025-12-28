@@ -10,10 +10,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
 from shared.config import settings
-from shared.db import get_async_session
+from shared.db import get_async_session, add_after_commit_callback
 from shared.enums import UserStatus, AdminActionType, Position
 from shared.models import MaterialConsumption, MaterialSupply
 from shared.services.material_stock import update_stock_on_new_consumption, update_stock_on_new_supply
+from shared.services.stock_events_notify import notify_reports_chat_about_stock_event, StockEventActor
 
 from bot.app.keyboards.main import main_menu_kb
 from bot.app.keyboards.stocks import (
@@ -434,6 +435,26 @@ async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
             session.add(rec)
             await session.flush()
             await update_stock_on_new_consumption(session, rec)
+
+            actor_name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "—"
+            actor = StockEventActor(name=actor_name or "—", tg_id=cb.from_user.id)
+            material_title = m.name
+            if getattr(m, "short_name", None):
+                material_title = f"{m.name} ({m.short_name})"
+            stock_after = Decimal(m.current_stock)
+            happened_at = getattr(rec, "created_at", None)
+            add_after_commit_callback(
+                session,
+                lambda: notify_reports_chat_about_stock_event(
+                    kind="consumption",
+                    material_name=material_title,
+                    amount=Decimal(rec.amount),
+                    unit=m.unit,
+                    actor=actor,
+                    happened_at=happened_at,
+                    stock_after=stock_after,
+                ),
+            )
             await arepo.log(
                 admin_tg_id=cb.from_user.id,
                 user_id=int(user_id),
@@ -451,6 +472,26 @@ async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
             session.add(rec)
             await session.flush()
             await update_stock_on_new_supply(session, rec)
+
+            actor_name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "—"
+            actor = StockEventActor(name=actor_name or "—", tg_id=cb.from_user.id)
+            material_title = m.name
+            if getattr(m, "short_name", None):
+                material_title = f"{m.name} ({m.short_name})"
+            stock_after = Decimal(m.current_stock)
+            happened_at = getattr(rec, "created_at", None)
+            add_after_commit_callback(
+                session,
+                lambda: notify_reports_chat_about_stock_event(
+                    kind="supply",
+                    material_name=material_title,
+                    amount=Decimal(rec.amount),
+                    unit=m.unit,
+                    actor=actor,
+                    happened_at=happened_at,
+                    stock_after=stock_after,
+                ),
+            )
             await arepo.log(
                 admin_tg_id=cb.from_user.id,
                 user_id=int(user_id),

@@ -48,7 +48,12 @@
               <span class="history-material">{{ h.material_name }}</span>
               <span class="history-amount">{{ h.amount }}</span>
             </div>
-            <div class="muted">{{ h.actor }}</div>
+            <div class="muted">
+              {{ h.actor_name if h.actor_name else '—' }}
+              {% if h.actor_tg_id %}
+                (TG: #{{ h.actor_tg_id }})
+              {% endif %}
+            </div>
           </div>
         {% endfor %}
         {% if history|length == 0 %}

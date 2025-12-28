@@ -24,6 +24,9 @@ from shared.services.material_stock import (
     update_stock_on_new_supply,
 )
 
+from shared.db import add_after_commit_callback
+from shared.services.stock_events_notify import notify_reports_chat_about_stock_event, StockEventActor
+
 from .services.stocks_dashboard import (
     build_chart_rows,
     build_history_rows,
@@ -40,6 +43,8 @@ from shared.enums import AdminActionType
 from pathlib import Path
 
 from .dependencies import require_admin, require_staff, ensure_manager_allowed
+
+from shared.utils import format_number
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -407,7 +412,7 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_sta
         date_from, date_to = date_to, date_from
 
     chart_rows = await build_chart_rows(session, date_from=date_from, date_to=date_to)
-    history_rows = await build_history_rows(session, actor_label=f"Админ #{admin_id}")
+    history_rows = await build_history_rows(session)
     stock_rows = await build_stock_rows(session)
     pie_rows = await build_pie_data(session)
 
@@ -428,9 +433,10 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_sta
     history = [
         {
             "ts_str": format_dt_ru(r.ts),
-            "actor": r.actor,
+            "actor_name": r.actor_name,
+            "actor_tg_id": r.actor_tg_id,
             "kind": r.kind,
-            "amount": str(r.amount),
+            "amount": format_number(r.amount, max_decimals=3, decimal_sep=".", thousands_sep=" "),
             "material_name": r.material_name,
         }
         for r in history_rows
@@ -690,6 +696,28 @@ async def consumptions_create(
     session.add(rec)
     await session.flush()
     await update_stock_on_new_consumption(session, rec)
+
+    # Notify reports chat after successful commit (no duplicates)
+    res_m = await session.execute(select(Material).where(Material.id == material_id))
+    mat = res_m.scalar_one_or_none()
+    material_title = mat.name if mat else "—"
+    if mat and getattr(mat, "short_name", None):
+        material_title = f"{mat.name} ({mat.short_name})"
+    actor = StockEventActor(name=f"Staff {admin_id}", tg_id=admin_id)
+    stock_after = Decimal(mat.current_stock) if mat else None
+    happened_at = getattr(rec, "created_at", None)
+    add_after_commit_callback(
+        session,
+        lambda: notify_reports_chat_about_stock_event(
+            kind="consumption",
+            material_name=material_title,
+            amount=Decimal(rec.amount),
+            unit=(mat.unit if mat else ""),
+            actor=actor,
+            happened_at=happened_at,
+            stock_after=stock_after,
+        ),
+    )
     # return updated table partial
     res = await session.execute(
         select(MaterialConsumption)
@@ -833,6 +861,28 @@ async def supplies_create(
     session.add(rec)
     await session.flush()
     await update_stock_on_new_supply(session, rec)
+
+    # Notify reports chat after successful commit (no duplicates)
+    res_m = await session.execute(select(Material).where(Material.id == material_id))
+    mat = res_m.scalar_one_or_none()
+    material_title = mat.name if mat else "—"
+    if mat and getattr(mat, "short_name", None):
+        material_title = f"{mat.name} ({mat.short_name})"
+    actor = StockEventActor(name=f"Staff {admin_id}", tg_id=admin_id)
+    stock_after = Decimal(mat.current_stock) if mat else None
+    happened_at = getattr(rec, "created_at", None)
+    add_after_commit_callback(
+        session,
+        lambda: notify_reports_chat_about_stock_event(
+            kind="supply",
+            material_name=material_title,
+            amount=Decimal(rec.amount),
+            unit=(mat.unit if mat else ""),
+            actor=actor,
+            happened_at=happened_at,
+            stock_after=stock_after,
+        ),
+    )
     res = await session.execute(
         select(MaterialSupply)
         .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))

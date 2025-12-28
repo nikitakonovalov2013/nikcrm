@@ -9,7 +9,8 @@ from typing import Iterable
 from sqlalchemy import Select, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import Material, MaterialConsumption, MaterialSupply
+from shared.models import Material, MaterialConsumption, MaterialSupply, User
+from shared.utils import format_moscow
 
 
 FORECAST_DAYS_WINDOW = 4
@@ -27,7 +28,8 @@ class ChartRow:
 @dataclass(frozen=True)
 class HistoryRow:
     ts: datetime
-    actor: str
+    actor_name: str
+    actor_tg_id: int | None
     kind: str  # 'in' | 'out'
     amount: Decimal
     material_name: str
@@ -43,7 +45,7 @@ class StockRow:
 
 
 def format_dt_ru(dt: datetime) -> str:
-    return dt.strftime("%d.%m.%Y %H:%M")
+    return format_moscow(dt)
 
 
 def _coalesce_decimal(expr) -> Select:
@@ -117,19 +119,24 @@ async def build_chart_rows(
 
 async def build_history_rows(
     session: AsyncSession,
-    actor_label: str,
     limit: int = HISTORY_LIMIT_DEFAULT,
 ) -> list[HistoryRow]:
     """Last N events from supplies/consumptions sorted by created_at desc."""
 
+    # Actor is stored on the records as employee_id.
+    # For supplies it can be NULL; for consumptions it's required.
     s = (
         select(
             MaterialSupply.created_at.label("ts"),
             literal("in").label("kind"),
             MaterialSupply.amount.label("amount"),
             Material.name.label("material_name"),
+            User.first_name.label("first_name"),
+            User.last_name.label("last_name"),
+            User.tg_id.label("tg_id"),
         )
         .join(Material, Material.id == MaterialSupply.material_id)
+        .outerjoin(User, User.id == MaterialSupply.employee_id)
     )
 
     c = (
@@ -138,8 +145,12 @@ async def build_history_rows(
             literal("out").label("kind"),
             MaterialConsumption.amount.label("amount"),
             Material.name.label("material_name"),
+            User.first_name.label("first_name"),
+            User.last_name.label("last_name"),
+            User.tg_id.label("tg_id"),
         )
         .join(Material, Material.id == MaterialConsumption.material_id)
+        .outerjoin(User, User.id == MaterialConsumption.employee_id)
     )
 
     union_q = s.union_all(c).subquery("events")
@@ -150,6 +161,9 @@ async def build_history_rows(
             union_q.c.kind,
             union_q.c.amount,
             union_q.c.material_name,
+            union_q.c.first_name,
+            union_q.c.last_name,
+            union_q.c.tg_id,
         )
         .order_by(union_q.c.ts.desc())
         .limit(limit)
@@ -157,11 +171,14 @@ async def build_history_rows(
 
     res = (await session.execute(q)).all()
     out: list[HistoryRow] = []
-    for ts, kind, amount, material_name in res:
+    for ts, kind, amount, material_name, first_name, last_name, tg_id in res:
+        fio = f"{first_name or ''} {last_name or ''}".strip()
+        actor_name = fio if fio else "—"
         out.append(
             HistoryRow(
                 ts=ts,
-                actor=actor_label,
+                actor_name=actor_name if actor_name else "—",
+                actor_tg_id=int(tg_id) if tg_id is not None else None,
                 kind=str(kind),
                 amount=Decimal(amount),
                 material_name=str(material_name),

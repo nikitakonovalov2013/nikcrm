@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from datetime import datetime, date, time
 from .db import Base
 from .enums import UserStatus, Schedule, Position, AdminActionType, PurchaseStatus
+from .utils import utc_now
 
 
 class User(Base):
@@ -45,9 +46,9 @@ class User(Base):
         ),
         default=UserStatus.PENDING,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
     actions: Mapped[list["AdminAction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -69,7 +70,7 @@ class AdminAction(Base):
         )
     )
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     user: Mapped[User] = relationship(back_populates="actions")
 
@@ -79,7 +80,7 @@ class MaterialType(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class Material(Base):
@@ -92,8 +93,8 @@ class Material(Base):
     unit: Mapped[str] = mapped_column(String(10), default="кг")
     current_stock: Mapped[Numeric] = mapped_column(Numeric(16, 3), default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     material_type: Mapped[MaterialType] = relationship()
 
@@ -106,7 +107,7 @@ class MaterialConsumption(Base):
     employee_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     amount: Mapped[Numeric] = mapped_column(Numeric(16, 3))
     date: Mapped[date] = mapped_column(Date)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     material: Mapped[Material] = relationship()
     employee: Mapped[User] = relationship()
@@ -125,7 +126,7 @@ class MaterialSupply(Base):
     employee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     amount: Mapped[Numeric] = mapped_column(Numeric(16, 3))
     date: Mapped[date] = mapped_column(Date)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     material: Mapped[Material] = relationship()
     employee: Mapped[User | None] = relationship()
@@ -152,9 +153,9 @@ class Purchase(Base):
         ),
         default=PurchaseStatus.PENDING,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
     user: Mapped[User] = relationship()
@@ -171,4 +172,4 @@ class ReminderSettings(Base):
     send_to_managers: Mapped[bool] = mapped_column(Boolean, default=True)
     daily_report_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     daily_report_time: Mapped[time] = mapped_column(default=time(18, 0))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
