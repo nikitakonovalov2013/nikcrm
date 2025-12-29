@@ -42,14 +42,10 @@ async def main() -> None:
 
     # Register bot commands for private and group chats
     try:
+        # Keep global commands minimal; role-specific commands are synced per-user (BotCommandScopeChat).
         commands = [
             BotCommand(command="start", description="Запуск бота"),
-            BotCommand(command="register", description="Зарегистрироваться"),
             BotCommand(command="profile", description="Профиль"),
-            BotCommand(command="purchases", description="Закупки"),
-            BotCommand(command="stocks", description="Остатки"),
-            BotCommand(command="reports", description="Отчёты и напоминания"),
-            BotCommand(command="admin", description="Админ-панель"),
         ]
         await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllPrivateChats())
         await bot.set_my_commands(commands=commands, scope=BotCommandScopeAllGroupChats())

@@ -27,7 +27,7 @@ from bot.app.repository.admin_actions import AdminActionRepository
 from bot.app.repository.materials import MaterialsRepository
 from bot.app.repository.users import UserRepository
 from bot.app.states.stocks import StocksState
-from shared.permissions import can_manage_stock_ops, can_view_stocks
+from shared.permissions import can_manage_stock_op, can_view_stocks, role_flags
 
 router = Router()
 
@@ -55,7 +55,7 @@ async def _load_user_or_deny(message: Message) -> tuple[bool, UserStatus | None]
     if user.status == UserStatus.BLACKLISTED:
         await message.answer(
             "🚫 Доступ ограничен.",
-            reply_markup=main_menu_kb(user.status, message.from_user.id),
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
         )
         return False, user.status
     return True, user.status
@@ -72,11 +72,6 @@ async def _get_user_for_ops(tg_id: int):
     async with get_async_session() as session:
         urepo = UserRepository(session)
         return await urepo.get_by_tg_id(tg_id)
-
-
-async def _can_view_stocks(tg_id: int, status: UserStatus | None) -> bool:
-    # Deprecated: use can_view_stocks with resolved user position.
-    return can_view_stocks(tg_id=tg_id, admin_ids=settings.admin_ids, status=status, position=None)
 
 
 async def _render_stocks_text(limit: int | None = 8) -> str:
@@ -102,7 +97,7 @@ async def _render_stocks_text(limit: int | None = 8) -> str:
 async def _render_stocks_menu(tg_id: int, *, expanded: bool) -> tuple[str, object]:
     user = await _get_user_for_ops(tg_id)
     status = user.status if user else None
-    can_manage = can_manage_stock_ops(
+    r = role_flags(
         tg_id=tg_id,
         admin_ids=settings.admin_ids,
         status=status,
@@ -127,8 +122,25 @@ async def _render_stocks_menu(tg_id: int, *, expanded: bool) -> tuple[str, objec
 
     if len(text) > MAX_TG_MESSAGE_LEN:
         text = text[: MAX_TG_MESSAGE_LEN - 120] + "\n\n… список слишком длинный для Telegram."
-    can_toggle = len(materials) > 8
-    return text, stocks_menu_kb(can_manage, expanded=expanded, can_toggle=can_toggle)
+    can_toggle = len(materials) > 8 and (r.is_admin or r.is_manager)
+    allow_out = bool(r.is_admin or r.is_manager or r.is_master)
+    allow_in = bool(r.is_admin or r.is_manager)
+    return text, stocks_menu_kb(allow_out=allow_out, allow_in=allow_in, expanded=expanded and can_toggle, can_toggle=can_toggle)
+
+
+async def _deny_and_back_to_menu(cb: CallbackQuery, state: FSMContext, *, note: str = "⛔ Нет доступа") -> None:
+    data = await state.get_data()
+    menu_chat_id = data.get("menu_chat_id") or cb.message.chat.id
+    menu_message_id = data.get("menu_message_id") or cb.message.message_id
+    await state.clear()
+    text, kb = await _render_stocks_menu(cb.from_user.id, expanded=False)
+    await _edit_message_safe(
+        cb,
+        chat_id=int(menu_chat_id),
+        message_id=int(menu_message_id),
+        text=f"{note}.\n\n{text}",
+        reply_markup=kb,
+    )
 
 
 async def _edit_message_safe(cb: CallbackQuery, *, chat_id: int, message_id: int, text: str, reply_markup) -> None:
@@ -165,7 +177,7 @@ async def stocks_entry(message: Message, state: FSMContext):
     ):
         await message.answer(
             "⏳ Раздел \"Остатки\" доступен только одобренным пользователям.",
-            reply_markup=main_menu_kb(status, message.from_user.id),
+            reply_markup=main_menu_kb(status, message.from_user.id, user.position if user else None),
         )
         return
 
@@ -178,10 +190,12 @@ async def stocks_entry(message: Message, state: FSMContext):
 @router.callback_query(F.data == "stocks:back")
 async def stocks_back(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    status = await _get_user_status(cb.from_user.id)
+    user = await _get_user_for_ops(cb.from_user.id)
+    status = user.status if user else None
+    position = user.position if user else None
     await cb.message.answer(
         "Выберите действие ниже.",
-        reply_markup=main_menu_kb(status, cb.from_user.id),
+        reply_markup=main_menu_kb(status, cb.from_user.id, position),
     )
     await cb.answer()
 
@@ -189,6 +203,16 @@ async def stocks_back(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.in_({"stocks:all", "stocks:compact"}))
 async def stocks_toggle_all(cb: CallbackQuery, state: FSMContext):
     expanded = cb.data == "stocks:all"
+    user = await _get_user_for_ops(cb.from_user.id)
+    if not user or user.status == UserStatus.BLACKLISTED:
+        await cb.answer("Действие недоступно", show_alert=True)
+        await state.clear()
+        return
+    r = role_flags(tg_id=cb.from_user.id, admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if not (r.is_admin or r.is_manager):
+        await _deny_and_back_to_menu(cb, state)
+        await cb.answer()
+        return
     text, kb = await _render_stocks_menu(cb.from_user.id, expanded=expanded)
     await state.update_data(menu_chat_id=cb.message.chat.id, menu_message_id=cb.message.message_id, menu_expanded=expanded)
     try:
@@ -202,14 +226,6 @@ async def stocks_toggle_all(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("stocks:op:"))
 async def stocks_choose_op(cb: CallbackQuery, state: FSMContext):
     user = await _get_user_for_ops(cb.from_user.id)
-    if not can_manage_stock_ops(
-        tg_id=cb.from_user.id,
-        admin_ids=settings.admin_ids,
-        status=user.status if user else None,
-        position=user.position if user else None,
-    ):
-        await cb.answer("Недостаточно прав", show_alert=True)
-        return
     if not user or user.status == UserStatus.BLACKLISTED:
         await cb.answer("Действие недоступно", show_alert=True)
         await state.clear()
@@ -218,6 +234,17 @@ async def stocks_choose_op(cb: CallbackQuery, state: FSMContext):
     op = cb.data.split(":", 2)[2]
     if op not in {"in", "out"}:
         await cb.answer("Некорректная операция", show_alert=True)
+        return
+
+    if not can_manage_stock_op(
+        tg_id=cb.from_user.id,
+        admin_ids=settings.admin_ids,
+        status=user.status,
+        position=user.position,
+        op=op,
+    ):
+        await _deny_and_back_to_menu(cb, state)
+        await cb.answer()
         return
 
     async with get_async_session() as session:
@@ -356,13 +383,8 @@ async def stocks_cancel(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(StocksState.confirming, F.data == "stocks:confirm")
 async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
     user = await _get_user_for_ops(cb.from_user.id)
-    if not can_manage_stock_ops(
-        tg_id=cb.from_user.id,
-        admin_ids=settings.admin_ids,
-        status=user.status if user else None,
-        position=user.position if user else None,
-    ):
-        await cb.answer("Недостаточно прав", show_alert=True)
+    if not user or user.status == UserStatus.BLACKLISTED:
+        await cb.answer("Действие недоступно", show_alert=True)
         await state.clear()
         return
 
@@ -378,6 +400,17 @@ async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
     if op not in {"in", "out"}:
         await cb.answer("Некорректная операция", show_alert=True)
         await state.clear()
+        return
+
+    if not can_manage_stock_op(
+        tg_id=cb.from_user.id,
+        admin_ids=settings.admin_ids,
+        status=user.status,
+        position=user.position,
+        op=str(op),
+    ):
+        await _deny_and_back_to_menu(cb, state)
+        await cb.answer()
         return
 
     try:

@@ -134,7 +134,7 @@ async def purchases_entry(message: Message, state: FSMContext):
     if not (user.status == UserStatus.APPROVED or is_admin(message.from_user.id)):
         await message.answer(
             "⏳ Доступ к разделу \"Закупки\" доступен только одобренным пользователям.",
-            reply_markup=main_menu_kb(user.status, message.from_user.id),
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
         )
         return
 

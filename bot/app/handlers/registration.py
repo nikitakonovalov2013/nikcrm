@@ -12,8 +12,9 @@ from bot.app.states.registration import RegistrationState
 from bot.app.keyboards.main import main_menu_kb
 from bot.app.keyboards.inline import schedule_kb, position_kb
 from bot.app.utils.parsing import parse_birth_date
-from bot.app.repository.users import UserRepository
+from bot.app.repository.users import UserRepository, UserAlreadyRegisteredError
 from shared.utils import format_date
+from bot.app.utils.bot_commands import sync_commands_for_chat
 
 router = Router()
 
@@ -34,8 +35,19 @@ async def cmd_start(message: Message, state: FSMContext):
 
     await message.answer(
         "👋 Добро пожаловать в бот!\n\nВыберите действие ниже.",
-        reply_markup=main_menu_kb(user.status if user else None, message.from_user.id),
+        reply_markup=main_menu_kb(user.status if user else None, message.from_user.id, user.position if user else None),
     )
+
+    try:
+        await sync_commands_for_chat(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            is_admin=message.from_user.id in settings.admin_ids,
+            status=user.status if user else None,
+            position=user.position if user else None,
+        )
+    except Exception:
+        pass
 
 
 @router.message(F.text.in_({"Зарегистрироваться", "📝 Зарегистрироваться"}))
@@ -140,29 +152,68 @@ async def reg_position_cb(cb: CallbackQuery, state: FSMContext):
             await state.clear()
             await cb.answer()
             return
-        user = await repo.create_pending(
-            tg_id=cb.from_user.id,
-            first_name=data["first_name"],
-            last_name=data["last_name"],
-            birth_date=data["birth_date"],
-            rate_k=data["rate_k"],
-            schedule=data["schedule"],
-            position=data["position"],
-        )
+        try:
+            user = await repo.create_pending(
+                tg_id=cb.from_user.id,
+                first_name=data["first_name"],
+                last_name=data["last_name"],
+                birth_date=data["birth_date"],
+                rate_k=data["rate_k"],
+                schedule=data["schedule"],
+                position=data["position"],
+            )
+        except UserAlreadyRegisteredError as e:
+            u = e.user
+            await state.clear()
+
+            if u.status == UserStatus.BLACKLISTED:
+                await cb.message.answer(
+                    "🚫 Доступ ограничен. Вы не можете использовать бота.\n\nЕсли вы считаете, что это ошибка — свяжитесь с администратором.",
+                    reply_markup=main_menu_kb(None, cb.from_user.id),
+                )
+                await cb.answer()
+                return
+
+            if u.status == UserStatus.APPROVED:
+                await cb.message.answer(
+                    "ℹ️ Вы уже зарегистрированы. Откройте \"Профиль\" в меню ниже.",
+                    reply_markup=main_menu_kb(u.status, cb.from_user.id, u.position),
+                )
+                await cb.answer()
+                return
+
+            await cb.message.answer(
+                "⏳ Ваша заявка уже отправлена и находится на рассмотрении.\n\nОткройте \"Профиль\" в меню ниже.",
+                reply_markup=main_menu_kb(u.status, cb.from_user.id, u.position),
+            )
+            await cb.answer()
+            return
 
     await state.clear()
+    try:
+        from shared.config import settings
+
+        await sync_commands_for_chat(
+            bot=cb.bot,
+            chat_id=cb.message.chat.id,
+            is_admin=cb.from_user.id in settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+    except Exception:
+        pass
     try:
         await cb.message.edit_text("✅ Заявка отправлена на рассмотрение администратору.\n\nМы уведомим вас, как только статус изменится.")
     except Exception:
         await cb.message.answer(
             "✅ Заявка отправлена на рассмотрение администратору.\n\nМы уведомим вас, как только статус изменится.",
-            reply_markup=main_menu_kb(user.status, cb.from_user.id),
+            reply_markup=main_menu_kb(user.status, cb.from_user.id, user.position),
         )
     else:
         # If edit_text succeeded (no keyboard possible), send a follow-up message to update the keyboard
         await cb.message.answer(
             "ℹ️ Меню обновлено в соответствии со статусом заявки.",
-            reply_markup=main_menu_kb(user.status, cb.from_user.id),
+            reply_markup=main_menu_kb(user.status, cb.from_user.id, user.position),
         )
     logging.getLogger(__name__).info("registration saved and sent to admins", extra={"tg_id": cb.from_user.id, "user_id": user.id})
     await cb.answer()
@@ -218,7 +269,7 @@ async def profile(message: Message):
     if user.status != UserStatus.APPROVED:
         await message.answer(
             "⏳ Ваша заявка находится на рассмотрении.\n\nМы сообщим вам, как только она будет обработана.",
-            reply_markup=main_menu_kb(user.status, message.from_user.id),
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
         )
         return
     bd = format_date(user.birth_date)
@@ -240,4 +291,17 @@ async def profile(message: Message):
         f"👔 Должность: {user.position}\n"
         f"🟢 Статус: {status_ru}"
     )
-    await message.answer(text, reply_markup=main_menu_kb(user.status, message.from_user.id))
+    await message.answer(text, reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
+
+    try:
+        from shared.config import settings
+
+        await sync_commands_for_chat(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            is_admin=message.from_user.id in settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+    except Exception:
+        pass

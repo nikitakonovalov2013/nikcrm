@@ -65,6 +65,8 @@ async def ensure_manager_allowed(request: Request, staff_tg_id: int, session: As
     if data.get("role") != "manager":
         return
 
-    u = (await session.execute(select(User).where(User.tg_id == int(staff_tg_id)))).scalar_one_or_none()
+    u = (
+        (await session.execute(select(User).where(User.tg_id == int(staff_tg_id)).where(User.is_deleted == False)))
+    ).scalar_one_or_none()
     if not u or u.status != UserStatus.APPROVED or u.position != Position.MANAGER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)

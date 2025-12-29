@@ -6,15 +6,17 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 PAGE_SIZE = 8
 
 
-def stocks_menu_kb(can_manage: bool, expanded: bool = False, can_toggle: bool = True) -> InlineKeyboardMarkup:
+def stocks_menu_kb(*, allow_out: bool, allow_in: bool, expanded: bool = False, can_toggle: bool = True) -> InlineKeyboardMarkup:
     rows = []
-    if can_manage:
-        rows.append(
-            [
-                InlineKeyboardButton(text="➖ Расход", callback_data="stocks:op:out"),
-                InlineKeyboardButton(text="➕ Пополнение", callback_data="stocks:op:in"),
-            ]
-        )
+
+    ops: list[InlineKeyboardButton] = []
+    if allow_out:
+        ops.append(InlineKeyboardButton(text="➖ Расход", callback_data="stocks:op:out"))
+    if allow_in:
+        ops.append(InlineKeyboardButton(text="➕ Пополнение", callback_data="stocks:op:in"))
+    if ops:
+        rows.append(ops)
+
     if can_toggle:
         if expanded:
             rows.append([InlineKeyboardButton(text="Свернуть", callback_data="stocks:compact")])

@@ -131,6 +131,7 @@ async def build_history_rows(
             literal("in").label("kind"),
             MaterialSupply.amount.label("amount"),
             Material.name.label("material_name"),
+            MaterialSupply.employee_id.label("employee_id"),
             User.first_name.label("first_name"),
             User.last_name.label("last_name"),
             User.tg_id.label("tg_id"),
@@ -145,6 +146,7 @@ async def build_history_rows(
             literal("out").label("kind"),
             MaterialConsumption.amount.label("amount"),
             Material.name.label("material_name"),
+            MaterialConsumption.employee_id.label("employee_id"),
             User.first_name.label("first_name"),
             User.last_name.label("last_name"),
             User.tg_id.label("tg_id"),
@@ -161,6 +163,7 @@ async def build_history_rows(
             union_q.c.kind,
             union_q.c.amount,
             union_q.c.material_name,
+            union_q.c.employee_id,
             union_q.c.first_name,
             union_q.c.last_name,
             union_q.c.tg_id,
@@ -171,9 +174,12 @@ async def build_history_rows(
 
     res = (await session.execute(q)).all()
     out: list[HistoryRow] = []
-    for ts, kind, amount, material_name, first_name, last_name, tg_id in res:
+    for ts, kind, amount, material_name, employee_id, first_name, last_name, tg_id in res:
         fio = f"{first_name or ''} {last_name or ''}".strip()
-        actor_name = fio if fio else "—"
+        if fio:
+            actor_name = fio
+        else:
+            actor_name = f"Удалённый сотрудник (id={int(employee_id)})" if employee_id is not None else "—"
         out.append(
             HistoryRow(
                 ts=ts,

@@ -70,7 +70,7 @@ async def get_db() -> AsyncSession:
         yield session
 
 async def load_user(session: AsyncSession, user_id: int) -> User:
-    res = await session.execute(select(User).where(User.id == user_id))
+    res = await session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
     user = res.scalar_one_or_none()
     if not user:
         raise HTTPException(404)
@@ -98,7 +98,7 @@ async def auth(token: str, request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    res = await session.execute(select(User).order_by(User.created_at.desc()))
+    res = await session.execute(select(User).where(User.is_deleted == False).order_by(User.created_at.desc()))
     users: List[User] = res.scalars().all()
     return templates.TemplateResponse("index.html", {"request": request, "users": users, "admin_id": admin_id})
 
@@ -166,7 +166,7 @@ async def user_update(
                 await bot.send_message(
                     user.tg_id,
                     "Ваш статус обновлён.",
-                    reply_markup=main_menu_kb(user.status, user.tg_id),
+                    reply_markup=main_menu_kb(user.status, user.tg_id, user.position),
                 )
             finally:
                 await bot.session.close()
@@ -197,7 +197,7 @@ async def user_blacklist(user_id: int, request: Request, admin_id: int = Depends
             await bot.send_message(
                 user.tg_id,
                 "Ваш статус обновлён.",
-                reply_markup=main_menu_kb(user.status, user.tg_id),
+                reply_markup=main_menu_kb(user.status, user.tg_id, user.position),
             )
         finally:
             await bot.session.close()
@@ -218,11 +218,34 @@ async def user_delete(user_id: int, admin_id: int = Depends(require_admin), sess
     user = res.scalar_one_or_none()
     if not user:
         raise HTTPException(404)
-    # Log BEFORE deletion to keep user_id referencing existing row
-    repo = AdminLogRepo(session)
-    await repo.log(admin_tg_id=admin_id, user_id=user.id, action=AdminActionType.BLACKLIST, payload={"delete": True})
-    # Now delete the user
-    await session.execute(delete(User).where(User.id == user_id))
+    # idempotent soft delete
+    if not user.is_deleted:
+        user.is_deleted = True
+        await session.flush()
+        repo = AdminLogRepo(session)
+        await repo.log(
+            admin_tg_id=admin_id,
+            user_id=user.id,
+            action=AdminActionType.BLACKLIST,
+            payload={"delete": True},
+        )
+        try:
+            from aiogram import Bot  # local import to avoid heavy import at startup
+            from bot.app.utils.bot_commands import sync_commands_for_chat
+
+            bot = Bot(token=settings.BOT_TOKEN)
+            try:
+                await sync_commands_for_chat(
+                    bot=bot,
+                    chat_id=int(user.tg_id),
+                    is_admin=int(user.tg_id) in settings.admin_ids,
+                    status=None,
+                    position=None,
+                )
+            finally:
+                await bot.session.close()
+        except Exception:
+            pass
     return HTMLResponse(
         f'<tr id="row-{user_id}" hx-swap-oob="delete"></tr>',
         headers={"HX-Trigger": "close-modal"},
@@ -231,7 +254,7 @@ async def user_delete(user_id: int, admin_id: int = Depends(require_admin), sess
 
 @app.post("/users/{user_id}/message")
 async def user_message(user_id: int, text: str = Form(...), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
-    res = await session.execute(select(User).where(User.id == user_id))
+    res = await session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
     user = res.scalar_one_or_none()
     if not user:
         raise HTTPException(404)
@@ -248,7 +271,7 @@ async def user_message(user_id: int, text: str = Form(...), admin_id: int = Depe
 
 @app.get("/broadcast", response_class=HTMLResponse)
 async def broadcast_modal(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
-    res = await session.execute(select(User).where(User.status == UserStatus.APPROVED))
+    res = await session.execute(select(User).where(User.status == UserStatus.APPROVED).where(User.is_deleted == False))
     users = res.scalars().all()
     return templates.TemplateResponse("partials/broadcast_modal.html", {"request": request, "users": users})
 
@@ -258,7 +281,7 @@ async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None),
     ids: Optional[List[int]] = None
     if user_ids:
         ids = [int(x) for x in user_ids.split(",") if x.strip()]
-    q = select(User).where(User.status == UserStatus.APPROVED)
+    q = select(User).where(User.status == UserStatus.APPROVED).where(User.is_deleted == False)
     if ids:
         q = q.where(User.id.in_(ids))
     res = await session.execute(q)
@@ -636,7 +659,7 @@ async def consumptions_list(request: Request, admin_id: int = Depends(require_st
     items = res.scalars().all()
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     return templates.TemplateResponse("materials/consumptions.html", {"request": request, "items": items, "materials": materials, "users": users})
 
@@ -646,7 +669,7 @@ async def consumptions_modal_create(request: Request, admin_id: int = Depends(re
     await ensure_manager_allowed(request, admin_id, session)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     from datetime import date as _date
     today = _date.today()
@@ -668,7 +691,7 @@ async def consumptions_modal_edit(item_id: int, request: Request, admin_id: int 
         raise HTTPException(404)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     return templates.TemplateResponse("materials/partials/consumptions_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
 
@@ -801,7 +824,7 @@ async def supplies_list(request: Request, admin_id: int = Depends(require_staff)
     items = res.scalars().all()
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     return templates.TemplateResponse("materials/supplies.html", {"request": request, "items": items, "materials": materials, "users": users})
 
@@ -811,7 +834,7 @@ async def supplies_modal_create(request: Request, admin_id: int = Depends(requir
     await ensure_manager_allowed(request, admin_id, session)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     from datetime import date as _date
     today = _date.today()
@@ -833,7 +856,7 @@ async def supplies_modal_edit(item_id: int, request: Request, admin_id: int = De
         raise HTTPException(404)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).order_by(User.first_name, User.last_name))
+    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
     return templates.TemplateResponse("materials/partials/supplies_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
 

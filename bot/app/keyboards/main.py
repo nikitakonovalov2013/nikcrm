@@ -1,10 +1,10 @@
 from typing import Optional
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from shared.enums import UserStatus
+from shared.enums import Position, UserStatus
 from shared.config import settings
 
 
-def main_menu_kb(status: Optional[UserStatus], tg_id: int) -> ReplyKeyboardMarkup:
+def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Position] = None) -> ReplyKeyboardMarkup:
     """Build main menu keyboard based on user status and admin flag.
     - None or REJECTED -> show Register
     - PENDING, APPROVED, BLACKLISTED -> show Profile
@@ -22,11 +22,16 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int) -> ReplyKeyboardMarku
         is_admin = tg_id in settings.admin_ids
         if is_admin:
             buttons.append(KeyboardButton(text="🛠 Админ-панель"))
+
         if is_admin or status == UserStatus.APPROVED:
             buttons.append(KeyboardButton(text="🛒 Закупки"))
-        if is_admin or status == UserStatus.APPROVED:
+
+        can_stocks = is_admin or (status == UserStatus.APPROVED and position in {Position.MANAGER, Position.MASTER})
+        if can_stocks:
             buttons.append(KeyboardButton(text="📦 Остатки"))
-        if is_admin or status == UserStatus.APPROVED:
+
+        can_reports = is_admin or (status == UserStatus.APPROVED and position == Position.MANAGER)
+        if can_reports:
             buttons.append(KeyboardButton(text="📊 Отчёты и напоминания"))
     except Exception:
         pass

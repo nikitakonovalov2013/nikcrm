@@ -46,12 +46,17 @@ class User(Base):
         ),
         default=UserStatus.PENDING,
     )
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
     actions: Mapped[list["AdminAction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_users_is_deleted", "is_deleted"),
+    )
 
 
 class AdminAction(Base):

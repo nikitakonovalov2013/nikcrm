@@ -56,7 +56,7 @@ def _can_manage(user) -> bool:
 
 
 def _can_open_menu(user) -> bool:
-    return _is_admin(int(user.tg_id)) or user.status == UserStatus.APPROVED
+    return _can_manage(user)
 
 
 def _parse_date(text: str) -> date | None:
@@ -84,6 +84,14 @@ def _settings_text(s) -> str:
     )
 
 
+async def _deny(cb: CallbackQuery, state: FSMContext, *, note: str = "⛔ Нет доступа") -> None:
+    await state.clear()
+    try:
+        await cb.message.edit_text(f"{note}.")
+    except Exception:
+        pass
+
+
 @router.message(F.text.in_({"Отчёты и напоминания", "📊 Отчёты и напоминания"}))
 @router.message(Command("reports"))
 async def rr_entry(message: Message, state: FSMContext):
@@ -92,10 +100,10 @@ async def rr_entry(message: Message, state: FSMContext):
         await message.answer("ℹ️ Вы не зарегистрированы.", reply_markup=main_menu_kb(None, message.from_user.id))
         return
     if user.status == UserStatus.BLACKLISTED:
-        await message.answer("🚫 Доступ ограничен.", reply_markup=main_menu_kb(user.status, message.from_user.id))
+        await message.answer("🚫 Доступ ограничен.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
         return
     if not _can_open_menu(user):
-        await message.answer("⏳ Раздел доступен только одобренным пользователям.", reply_markup=main_menu_kb(user.status, message.from_user.id))
+        await message.answer("⛔ Нет доступа.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
         return
 
     await state.clear()
@@ -110,6 +118,10 @@ async def rr_menu(cb: CallbackQuery, state: FSMContext):
     if not user:
         await cb.answer()
         return
+    if not _can_open_menu(user):
+        await _deny(cb, state)
+        await cb.answer()
+        return
     await state.clear()
     can_manage = _can_manage(user)
     await edit_html(cb, "📊 <b>Отчёты и напоминания</b>\n\nВыберите действие:", reply_markup=rr_menu_kb(can_manage))
@@ -120,10 +132,12 @@ async def rr_menu(cb: CallbackQuery, state: FSMContext):
 async def rr_back(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     status = None
+    position = None
     user = await _get_user(cb.from_user.id)
     if user:
         status = user.status
-    await cb.message.answer("Выберите действие ниже.", reply_markup=main_menu_kb(status, cb.from_user.id))
+        position = user.position
+    await cb.message.answer("Выберите действие ниже.", reply_markup=main_menu_kb(status, cb.from_user.id, position))
     await cb.answer()
 
 
@@ -134,7 +148,8 @@ async def rr_today(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     if not _can_manage(user):
-        await cb.answer("Недостаточно прав", show_alert=True)
+        await _deny(cb, state)
+        await cb.answer()
         return
 
     tz = _tz()
@@ -160,7 +175,8 @@ async def rr_period(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     if not _can_manage(user):
-        await cb.answer("Недостаточно прав", show_alert=True)
+        await _deny(cb, state)
+        await cb.answer()
         return
 
     await state.clear()
@@ -307,7 +323,8 @@ async def rr_period_to_input(message: Message, state: FSMContext):
 async def rr_send(cb: CallbackQuery, state: FSMContext):
     user = await _get_user(cb.from_user.id)
     if not user or not _can_manage(user):
-        await cb.answer("Недостаточно прав", show_alert=True)
+        await _deny(cb, state)
+        await cb.answer()
         return
 
     chat_id = int(getattr(settings, "REPORTS_CHAT_ID", 0) or 0)
@@ -334,7 +351,8 @@ async def rr_send(cb: CallbackQuery, state: FSMContext):
 async def rr_settings(cb: CallbackQuery, state: FSMContext):
     user = await _get_user(cb.from_user.id)
     if not user or not _can_manage(user):
-        await cb.answer("Недостаточно прав", show_alert=True)
+        await _deny(cb, state)
+        await cb.answer()
         return
 
     async with get_async_session() as session:
@@ -360,7 +378,8 @@ async def rr_settings(cb: CallbackQuery, state: FSMContext):
 async def rr_settings_toggle(cb: CallbackQuery, state: FSMContext):
     user = await _get_user(cb.from_user.id)
     if not user or not _can_manage(user):
-        await cb.answer("Недостаточно прав", show_alert=True)
+        await _deny(cb, state)
+        await cb.answer()
         return
 
     key = cb.data.split(":", 2)[2]

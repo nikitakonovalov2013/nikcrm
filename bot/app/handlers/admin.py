@@ -11,6 +11,7 @@ from shared.config import settings
 import logging
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
+from bot.app.utils.bot_commands import sync_commands_for_chat
 
 router = Router()
 
@@ -73,6 +74,16 @@ async def cb_approve(call: CallbackQuery):
     try:
         bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
         await bot.send_message(user.tg_id, "Ваша заявка подтверждена. Доступен профиль в боте.")
+        try:
+            await sync_commands_for_chat(
+                bot=bot,
+                chat_id=int(user.tg_id),
+                is_admin=int(user.tg_id) in settings.admin_ids,
+                status=user.status,
+                position=user.position,
+            )
+        except Exception:
+            pass
         await bot.session.close()
     except Exception:
         pass
@@ -100,6 +111,16 @@ async def cb_reject(call: CallbackQuery):
     try:
         bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
         await bot.send_message(user.tg_id, "Ваша заявка отклонена. Дальнейшее использование бота ограничено.")
+        try:
+            await sync_commands_for_chat(
+                bot=bot,
+                chat_id=int(user.tg_id),
+                is_admin=int(user.tg_id) in settings.admin_ids,
+                status=user.status,
+                position=user.position,
+            )
+        except Exception:
+            pass
         await bot.session.close()
     except Exception:
         pass
