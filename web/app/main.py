@@ -408,7 +408,11 @@ async def materials_types_modal_delete(type_id: int, request: Request, admin_id:
 @app.get("/materials", response_class=HTMLResponse)
 async def materials_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    res = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+    res = await session.execute(
+        select(Material)
+        .options(selectinload(Material.material_type), selectinload(Material.allowed_masters))
+        .order_by(Material.name)
+    )
     materials = res.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
@@ -497,19 +501,56 @@ async def materials_modal_create(request: Request, admin_id: int = Depends(requi
     await ensure_manager_allowed(request, admin_id, session)
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
-    return templates.TemplateResponse("materials/partials/materials_create_modal.html", {"request": request, "types": types})
+    masters = (
+        (
+            await session.execute(
+                select(User)
+                .where(User.is_deleted == False)
+                .where(User.status == UserStatus.APPROVED)
+                .where(User.position == Position.MASTER)
+                .order_by(User.first_name, User.last_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return templates.TemplateResponse(
+        "materials/partials/materials_create_modal.html",
+        {"request": request, "types": types, "masters": masters, "selected_master_ids": []},
+    )
 
 
 @app.get("/materials/{material_id}/modal/edit", response_class=HTMLResponse)
 async def materials_modal_edit(material_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    res = await session.execute(select(Material).where(Material.id == material_id))
+    res = await session.execute(
+        select(Material)
+        .where(Material.id == material_id)
+        .options(selectinload(Material.allowed_masters))
+    )
     m = res.scalar_one_or_none()
     if not m:
         raise HTTPException(404)
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
-    return templates.TemplateResponse("materials/partials/materials_edit_modal.html", {"request": request, "m": m, "types": types})
+    masters = (
+        (
+            await session.execute(
+                select(User)
+                .where(User.is_deleted == False)
+                .where(User.status == UserStatus.APPROVED)
+                .where(User.position == Position.MASTER)
+                .order_by(User.first_name, User.last_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    selected_master_ids = [int(u.id) for u in (getattr(m, "allowed_masters", None) or [])]
+    return templates.TemplateResponse(
+        "materials/partials/materials_edit_modal.html",
+        {"request": request, "m": m, "types": types, "masters": masters, "selected_master_ids": selected_master_ids},
+    )
 
 
 @app.get("/materials/{material_id}/modal/delete", response_class=HTMLResponse)
@@ -529,6 +570,7 @@ async def materials_create(
     unit: str = Form("кг"),
     material_type_id: int = Form(...),
     is_active: bool = Form(True),
+    master_ids: list[int] = Form([]),
     admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
@@ -547,11 +589,26 @@ async def materials_create(
         await session.rollback()
         res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
         types = res_t.scalars().all()
+        masters = (
+            (
+                await session.execute(
+                    select(User)
+                    .where(User.is_deleted == False)
+                    .where(User.status == UserStatus.APPROVED)
+                    .where(User.position == Position.MASTER)
+                    .order_by(User.first_name, User.last_name)
+                )
+            )
+            .scalars()
+            .all()
+        )
         return templates.TemplateResponse(
             "materials/partials/materials_create_modal.html",
             {
                 "request": request,
                 "types": types,
+                "masters": masters,
+                "selected_master_ids": master_ids,
                 "name": name,
                 "short_name": short_name,
                 "unit": unit,
@@ -561,7 +618,57 @@ async def materials_create(
             },
             status_code=400,
         )
-    res = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+
+    if master_ids:
+        res_m = await session.execute(
+            select(User)
+            .where(User.id.in_(master_ids))
+            .where(User.is_deleted == False)
+            .where(User.status == UserStatus.APPROVED)
+            .where(User.position == Position.MASTER)
+        )
+        masters = res_m.scalars().all()
+        if len(masters) != len(set(master_ids)):
+            await session.rollback()
+            res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+            types = res_t.scalars().all()
+            all_masters = (
+                (
+                    await session.execute(
+                        select(User)
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                        .where(User.position == Position.MASTER)
+                        .order_by(User.first_name, User.last_name)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return templates.TemplateResponse(
+                "materials/partials/materials_create_modal.html",
+                {
+                    "request": request,
+                    "types": types,
+                    "masters": all_masters,
+                    "selected_master_ids": master_ids,
+                    "name": name,
+                    "short_name": short_name,
+                    "unit": unit,
+                    "material_type_id": material_type_id,
+                    "is_active": is_active,
+                    "errors": {"masters": "Некорректный список мастеров"},
+                },
+                status_code=400,
+            )
+        m.allowed_masters = list(masters)
+        await session.flush()
+
+    res = await session.execute(
+        select(Material)
+        .options(selectinload(Material.material_type), selectinload(Material.allowed_masters))
+        .order_by(Material.name)
+    )
     materials = res.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
@@ -581,11 +688,16 @@ async def materials_update(
     unit: str = Form("кг"),
     material_type_id: int = Form(...),
     is_active: bool = Form(True),
+    master_ids: list[int] = Form([]),
     admin_id: int = Depends(require_staff),
     session: AsyncSession = Depends(get_db),
 ):
     await ensure_manager_allowed(request, admin_id, session)
-    res = await session.execute(select(Material).where(Material.id == material_id))
+    res = await session.execute(
+        select(Material)
+        .where(Material.id == material_id)
+        .options(selectinload(Material.allowed_masters))
+    )
     m = res.scalar_one_or_none()
     if not m:
         raise HTTPException(404)
@@ -598,18 +710,37 @@ async def materials_update(
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        res_m = await session.execute(select(Material).where(Material.id == material_id))
+        res_m = await session.execute(
+            select(Material)
+            .where(Material.id == material_id)
+            .options(selectinload(Material.allowed_masters))
+        )
         m2 = res_m.scalar_one_or_none()
         if not m2:
             raise HTTPException(404)
         res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
         types = res_t.scalars().all()
+        masters = (
+            (
+                await session.execute(
+                    select(User)
+                    .where(User.is_deleted == False)
+                    .where(User.status == UserStatus.APPROVED)
+                    .where(User.position == Position.MASTER)
+                    .order_by(User.first_name, User.last_name)
+                )
+            )
+            .scalars()
+            .all()
+        )
         return templates.TemplateResponse(
             "materials/partials/materials_edit_modal.html",
             {
                 "request": request,
                 "m": m2,
                 "types": types,
+                "masters": masters,
+                "selected_master_ids": master_ids,
                 "name": name,
                 "short_name": short_name,
                 "unit": unit,
@@ -619,7 +750,67 @@ async def materials_update(
             },
             status_code=400,
         )
-    res2 = await session.execute(select(Material).options(selectinload(Material.material_type)).order_by(Material.name))
+
+    if master_ids:
+        res_m = await session.execute(
+            select(User)
+            .where(User.id.in_(master_ids))
+            .where(User.is_deleted == False)
+            .where(User.status == UserStatus.APPROVED)
+            .where(User.position == Position.MASTER)
+        )
+        masters = res_m.scalars().all()
+        if len(masters) != len(set(master_ids)):
+            await session.rollback()
+            res_m2 = await session.execute(
+                select(Material)
+                .where(Material.id == material_id)
+                .options(selectinload(Material.allowed_masters))
+            )
+            m2 = res_m2.scalar_one_or_none()
+            if not m2:
+                raise HTTPException(404)
+            res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+            types = res_t.scalars().all()
+            all_masters = (
+                (
+                    await session.execute(
+                        select(User)
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                        .where(User.position == Position.MASTER)
+                        .order_by(User.first_name, User.last_name)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return templates.TemplateResponse(
+                "materials/partials/materials_edit_modal.html",
+                {
+                    "request": request,
+                    "m": m2,
+                    "types": types,
+                    "masters": all_masters,
+                    "selected_master_ids": master_ids,
+                    "name": name,
+                    "short_name": short_name,
+                    "unit": unit,
+                    "material_type_id": material_type_id,
+                    "is_active": is_active,
+                    "errors": {"masters": "Некорректный список мастеров"},
+                },
+                status_code=400,
+            )
+        m.allowed_masters = list(masters)
+    else:
+        m.allowed_masters = []
+    await session.flush()
+    res2 = await session.execute(
+        select(Material)
+        .options(selectinload(Material.material_type), selectinload(Material.allowed_masters))
+        .order_by(Material.name)
+    )
     materials = res2.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
@@ -637,7 +828,11 @@ async def materials_delete(material_id: int, request: Request, admin_id: int = D
     await session.execute(delete(MaterialConsumption).where(MaterialConsumption.material_id == material_id))
     await session.execute(delete(MaterialSupply).where(MaterialSupply.material_id == material_id))
     await session.execute(delete(Material).where(Material.id == material_id))
-    res = await session.execute(select(Material).order_by(Material.name))
+    res = await session.execute(
+        select(Material)
+        .options(selectinload(Material.material_type), selectinload(Material.allowed_masters))
+        .order_by(Material.name)
+    )
     materials = res.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()

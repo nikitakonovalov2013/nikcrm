@@ -32,8 +32,121 @@
       <span>Активен</span>
     </label>
   </div>
+  <div style="grid-column: 1 / -1;">
+    <label>Доступ мастеров к расходу</label>
+    <div class="muted" style="margin-top: 4px;">По умолчанию — <b>Все</b> (без ограничений).</div>
+    <div class="masters-picker" style="margin-top: 8px;">
+      <div id="masters-selected" class="muted" style="margin-bottom: 8px;"></div>
+      <label class="masters-row">
+        <input type="checkbox" id="masters-all" />
+        <span><b>Все</b> (без ограничений)</span>
+      </label>
+      <div class="masters-list">
+        {% for u in masters %}
+          <label class="masters-row">
+            <input type="checkbox" class="masters-item" value="{{ u.id }}" {% if selected_master_ids and (u.id in selected_master_ids) %}checked{% endif %} />
+            <span>{{ u.first_name or '' }} {{ u.last_name or '' }} ({{ u.tg_id }})</span>
+          </label>
+        {% endfor %}
+      </div>
+      <div class="muted" style="margin-top: 6px;">Если снять всех — автоматически вернётся «Все».</div>
+      {% if not masters %}
+        <div class="muted" style="margin-top: 6px;">Нет одобренных мастеров.</div>
+      {% endif %}
+      <div style="margin-top: 10px;">
+        <button type="button" class="btn-outline" onclick="window.__materialsMastersResetAll && window.__materialsMastersResetAll()">Сбросить в «Все»</button>
+      </div>
+      <div id="masters-hidden"></div>
+    </div>
+  </div>
   <div class="modal-actions" style="grid-column: 1 / -1;">
     <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
     <button type="submit" class="btn">Создать</button>
   </div>
 </form>
+
+<script>
+  (function(){
+    const form = document.currentScript && document.currentScript.previousElementSibling;
+    const allCb = document.getElementById('masters-all');
+    const items = Array.from(document.querySelectorAll('.masters-item'));
+    const selectedEl = document.getElementById('masters-selected');
+    const hiddenWrap = document.getElementById('masters-hidden');
+    if (!form || !allCb || !hiddenWrap || !selectedEl) return;
+
+    function selectedItems(){
+      return items.filter(i => i.checked);
+    }
+
+    function syncHidden(){
+      hiddenWrap.innerHTML = '';
+      if (allCb.checked) return;
+      const ids = selectedItems().map(i => String(i.value));
+      if (ids.length === 0) return;
+      for (const v of ids) {
+        const inp = document.createElement('input');
+        inp.type = 'hidden';
+        inp.name = 'master_ids';
+        inp.value = v;
+        hiddenWrap.appendChild(inp);
+      }
+    }
+
+    function syncSelectedText(){
+      if (allCb.checked || selectedItems().length === 0) {
+        selectedEl.innerHTML = 'Выбрано: <b>Все</b>';
+        return;
+      }
+      const names = selectedItems().map(i => {
+        const row = i.closest('label');
+        const text = row ? (row.textContent || '').trim() : '';
+        return text;
+      });
+      selectedEl.innerHTML = 'Выбрано: <b>' + names.join(', ') + '</b>';
+    }
+
+    window.__materialsMastersResetAll = function(){
+      allCb.checked = true;
+      items.forEach(i => { i.checked = false; });
+      syncSelectedText();
+      syncHidden();
+    };
+
+    (function init(){
+      const any = selectedItems().length > 0;
+      allCb.checked = !any;
+      syncSelectedText();
+      syncHidden();
+    })();
+
+    allCb.addEventListener('change', function(){
+      if (allCb.checked) {
+        items.forEach(i => { i.checked = false; });
+      }
+      if (!allCb.checked && selectedItems().length === 0) {
+        allCb.checked = true;
+      }
+      syncSelectedText();
+      syncHidden();
+    });
+    items.forEach(i => {
+      i.addEventListener('change', function(){
+        if (i.checked) {
+          allCb.checked = false;
+        }
+        if (selectedItems().length === 0) {
+          allCb.checked = true;
+        }
+        syncSelectedText();
+        syncHidden();
+      });
+    });
+    form.addEventListener('submit', function(){
+      if (!allCb.checked && selectedItems().length === 0) {
+        allCb.checked = true;
+      }
+      syncSelectedText();
+      syncHidden();
+    });
+  })();
+</script>

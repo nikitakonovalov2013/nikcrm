@@ -74,10 +74,18 @@ async def _get_user_for_ops(tg_id: int):
         return await urepo.get_by_tg_id(tg_id)
 
 
-async def _render_stocks_text(limit: int | None = 8) -> str:
+async def _render_stocks_text(tg_id: int, limit: int | None = 8) -> str:
+    user = await _get_user_for_ops(tg_id)
+    status = user.status if user else None
+    r = role_flags(
+        tg_id=tg_id,
+        admin_ids=settings.admin_ids,
+        status=status,
+        position=user.position if user else None,
+    )
     async with get_async_session() as session:
         mrepo = MaterialsRepository(session)
-        materials = await mrepo.list_all()
+        materials = await mrepo.list_for_stocks_view(r=r, user_id=user.id if user else None)
 
     if not materials:
         return "📦 <b>Остатки</b>\n\nПока нет материалов."
@@ -105,7 +113,7 @@ async def _render_stocks_menu(tg_id: int, *, expanded: bool) -> tuple[str, objec
     )
     async with get_async_session() as session:
         mrepo = MaterialsRepository(session)
-        materials = await mrepo.list_all()
+        materials = await mrepo.list_for_stocks_view(r=r, user_id=user.id if user else None)
 
     limit = None if expanded else 8
     if not materials:
@@ -249,7 +257,13 @@ async def stocks_choose_op(cb: CallbackQuery, state: FSMContext):
 
     async with get_async_session() as session:
         mrepo = MaterialsRepository(session)
-        mats = await mrepo.list_all()
+        r = role_flags(
+            tg_id=cb.from_user.id,
+            admin_ids=settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+        mats = await mrepo.list_for_stocks_view(r=r, user_id=user.id)
 
     materials = [(m.id, m.name) for m in mats]
     # Keep reference to the original menu message so cancel can edit it.
@@ -301,12 +315,30 @@ async def stocks_pick_material(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     op = data.get("op")
 
+    user = await _get_user_for_ops(cb.from_user.id)
+    if not user or user.status == UserStatus.BLACKLISTED:
+        await cb.answer("Действие недоступно", show_alert=True)
+        await state.clear()
+        return
+
     async with get_async_session() as session:
         mrepo = MaterialsRepository(session)
-        m = await mrepo.get_by_id(material_id)
+        r = role_flags(
+            tg_id=cb.from_user.id,
+            admin_ids=settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+        if op == "out":
+            m = await mrepo.get_for_stocks_op(material_id=material_id, r=r, user_id=user.id)
+        else:
+            m = await mrepo.get_by_id(material_id)
 
     if not m:
-        await cb.answer("Материал не найден", show_alert=True)
+        if op == "out":
+            await cb.answer("Нет доступа к материалу", show_alert=True)
+        else:
+            await cb.answer("Материал не найден", show_alert=True)
         return
 
     await state.set_state(StocksState.waiting_amount)
@@ -340,9 +372,24 @@ async def stocks_amount_input(message: Message, state: FSMContext):
     op = data.get("op")
     material_id = int(data.get("material_id"))
 
+    user = await _get_user_for_ops(message.from_user.id)
+    if not user or user.status == UserStatus.BLACKLISTED:
+        await state.clear()
+        await message.answer("Действие недоступно")
+        return
+
     async with get_async_session() as session:
         mrepo = MaterialsRepository(session)
-        m = await mrepo.get_by_id(material_id)
+        r = role_flags(
+            tg_id=message.from_user.id,
+            admin_ids=settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+        if op == "out":
+            m = await mrepo.get_for_stocks_op(material_id=material_id, r=r, user_id=user.id)
+        else:
+            m = await mrepo.get_by_id(material_id)
 
     if not m:
         await state.clear()
@@ -441,9 +488,21 @@ async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
         mrepo = MaterialsRepository(session)
         arepo = AdminActionRepository(session)
 
-        m = await mrepo.get_by_id(material_id)
+        r = role_flags(
+            tg_id=cb.from_user.id,
+            admin_ids=settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+        if op == "out":
+            m = await mrepo.get_for_stocks_op(material_id=material_id, r=r, user_id=user.id)
+        else:
+            m = await mrepo.get_by_id(material_id)
         if not m:
-            await cb.answer("Материал не найден", show_alert=True)
+            if op == "out":
+                await cb.answer("Нет доступа к материалу", show_alert=True)
+            else:
+                await cb.answer("Материал не найден", show_alert=True)
             await state.clear()
             return
 

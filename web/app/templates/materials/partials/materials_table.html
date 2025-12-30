@@ -1,5 +1,5 @@
 <div class="table-wrap" id="materials-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
-  <table class="table" id="materials-table">
+  <table class="table materials-table" id="materials-table">
     <thead>
       <tr>
         <th>ID</th>
@@ -7,6 +7,7 @@
         <th>Короткое</th>
         <th>Тип</th>
         <th>Ед.</th>
+        <th>Мастера</th>
         <th>Активен</th>
         <th>Остаток</th>
         <th class="actions-cell">Действия</th>
@@ -20,6 +21,14 @@
         <td>{{ m.short_name or '' }}</td>
         <td>{{ m.material_type.name if m.material_type else '' }}</td>
         <td>{{ m.unit }}</td>
+        <td class="masters-cell">
+          {% set ms = m.allowed_masters if m.allowed_masters is defined else [] %}
+          {% if not ms %}
+            Все
+          {% else %}
+            {% for u in ms %}{{ (u.first_name or '') ~ ' ' ~ (u.last_name or '') }}{% if not loop.last %}, {% endif %}{% endfor %}
+          {% endif %}
+        </td>
         <td>{{ 'Да' if m.is_active else 'Нет' }}</td>
         <td>{{ m.current_stock }} {{ m.unit }}</td>
         <td class="actions-cell">

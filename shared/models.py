@@ -1,11 +1,21 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index
+from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from datetime import datetime, date, time
 from .db import Base
 from .enums import UserStatus, Schedule, Position, AdminActionType, PurchaseStatus
 from .utils import utc_now
+
+
+material_master_access = Table(
+    "material_master_access",
+    Base.metadata,
+    Column("material_id", ForeignKey("materials.id", ondelete="CASCADE"), primary_key=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Index("ix_material_master_access_material_id", "material_id"),
+    Index("ix_material_master_access_user_id", "user_id"),
+)
 
 
 class User(Base):
@@ -102,6 +112,10 @@ class Material(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     material_type: Mapped[MaterialType] = relationship()
+    allowed_masters: Mapped[list["User"]] = relationship(
+        secondary=material_master_access,
+        backref="accessible_materials",
+    )
 
 
 class MaterialConsumption(Base):
