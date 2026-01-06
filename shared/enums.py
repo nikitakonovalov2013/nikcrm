@@ -34,3 +34,26 @@ class PurchaseStatus(StrEnum):
     PENDING = "PENDING"
     DONE = "DONE"
     REJECTED = "REJECTED"
+
+
+class TaskStatus(StrEnum):
+    NEW = "new"
+    IN_PROGRESS = "in_progress"
+    REVIEW = "review"
+    DONE = "done"
+    ARCHIVED = "archived"
+
+
+class TaskPriority(StrEnum):
+    NORMAL = "normal"
+    URGENT = "urgent"
+
+
+class TaskEventType(StrEnum):
+    CREATED = "created"
+    ASSIGNED_ADDED = "assigned_added"
+    ASSIGNED_REMOVED = "assigned_removed"
+    STATUS_CHANGED = "status_changed"
+    COMMENT_ADDED = "comment_added"
+    ARCHIVED = "archived"
+    UNARCHIVED = "unarchived"

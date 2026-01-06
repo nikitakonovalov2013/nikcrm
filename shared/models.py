@@ -1,10 +1,19 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column
+from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column, Text
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from datetime import datetime, date, time
 from .db import Base
-from .enums import UserStatus, Schedule, Position, AdminActionType, PurchaseStatus
+from .enums import (
+    UserStatus,
+    Schedule,
+    Position,
+    AdminActionType,
+    PurchaseStatus,
+    TaskStatus,
+    TaskPriority,
+    TaskEventType,
+)
 from .utils import utc_now
 
 
@@ -15,6 +24,15 @@ material_master_access = Table(
     Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     Index("ix_material_master_access_material_id", "material_id"),
     Index("ix_material_master_access_user_id", "user_id"),
+)
+
+
+task_assignees = Table(
+    "task_assignees",
+    Base.metadata,
+    Column("task_id", ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Index("ix_task_assignees_user_id", "user_id"),
 )
 
 
@@ -63,6 +81,28 @@ class User(Base):
     )
 
     actions: Mapped[list["AdminAction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+    tasks_created: Mapped[list["Task"]] = relationship(
+        foreign_keys="Task.created_by_user_id",
+        back_populates="created_by_user",
+    )
+    tasks_completed: Mapped[list["Task"]] = relationship(
+        foreign_keys="Task.completed_by_user_id",
+        back_populates="completed_by_user",
+    )
+    assigned_tasks: Mapped[list["Task"]] = relationship(
+        secondary=task_assignees,
+        back_populates="assignees",
+        lazy="selectin",
+    )
+    task_comments: Mapped[list["TaskComment"]] = relationship(
+        back_populates="author_user",
+        cascade="all, delete-orphan",
+    )
+    task_events: Mapped[list["TaskEvent"]] = relationship(
+        back_populates="actor_user",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_users_is_deleted", "is_deleted"),
@@ -178,6 +218,138 @@ class Purchase(Base):
     )
 
     user: Mapped[User] = relationship()
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[TaskStatus] = mapped_column(
+        PG_ENUM(
+            TaskStatus,
+            name="task_status_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=TaskStatus.NEW,
+    )
+    priority: Mapped[TaskPriority] = mapped_column(
+        PG_ENUM(
+            TaskPriority,
+            name="task_priority_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=TaskPriority.NORMAL,
+    )
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    completed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by_user: Mapped[User] = relationship(
+        foreign_keys=[created_by_user_id],
+        back_populates="tasks_created",
+    )
+    completed_by_user: Mapped[User | None] = relationship(
+        foreign_keys=[completed_by_user_id],
+        back_populates="tasks_completed",
+    )
+    assignees: Mapped[list[User]] = relationship(
+        secondary=task_assignees,
+        back_populates="assigned_tasks",
+        lazy="selectin",
+    )
+    comments: Mapped[list["TaskComment"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    events: Mapped[list["TaskEvent"]] = relationship(
+        back_populates="task",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_tasks_status", "status"),
+        Index("ix_tasks_priority", "priority"),
+        Index("ix_tasks_due_at", "due_at"),
+        Index("ix_tasks_created_at", "created_at"),
+        Index("ix_tasks_archived_at", "archived_at"),
+    )
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    author_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped[Task] = relationship(back_populates="comments")
+    author_user: Mapped[User] = relationship(back_populates="task_comments")
+    photos: Mapped[list["TaskCommentPhoto"]] = relationship(
+        back_populates="comment",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_task_comments_task_id", "task_id"),
+        Index("ix_task_comments_created_at", "created_at"),
+    )
+
+
+class TaskCommentPhoto(Base):
+    __tablename__ = "task_comment_photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    comment_id: Mapped[int] = mapped_column(ForeignKey("task_comments.id", ondelete="CASCADE"))
+    tg_file_id: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    comment: Mapped[TaskComment] = relationship(back_populates="photos")
+
+    __table_args__ = (
+        Index("ix_task_comment_photos_comment_id", "comment_id"),
+    )
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    type: Mapped[TaskEventType] = mapped_column(
+        PG_ENUM(
+            TaskEventType,
+            name="task_event_type_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        )
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    task: Mapped[Task] = relationship(back_populates="events")
+    actor_user: Mapped[User] = relationship(back_populates="task_events")
+
+    __table_args__ = (
+        Index("ix_task_events_task_id", "task_id"),
+        Index("ix_task_events_created_at", "created_at"),
+    )
 
 
 class ReminderSettings(Base):
