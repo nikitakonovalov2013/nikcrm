@@ -1,5 +1,5 @@
 <div class="table-wrap" id="supplies-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
-  <table class="table" id="supplies-table">
+  <table class="table crm-table" id="supplies-table">
     <thead>
       <tr>
         <th>ID</th>
@@ -13,12 +13,12 @@
     <tbody>
       {% for r in items %}
       <tr>
-        <td>{{ r.id }}</td>
-        <td>{{ format_date(r.date) }}</td>
-        <td>{{ r.material.short_name or r.material.name }}</td>
-        <td>{{ (r.employee and ((r.employee.first_name or '') ~ ' ' ~ (r.employee.last_name or ''))) or '' }}</td>
-        <td>{{ r.amount }}</td>
-        <td class="actions-cell">
+        <td data-label="ID" class="crm-field"><span class="crm-value crm-nowrap">{{ r.id }}</span></td>
+        <td data-label="Дата" class="crm-field"><span class="crm-value crm-nowrap">{{ format_date(r.date) }}</span></td>
+        <td data-label="Материал" class="crm-field"><span class="crm-value">{{ r.material.short_name or r.material.name }}</span></td>
+        <td data-label="Сотрудник" class="crm-field"><span class="crm-value">{{ (r.employee and ((r.employee.first_name or '') ~ ' ' ~ (r.employee.last_name or ''))) or '' }}</span></td>
+        <td data-label="Количество" class="crm-field"><span class="crm-value crm-nowrap">{{ r.amount }}</span></td>
+        <td data-label="Действия" class="actions-cell crm-actions">
           <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
                   hx-get="{{ url_for('supplies_modal_edit', item_id=r.id) }}"
                   hx-target="#modal-body" hx-swap="innerHTML">✏️</button>

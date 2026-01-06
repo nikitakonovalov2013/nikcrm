@@ -45,6 +45,13 @@
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .chip{display:inline-flex;align-items:center;gap:6px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:999px;padding:6px 10px}
 .flex-1{flex:1}
+/* Lightweight grid helpers used in templates */
+.col-span-2{grid-column:1 / -1}
+
+/* Global: avoid horizontal scroll in admin */
+html, body{max-width:100%;overflow-x:hidden}
+body.no-scroll{overflow:hidden}
+img, canvas, svg{max-width:100%}
 
 /* Ensure table content wraps and horizontal scroll is avoided */
 .table-wrap{width:100%;overflow-x:hidden;overflow-y:auto}
@@ -105,6 +112,7 @@
 .sidebar-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .sidebar-title{font-weight:700;color:#0f172a}
 .sidebar-close{display:none;background:#f1f5f9;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;cursor:pointer}
+.sidebar-overlay{display:none}
 .menu{display:flex;flex-direction:column;gap:4px}
 .menu-section{margin:8px 0 4px;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
 .menu-link{display:block;padding:10px 12px;border-radius:8px;color:#0f172a;text-decoration:none;border:1px solid transparent}
@@ -117,14 +125,80 @@
 /* Ensure tables do not slide under sidebar */
 .content .card{width:100%}
 
-/* Responsive: sidebar becomes overlay with burger */
-@media (max-width: 900px){
+/* Responsive: <=768px (tablet/phone) */
+@media (max-width: 768px){
+  .py{padding-top:12px;padding-bottom:12px}
+  .card{padding:14px;border-radius:14px}
   .layout{gap:0}
-  .sidebar{position:fixed;left:0;top:0;bottom:0;width:80%;max-width:300px;transform:translateX(-100%);transition:transform .2s ease;z-index:40;border-radius:0;height:100vh}
+  .sidebar{position:fixed;left:0;top:0;bottom:0;width:min(320px,86vw);max-width:86vw;transform:translateX(-100%);transition:transform .2s ease;z-index:60;border-radius:0;height:100vh}
   .sidebar.open{transform:translateX(0)}
   .sidebar-close{display:inline-block}
+  .sidebar-overlay{display:block;position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:55}
+  .sidebar-overlay.open{opacity:1;pointer-events:auto}
   .content{padding-top:8px}
   .content-header{display:flex}
+  .actions{justify-content:stretch}
+  .actions .btn,.actions .btn-outline,.actions .btn-warn,.actions .btn-danger{width:100%;justify-content:center}
+  .filters-grid{grid-template-columns:1fr}
+  .filters-actions{display:flex;justify-content:stretch}
+  .filters-actions .btn{width:100%;justify-content:center}
+  .form-grid{grid-template-columns:1fr}
+  .form-row{flex-direction:column;align-items:stretch}
+  .modal-content{width:95vw;max-height:90vh}
+  .modal-body{max-height:calc(90vh - 140px);overflow:auto}
+  .modal-actions{position:sticky;bottom:0;background:#fff}
+  .chips{flex-direction:column;align-items:stretch}
+  .chip{border-radius:12px}
+
+  /* Tables -> cards (stacked rows). Requires td[data-label] */
+  .table-wrap{border:none;overflow:visible}
+  table.crm-table{display:block;width:100%;table-layout:auto}
+  table.crm-table thead{display:none}
+  table.crm-table, table.crm-table tbody{display:block;width:100%}
+
+  /* Card: make row a grid container */
+  table.crm-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;margin:10px 0;padding:12px}
+
+  /* Fields */
+  table.crm-table tbody td.crm-field{min-width:0;padding:0;border:0;text-align:left;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
+  table.crm-table tbody td.crm-field::before{content:attr(data-label);display:block;font-weight:600;color:#334155;opacity:.75;margin-bottom:4px;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
+
+  /* Value wrapper for predictable wrapping/ellipsis */
+  table.crm-table tbody td.crm-field .crm-value{display:block;min-width:0;max-width:100%;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none;overflow:visible;text-overflow:clip}
+
+  /* No-wrap helper (no ellipsis by default) */
+  table.crm-table tbody td.crm-field .crm-value.crm-nowrap{white-space:nowrap}
+
+  /* Optional ellipsis (opt-in only) */
+  table.crm-table tbody td.crm-field .crm-value.crm-ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* Breakable helper (long tokens like tg_id/uuid/email) */
+  table.crm-table tbody td.crm-field .crm-value.crm-breakable{overflow-wrap:anywhere;word-break:break-word;hyphens:none}
+
+  /* Make a field span full width of the card */
+  table.crm-table tbody td.crm-wide{grid-column:1 / -1}
+
+  /* Badges should not break by letters */
+  table.crm-table tbody td.crm-field .badge{display:inline-flex;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* Actions block: always full width at the bottom */
+  table.crm-table tbody td.crm-actions{grid-column:1 / -1;display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;margin-top:10px;border-top:1px solid #f1f5f9}
+  table.crm-table tbody td.crm-actions::before{content:"";display:none}
+  table.crm-table tbody td.crm-actions .icon-btn, table.crm-table tbody td.crm-actions .btn, table.crm-table tbody td.crm-actions .btn-outline, table.crm-table tbody td.crm-actions .btn-warn, table.crm-table tbody td.crm-actions .btn-danger{flex:1 1 120px;justify-content:center;min-height:44px}
+}
+
+@media (min-width: 641px) and (max-width: 768px){
+  table.crm-table tbody tr{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+
+/* Responsive: <=480px (phone) */
+@media (max-width: 480px){
+  .title{font-size:20px}
+  .subtitle{font-size:16px}
+  .card{padding:12px}
+  .btn,.btn-outline,.btn-warn,.btn-danger{padding:12px 14px}
+
+  table.crm-table tbody tr{grid-template-columns:1fr}
 }
 
 /* Tooltips (CSS-only via data-tooltip) */

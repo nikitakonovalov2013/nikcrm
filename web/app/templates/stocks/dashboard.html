@@ -83,7 +83,7 @@
     </div>
     <div class="panel-body" style="padding:0">
       <div class="table-wrap" style="border:none; border-radius:0">
-        <table class="table" id="stocks-forecast-table">
+        <table class="table crm-table" id="stocks-forecast-table">
           <thead>
             <tr>
               <th>Материал</th>
@@ -95,16 +95,16 @@
           <tbody>
             {% for r in stock_rows %}
               <tr class="{{ 'low-stock' if r.is_low else '' }}">
-                <td>{{ r.material_name }}</td>
-                <td>{{ r.current_stock_str }}</td>
-                <td>{{ r.avg_daily_out_str }}</td>
-                <td>
+                <td data-label="Материал" class="crm-field"><span class="crm-value">{{ r.material_name }}</span></td>
+                <td data-label="Текущий остаток" class="crm-field"><span class="crm-value crm-nowrap">{{ r.current_stock_str }}</span></td>
+                <td data-label="Средний расход/день" class="crm-field"><span class="crm-value crm-nowrap">{{ r.avg_daily_out_str }}</span></td>
+                <td data-label="Прогноз (дней)" class="crm-field"><span class="crm-value crm-nowrap">
                   {% if r.forecast_days is none %}
                     —
                   {% else %}
                     <span class="badge {{ 'REJECTED' if r.is_low else 'APPROVED' }}">{{ r.forecast_days }}</span>
                   {% endif %}
-                </td>
+                </span></td>
               </tr>
             {% endfor %}
           </tbody>

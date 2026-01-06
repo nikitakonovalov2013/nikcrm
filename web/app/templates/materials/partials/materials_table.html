@@ -1,5 +1,5 @@
 <div class="table-wrap" id="materials-table-wrap" {% if is_oob %}hx-swap-oob="outerHTML"{% endif %}>
-  <table class="table materials-table" id="materials-table">
+  <table class="table crm-table materials-table" id="materials-table">
     <thead>
       <tr>
         <th>ID</th>
@@ -16,22 +16,22 @@
     <tbody>
       {% for m in materials %}
       <tr>
-        <td>{{ m.id }}</td>
-        <td>{{ m.name }}</td>
-        <td>{{ m.short_name or '' }}</td>
-        <td>{{ m.material_type.name if m.material_type else '' }}</td>
-        <td>{{ m.unit }}</td>
-        <td class="masters-cell">
+        <td data-label="ID" class="crm-field"><span class="crm-value crm-nowrap">{{ m.id }}</span></td>
+        <td data-label="Название" class="crm-field"><span class="crm-value">{{ m.name }}</span></td>
+        <td data-label="Короткое" class="crm-field"><span class="crm-value">{{ m.short_name or '' }}</span></td>
+        <td data-label="Тип" class="crm-field"><span class="crm-value">{{ m.material_type.name if m.material_type else '' }}</span></td>
+        <td data-label="Ед." class="crm-field"><span class="crm-value crm-nowrap">{{ m.unit }}</span></td>
+        <td data-label="Мастера" class="masters-cell crm-field">
           {% set ms = m.allowed_masters if m.allowed_masters is defined else [] %}
           {% if not ms %}
-            Все
+            <span class="crm-value">Все</span>
           {% else %}
-            {% for u in ms %}{{ (u.first_name or '') ~ ' ' ~ (u.last_name or '') }}{% if not loop.last %}, {% endif %}{% endfor %}
+            <span class="crm-value">{% for u in ms %}{{ (u.first_name or '') ~ ' ' ~ (u.last_name or '') }}{% if not loop.last %}, {% endif %}{% endfor %}</span>
           {% endif %}
         </td>
-        <td>{{ 'Да' if m.is_active else 'Нет' }}</td>
-        <td>{{ m.current_stock }} {{ m.unit }}</td>
-        <td class="actions-cell">
+        <td data-label="Активен" class="crm-field"><span class="crm-value crm-nowrap">{{ 'Да' if m.is_active else 'Нет' }}</span></td>
+        <td data-label="Остаток" class="crm-field"><span class="crm-value crm-nowrap">{{ m.current_stock }} {{ m.unit }}</span></td>
+        <td data-label="Действия" class="actions-cell crm-actions">
           <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
                   hx-get="{{ url_for('materials_modal_edit', material_id=m.id) }}"
                   hx-target="#modal-body" hx-swap="innerHTML">✏️</button>
