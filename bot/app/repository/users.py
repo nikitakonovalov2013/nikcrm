@@ -21,6 +21,10 @@ class UserRepository:
         res = await self.session.execute(select(User).where(User.tg_id == tg_id).where(User.is_deleted == False))
         return res.scalar_one_or_none()
 
+    async def get_by_tg_id_any(self, tg_id: int) -> User | None:
+        res = await self.session.execute(select(User).where(User.tg_id == tg_id))
+        return res.scalar_one_or_none()
+
     async def get_by_id(self, user_id: int) -> User | None:
         res = await self.session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
         return res.scalar_one_or_none()

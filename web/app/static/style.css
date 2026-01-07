@@ -24,6 +24,28 @@
 .modal-close{position:absolute;top:10px;right:10px;background:#f1f5f9;border:1px solid #e5e7eb;border-radius:8px;width:34px;height:34px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .modal-close:hover{background:#e2e8f0}
 .btn-close{background:#f1f5f9;border-radius:8px;border:none;padding:6px 10px;cursor:pointer}
+
+/* Global UI dialogs (custom alert/confirm) */
+.crm-ui-dialog{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:60}
+.crm-ui-dialog.open{display:flex}
+.crm-ui-dialog-overlay{position:absolute;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
+.crm-ui-dialog-panel{position:relative;background:#fff;border-radius:16px;box-shadow:0 20px 60px rgba(2,6,23,.25);width:min(520px,96%);max-height:88vh;overflow:auto;padding:24px}
+.crm-ui-dialog-close{position:absolute;top:10px;right:10px;background:#f1f5f9;border:1px solid #e5e7eb;border-radius:8px;width:34px;height:34px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.crm-ui-dialog-close:hover{background:#e2e8f0}
+.crm-ui-dialog-head{padding-right:40px;margin-bottom:10px}
+.crm-ui-dialog-title{margin:0;font-size:16px;font-weight:800;color:#0f172a}
+.crm-ui-dialog-body{margin-top:6px}
+.crm-ui-dialog-message{margin:0;color:#0f172a;font-size:14px;line-height:1.45;white-space:pre-wrap}
+.crm-ui-dialog-input-wrap{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.crm-ui-dialog-input,.crm-ui-dialog-textarea{border:1px solid #cbd5e1;border-radius:10px;padding:10px;outline:none;background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:#0f172a}
+.crm-ui-dialog-textarea{resize:vertical;min-height:110px}
+.crm-ui-dialog-input:focus,.crm-ui-dialog-textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.18)}
+.crm-ui-dialog-error{color:#b91c1c;font-size:12px;line-height:1.25}
+.crm-ui-dialog-footer{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;flex-wrap:wrap}
+.crm-ui-dialog-footer .btn,.crm-ui-dialog-footer .btn-outline,.crm-ui-dialog-footer .btn-danger{min-width:110px;justify-content:center}
+@media (max-width: 768px){
+  .crm-ui-dialog-panel{width:95vw;padding:16px}
+}
 .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 .form-row{display:flex;gap:10px;align-items:center;margin-top:10px}
 .form-grid label{display:flex;flex-direction:column;font-size:14px;color:#334155;gap:6px}
@@ -258,6 +280,105 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .history-main{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .history-material{font-weight:600;color:#0f172a}
 .history-amount{font-weight:700}
+
+/* Tasks (Kanban) */
+.tasks-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.tasks-header-actions{display:flex;gap:8px;flex-wrap:wrap}
+.tasks-filters{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.tasks-filters-search{width:100%}
+.tasks-filters-row{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.tasks-filter{display:flex;flex-direction:column;gap:6px;font-size:14px;color:#334155}
+.tasks-filter-label{font-size:12px;font-weight:700;color:#64748b;line-height:1}
+.tasks-filter-checkbox .tasks-filter-label{opacity:0}
+.tasks-filters input[type=text],.tasks-filters select{border:1px solid #cbd5e1;border-radius:12px;padding:10px 12px;outline:none;background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:#0f172a;height:42px}
+.tasks-filters input[type=text]:focus,.tasks-filters select:focus{border-color:#93c5fd;box-shadow:0 0 0 4px rgba(59,130,246,.18)}
+.tasks-filters select:hover,.tasks-filters input[type=text]:hover{border-color:#94a3b8}
+.tasks-filters-actions{margin-left:auto;display:flex;align-items:flex-end;gap:10px;flex-wrap:nowrap}
+.tasks-filters-actions .btn-outline{height:42px;padding:0 14px;display:inline-flex;align-items:center}
+.tasks-filter-assignee select{max-width:320px;min-width:260px}
+
+.kanban{display:grid;grid-template-columns:1fr;gap:12px}
+.kanban-col{border:1px solid #e5e7eb;border-radius:14px;background:#fff;overflow:hidden;display:flex;flex-direction:column;min-height:120px}
+.kanban-col-header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid #f1f5f9;background:#f8fafc}
+.kanban-col-title{font-weight:700;color:#0f172a}
+.kanban-col-count{font-weight:700;color:#1e3a8a;background:#eef2ff;border:1px solid #c7d2fe;border-radius:999px;padding:2px 8px;font-size:12px}
+.kanban-col-body{padding:12px 12px;display:flex;flex-direction:column;gap:10px}
+.kanban-empty{padding:8px 0}
+
+.task-card{border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff;box-shadow:0 6px 18px rgba(2,6,23,.05);cursor:pointer;transition:transform .06s ease, box-shadow .2s ease}
+.task-card:hover{box-shadow:0 10px 26px rgba(2,6,23,.08)}
+.task-card.urgent{border-color:#fecaca}
+.task-card.overdue{background:#fff7ed;border-color:#fdba74}
+.task-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.task-title{font-weight:700;color:#0f172a;line-height:1.25}
+.task-urgent{font-size:16px;line-height:1}
+.task-card-actions{margin-top:10px;display:flex;justify-content:flex-end}
+.task-meta{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.task-due{font-size:13px;color:#334155}
+.task-assignees{font-size:13px;color:#0f172a;white-space:normal;overflow-wrap:break-word;word-break:normal}
+
+.task-pill{display:inline-flex;align-items:center;border:1px solid #e5e7eb;background:#f8fafc;color:#0f172a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+.task-pill.urgent{border-color:#fecaca;background:#fef2f2;color:#991b1b}
+
+.task-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
+.task-detail-title{font-weight:800;font-size:18px;color:#0f172a}
+.task-detail-badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.task-detail-desc{white-space:pre-wrap;overflow-wrap:break-word;word-break:normal}
+.task-detail-grid{display:grid;grid-template-columns:1fr;gap:8px;font-size:14px;color:#0f172a}
+.task-detail-meta{display:grid;grid-template-columns:1fr;gap:10px;font-size:14px;color:#0f172a}
+.task-meta-item{padding:10px 12px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}
+.task-detail-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.task-comments-title{font-weight:800;margin-bottom:8px}
+.task-comment{border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;background:#fff}
+.task-comment-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:6px}
+.task-comment-author{font-weight:700;color:#0f172a}
+.task-comment-text{white-space:pre-wrap;overflow-wrap:break-word;word-break:normal}
+.task-photos{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+.task-photo{width:84px;height:84px;object-fit:cover;border-radius:10px;border:1px solid #e5e7eb}
+
+.tasks-archive-grid{display:grid;grid-template-columns:1fr;gap:12px}
+
+/* Tasks modal/form polish */
+.tasks-modal{padding:24px}
+@media (max-width: 600px){
+  .tasks-modal{padding:16px}
+}
+.modal-content{max-width:900px}
+@media (max-width: 600px){
+  .modal-content{width:95vw}
+}
+.task-form{display:flex;flex-direction:column;gap:16px}
+.task-form-grid{display:grid;grid-template-columns:1fr;gap:14px}
+.task-form-row{display:flex;flex-direction:column;gap:8px}
+.form-label{font-size:13px;font-weight:700;color:#334155}
+.form-control{border:1px solid #cbd5e1;border-radius:12px;padding:12px 14px;outline:none;background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:#0f172a}
+.form-control:focus{border-color:#93c5fd;box-shadow:0 0 0 4px rgba(59,130,246,.18)}
+textarea.form-control{min-height:130px;resize:vertical}
+.task-modal-footer{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-top:4px}
+
+/* Masters picker rows */
+.masters-list{border:1px solid #e5e7eb;border-radius:12px;background:#fff;max-height:220px;overflow:auto}
+.masters-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer}
+.masters-row:last-child{border-bottom:none}
+.masters-row:hover{background:#f8fafc}
+.masters-row input[type=checkbox]{width:16px;height:16px}
+
+@media (min-width: 900px){
+  .task-detail-meta{grid-template-columns:1fr 1fr}
+  .task-form-grid{grid-template-columns:1fr 1fr}
+}
+
+@media (min-width: 900px){
+  .kanban{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+
+@media (max-width: 768px){
+  .tasks-header{flex-direction:column;align-items:stretch}
+  .tasks-header-actions{justify-content:stretch}
+  .tasks-header-actions .btn,.tasks-header-actions .btn-outline{flex:1 1 160px;justify-content:center}
+  .tasks-filters-row{align-items:stretch}
+  .tasks-filters-actions{margin-left:0;flex-wrap:wrap}
+}
 
 tr.low-stock{background:#fff7ed}
 

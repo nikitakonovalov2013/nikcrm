@@ -1,0 +1,468 @@
+{% extends "base.html" %}
+{% block title %}Задачи{% endblock %}
+{% block content %}
+<div class="tasks-header">
+  <div>
+    <h2 class="subtitle">Задачи</h2>
+    <div class="muted">Канбан-доска</div>
+  </div>
+  <div class="tasks-header-actions">
+    <a class="btn-outline" href="{{ request.url_for('tasks_archive') }}">Архив</a>
+    <button class="btn" type="button" onclick="window.tasksOpenCreate()">+ Создать задачу</button>
+  </div>
+</div>
+
+<form class="tasks-filters" method="get" action="{{ request.url_for('tasks_board') }}">
+  <div class="tasks-filters-search">
+    <label class="tasks-filter">
+      <span class="tasks-filter-label">Поиск</span>
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="Заголовок или описание" />
+    </label>
+  </div>
+
+  <div class="tasks-filters-row">
+    <label class="tasks-filter tasks-filter-checkbox">
+      <span class="tasks-filter-label">&nbsp;</span>
+      <span class="checkbox-row">
+        <input type="checkbox" name="mine" value="1" {% if mine %}checked{% endif %} />
+        <span>Мои задачи</span>
+      </span>
+    </label>
+
+    {% if is_admin or is_manager %}
+    <label class="tasks-filter tasks-filter-assignee">
+      <span class="tasks-filter-label">Сотрудник</span>
+      <select name="assignee_id">
+        <option value="" {% if not assignee_id %}selected{% endif %}>Все</option>
+        {% for u in users %}
+          <option value="{{ u.id }}" {% if assignee_id and (assignee_id == u.id) %}selected{% endif %}>{{ (u.first_name or '') ~ ' ' ~ (u.last_name or '') }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+
+    <label class="tasks-filter">
+      <span class="tasks-filter-label">Приоритет</span>
+      <select name="priority">
+        <option value="" {% if not priority %}selected{% endif %}>Все</option>
+        <option value="urgent" {% if priority == 'urgent' %}selected{% endif %}>Срочные</option>
+        <option value="normal" {% if priority == 'normal' %}selected{% endif %}>Обычные</option>
+      </select>
+    </label>
+
+    <label class="tasks-filter">
+      <span class="tasks-filter-label">Дедлайн</span>
+      <select name="due">
+        <option value="" {% if not due %}selected{% endif %}>Все</option>
+        <option value="with_due" {% if due == 'with_due' %}selected{% endif %}>С дедлайном</option>
+        <option value="overdue" {% if due == 'overdue' %}selected{% endif %}>Просроченные</option>
+      </select>
+    </label>
+
+    <div class="tasks-filters-actions">
+      <button class="btn-outline" type="submit">Применить</button>
+      <a class="btn-outline" href="{{ request.url_for('tasks_board') }}">Сбросить</a>
+    </div>
+  </div>
+</form>
+
+<div class="kanban">
+  {% for col in columns %}
+    <section class="kanban-col" data-status="{{ col["status"] }}">
+      <div class="kanban-col-header">
+        <div class="kanban-col-title">{{ col["title"] }}</div>
+        <div class="kanban-col-count">{{ col.get("items", [])|length }}</div>
+      </div>
+      <div class="kanban-col-body" id="col-{{ col["status"] }}">
+        {% for t in col.get("items", []) %}
+          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}" data-task-id="{{ t.id }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
+            <div class="task-card-top">
+              <div class="task-title">{{ t.title }}</div>
+              {% if t.priority == 'urgent' %}
+                <div class="task-urgent" title="Срочно">🔥</div>
+              {% endif %}
+            </div>
+            <div class="task-meta">
+              {% if t.due_at_str %}
+                <div class="task-due">До: <b>{{ t.due_at_str }}</b></div>
+              {% else %}
+                <div class="task-due muted">Дедлайн: —</div>
+              {% endif %}
+              <div class="task-assignees">
+                {% if t.assignees_str %}
+                  {{ t.assignees_str }}
+                {% else %}
+                  <span class="muted">Общая</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+        {% if not col.get("items", []) %}
+          <div class="kanban-empty muted">Нет задач</div>
+        {% endif %}
+      </div>
+    </section>
+  {% endfor %}
+</div>
+
+<script type="application/json" id="tasks-users-json">{{ users_json|safe }}</script>
+
+<script>
+(function(){
+  const modalBody = () => document.getElementById('modal-body');
+
+  function openModal(html){
+    const b = modalBody();
+    if (!b) return;
+    b.innerHTML = html;
+    window.dispatchEvent(new CustomEvent('open-modal'));
+  }
+
+  function renderEvents(items){
+    if (!items || items.length === 0) {
+      return '<div class="muted">Истории пока нет</div>';
+    }
+    return items.map(e => {
+      const when = escapeHtml(e.created_at_str || '');
+      const who = escapeHtml((e.actor && e.actor.name) ? e.actor.name : '—');
+      const title = escapeHtml(e.title || e.type || '');
+      let details = '';
+      if (e.type === 'status_changed') {
+        const frRaw = (e && (e.from_display || (e.payload && e.payload.from))) || '';
+        const toRaw = (e && (e.to_display || (e.payload && e.payload.to))) || '';
+        const fr = escapeHtml(frRaw);
+        const to = escapeHtml(toRaw);
+        details = '<div class="muted" style="margin-top:4px;">' + fr + ' → ' + to + '</div>';
+      }
+      if (e.type === 'comment_added') {
+        const hasText = !!(e.payload && e.payload.has_text);
+        const pc = (e.payload && typeof e.payload.photos_count === 'number') ? e.payload.photos_count : 0;
+        const parts = [];
+        if (hasText) parts.push('текст');
+        if (pc) parts.push('фото: ' + String(pc));
+        if (parts.length) details = '<div class="muted" style="margin-top:4px;">' + escapeHtml(parts.join(', ')) + '</div>';
+      }
+      return (
+        '<div class="task-comment">' +
+          '<div class="task-comment-head">' +
+            '<div class="task-comment-author">' + who + ' · ' + title + '</div>' +
+            '<div class="task-comment-ts muted">' + when + '</div>' +
+          '</div>' +
+          details +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function closeModal(){
+    try { const b = modalBody(); if (b) b.innerHTML = ''; } catch(_){}
+    window.dispatchEvent(new CustomEvent('close-modal'));
+  }
+
+  function escapeHtml(s){
+    return String(s || '')
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'",'&#039;');
+  }
+
+  function renderAssignees(users){
+    if (!users || users.length === 0) return '<span class="muted">Общая</span>';
+    return users.map(u => escapeHtml((u.first_name || '') + ' ' + (u.last_name || '')).trim() || ('#' + u.id)).join(', ');
+  }
+
+  function renderComments(items){
+    if (!items || items.length === 0) {
+      return '<div class="muted">Комментариев нет</div>';
+    }
+    return items.map(c => {
+      const who = escapeHtml((c.author.first_name || '') + ' ' + (c.author.last_name || '')).trim() || ('#' + c.author.id);
+      const when = escapeHtml(c.created_at_str || '');
+      const text = c.text ? ('<div class="task-comment-text">' + escapeHtml(c.text) + '</div>') : '';
+      const photos = (c.photos || []).map(p => (
+        '<a href="' + escapeHtml(p.url) + '" target="_blank" rel="noopener">' +
+          '<img class="task-photo" src="' + escapeHtml(p.url) + '" alt="photo" />' +
+        '</a>'
+      )).join('');
+      return (
+        '<div class="task-comment">' +
+          '<div class="task-comment-head">' +
+            '<div class="task-comment-author">' + who + '</div>' +
+            '<div class="task-comment-ts muted">' + when + '</div>' +
+          '</div>' +
+          text +
+          (photos ? ('<div class="task-photos">' + photos + '</div>') : '') +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderDetailModal(task){
+    const due = task.due_at_str ? ('<div>Дедлайн: <b>' + escapeHtml(task.due_at_str) + '</b></div>') : '<div class="muted">Дедлайн: —</div>';
+    const priority = task.priority === 'urgent' ? '<span class="task-pill urgent">Срочно</span>' : '<span class="task-pill">Обычно</span>';
+    const statusMap = { new: 'Новые', in_progress: 'В работе', review: 'На проверке', done: 'Выполнено', archived: 'Архив' };
+    const status = '<span class="task-pill">' + escapeHtml(statusMap[task.status] || task.status) + '</span>';
+
+    const can = task.permissions || {};
+
+    const actionBtns = [
+      can.take_in_progress ? '<button class="btn" type="button" onclick="window.tasksChangeStatus(' + task.id + ',\'in_progress\')">Взять в работу</button>' : '',
+      can.finish_to_review ? '<button class="btn" type="button" onclick="window.tasksChangeStatus(' + task.id + ',\'review\')">На проверку</button>' : '',
+      can.accept_done ? '<button class="btn" type="button" onclick="window.tasksChangeStatus(' + task.id + ',\'done\')">Принять</button>' : '',
+      can.send_back ? '<button class="btn-warn" type="button" onclick="window.tasksSendBackPrompt(' + task.id + ')">На доработку</button>' : '',
+      can.archive ? '<button class="btn-outline" type="button" onclick="window.tasksArchive(' + task.id + ')">В архив</button>' : ''
+    ].filter(Boolean).join('');
+
+    const html = (
+      '<div class="modal-header">Задача #' + task.id + '</div>' +
+      '<div class="modal-body tasks-modal">' +
+        '<div class="task-detail-head">' +
+          '<div class="task-detail-title">' + escapeHtml(task.title) + '</div>' +
+          '<div class="task-detail-badges">' + priority + status + '</div>' +
+        '</div>' +
+        (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
+        '<div class="divider"></div>' +
+        '<div class="task-detail-meta">' +
+          '<div class="task-meta-item">' + due + '</div>' +
+          '<div class="task-meta-item">Исполнители: <b>' + renderAssignees(task.assignees) + '</b></div>' +
+          '<div class="task-meta-item muted">Создал: ' + escapeHtml(task.created_by_str || '') + '</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="task-detail-actions">' + actionBtns + '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="task-comments">' +
+          '<div class="task-comments-title">История</div>' +
+          '<div id="task-events-list">' + renderEvents(task.events) + '</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="task-comments">' +
+          '<div class="task-comments-title">Комментарии</div>' +
+          '<div id="task-comments-list">' + renderComments(task.comments) + '</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<form id="task-comment-form" class="task-form" onsubmit="return window.tasksSubmitComment(event, ' + task.id + ')">' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Комментарий</div>' +
+            '<textarea class="form-control" name="text" rows="4" placeholder="Напишите комментарий"></textarea>' +
+          '</div>' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Фото (опционально)</div>' +
+            '<input class="form-control" type="file" name="photos" accept="image/*" multiple />' +
+          '</div>' +
+          '<div class="task-modal-footer">' +
+            '<button type="button" class="btn-outline" onclick="(' + closeModal.toString() + ')()">Закрыть</button>' +
+            '<button type="submit" class="btn">Отправить</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>'
+    );
+    return html;
+  }
+
+  async function apiJson(url, opts){
+    const r = await fetch(url, opts || {});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = (data && (data.detail || data.error)) ? (data.detail || data.error) : ('HTTP ' + r.status);
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  window.tasksOpenCreate = function(){
+    const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
+    const html = (
+      '<div class="modal-header">Создать задачу</div>' +
+      '<div class="modal-body tasks-modal">' +
+        '<form id="task-create-form" class="task-form" onsubmit="return window.tasksSubmitCreate(event)">' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Заголовок</div>' +
+            '<input class="form-control" type="text" name="title" required />' +
+          '</div>' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Описание</div>' +
+            '<textarea class="form-control" name="description" rows="5"></textarea>' +
+          '</div>' +
+          '<div class="task-form-grid">' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Приоритет</div>' +
+              '<select class="form-control" name="priority"><option value="normal">Обычная</option><option value="urgent">Срочная</option></select>' +
+            '</div>' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Выполнить до (МСК)</div>' +
+              '<input class="form-control" type="datetime-local" name="due_at" />' +
+            '</div>' +
+          '</div>' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Исполнители</div>' +
+            '<div class="masters-picker">' +
+              '<div class="muted" style="margin-bottom: 6px;">Можно никого — будет «общая»</div>' +
+              '<div class="masters-list">' +
+                users.map(u => (
+                  '<label class="masters-row">' +
+                    '<input type="checkbox" name="assignee_ids" value="' + u.id + '" />' +
+                    '<span>' + escapeHtml((u.first_name||'') + ' ' + (u.last_name||'')) + '</span>' +
+                  '</label>'
+                )).join('') +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="task-form-row">' +
+            '<div class="form-label">Фото (опционально)</div>' +
+            '<input class="form-control" type="file" name="photos" accept="image/*" multiple />' +
+          '</div>' +
+          '<div class="task-modal-footer">' +
+            '<button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent(\'close-modal\'))">Отмена</button>' +
+            '<button type="submit" class="btn">Создать</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>'
+    );
+    openModal(html);
+  };
+
+  window.tasksSubmitCreate = async function(ev){
+    ev.preventDefault();
+    const form = ev.target;
+    const fd = new FormData(form);
+    try {
+      await apiJson('/crm/api/tasks', { method: 'POST', body: fd });
+      window.location.reload();
+      return false;
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось создать задачу');
+      return false;
+    }
+  };
+
+  window.tasksOpenDetail = async function(taskId){
+    try {
+      const task = await apiJson('/crm/api/tasks/' + String(taskId));
+      openModal(renderDetailModal(task));
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось загрузить задачу');
+    }
+  };
+
+  window.tasksChangeStatus = async function(taskId, status){
+    try {
+      const resp = await apiJson('/crm/api/tasks/' + String(taskId) + '/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: status })
+      });
+      window.tasksMoveCard(taskId, resp.status || status);
+      // If modal is open, refresh it to update permissions/buttons
+      try { await window.tasksOpenDetail(taskId); } catch (_) {}
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось изменить статус');
+    }
+  };
+
+  window.tasksSendBackPrompt = async function(taskId){
+    const txt = await window.crmPrompt('Комментарий обязателен (на доработку):', {
+      title: 'Подтвердите действие',
+      required: true,
+      multiline: true,
+      placeholder: 'Опишите, что нужно доделать…',
+      okText: 'Отправить',
+      cancelText: 'Отмена',
+      maxLength: 1000,
+    });
+    if (txt === null) return;
+    try {
+      const resp = await apiJson('/crm/api/tasks/' + String(taskId) + '/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'in_progress', comment: String(txt) })
+      });
+      window.tasksMoveCard(taskId, resp.status || 'in_progress');
+      try { await window.tasksOpenDetail(taskId); } catch (_) {}
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отправить на доработку');
+    }
+  };
+
+  window.tasksArchive = async function(taskId){
+    const ok = await window.crmConfirm('Отправить задачу в архив?', { title: 'Подтвердите действие', danger: true, okText: 'В архив' });
+    if (!ok) return;
+    try {
+      await apiJson('/crm/api/tasks/' + String(taskId) + '/archive', { method: 'POST' });
+      window.tasksRemoveCard(taskId);
+      window.dispatchEvent(new CustomEvent('close-modal'));
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось архивировать');
+    }
+  };
+
+  function statusColumnId(status){
+    return 'col-' + String(status || '');
+  }
+
+  function updateColumnCounts(){
+    try {
+      const cols = document.querySelectorAll('.kanban-col');
+      cols.forEach(col => {
+        const status = col.getAttribute('data-status');
+        const body = document.getElementById(statusColumnId(status));
+        const countEl = col.querySelector('.kanban-col-count');
+        const emptyEl = body ? body.querySelector('.kanban-empty') : null;
+        const cards = body ? body.querySelectorAll('.task-card') : [];
+        if (countEl) countEl.textContent = String(cards.length || 0);
+        if (emptyEl) {
+          emptyEl.style.display = (cards.length ? 'none' : 'block');
+        } else if (body && !cards.length) {
+          const div = document.createElement('div');
+          div.className = 'kanban-empty muted';
+          div.textContent = 'Нет задач';
+          body.appendChild(div);
+        }
+      });
+    } catch (_) {}
+  }
+
+  window.tasksRemoveCard = function(taskId){
+    const el = document.querySelector('.task-card[data-task-id="' + String(taskId) + '"]');
+    if (el && el.parentElement) {
+      el.parentElement.removeChild(el);
+      updateColumnCounts();
+    }
+  };
+
+  window.tasksMoveCard = function(taskId, newStatus){
+    const el = document.querySelector('.task-card[data-task-id="' + String(taskId) + '"]');
+    const target = document.getElementById(statusColumnId(newStatus));
+    if (!el || !target) {
+      // fallback: simplest reliable path
+      try { window.location.reload(); } catch (_) {}
+      return;
+    }
+    // remove existing empty placeholder in target
+    const empty = target.querySelector('.kanban-empty');
+    if (empty) empty.style.display = 'none';
+    target.prepend(el);
+    updateColumnCounts();
+  };
+
+  window.tasksSubmitComment = async function(ev, taskId){
+    ev.preventDefault();
+    const form = ev.target;
+    const fd = new FormData(form);
+    try {
+      const task = await apiJson('/crm/api/tasks/' + String(taskId) + '/comments', { method: 'POST', body: fd });
+      // refresh comments in modal without closing
+      const list = document.getElementById('task-comments-list');
+      if (list) list.innerHTML = renderComments(task.comments);
+      form.reset();
+      return false;
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось добавить комментарий');
+      return false;
+    }
+  };
+})();
+</script>
+{% endblock %}

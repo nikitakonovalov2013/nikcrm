@@ -28,6 +28,7 @@ from bot.app.repository.materials import MaterialsRepository
 from bot.app.repository.users import UserRepository
 from bot.app.states.stocks import StocksState
 from shared.permissions import can_manage_stock_op, can_view_stocks, role_flags
+from bot.app.guards.user_guard import ensure_registered_or_reply
 
 router = Router()
 
@@ -43,21 +44,9 @@ def _fmt_stock_line(name: str, qty: Decimal, unit: str) -> str:
 
 
 async def _load_user_or_deny(message: Message) -> tuple[bool, UserStatus | None]:
-    async with get_async_session() as session:
-        urepo = UserRepository(session)
-        user = await urepo.get_by_tg_id(message.from_user.id)
+    user = await ensure_registered_or_reply(message)
     if not user:
-        await message.answer(
-            "ℹ️ Вы не зарегистрированы. Нажмите \"Зарегистрироваться\" ниже.",
-            reply_markup=main_menu_kb(None, message.from_user.id),
-        )
         return False, None
-    if user.status == UserStatus.BLACKLISTED:
-        await message.answer(
-            "🚫 Доступ ограничен.",
-            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
-        )
-        return False, user.status
     return True, user.status
 
 

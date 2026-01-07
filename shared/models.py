@@ -2,6 +2,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column, Text
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+from sqlalchemy import UniqueConstraint
 from datetime import datetime, date, time
 from .db import Base
 from .enums import (
@@ -85,6 +86,10 @@ class User(Base):
     tasks_created: Mapped[list["Task"]] = relationship(
         foreign_keys="Task.created_by_user_id",
         back_populates="created_by_user",
+    )
+    tasks_started: Mapped[list["Task"]] = relationship(
+        foreign_keys="Task.started_by_user_id",
+        back_populates="started_by_user",
     )
     tasks_completed: Mapped[list["Task"]] = relationship(
         foreign_keys="Task.completed_by_user_id",
@@ -226,6 +231,7 @@ class Task(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         PG_ENUM(
             TaskStatus,
@@ -246,6 +252,10 @@ class Task(Base):
     )
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    started_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -257,6 +267,10 @@ class Task(Base):
     created_by_user: Mapped[User] = relationship(
         foreign_keys=[created_by_user_id],
         back_populates="tasks_created",
+    )
+    started_by_user: Mapped[User | None] = relationship(
+        foreign_keys=[started_by_user_id],
+        back_populates="tasks_started",
     )
     completed_by_user: Mapped[User | None] = relationship(
         foreign_keys=[completed_by_user_id],
@@ -283,6 +297,7 @@ class Task(Base):
         Index("ix_tasks_priority", "priority"),
         Index("ix_tasks_due_at", "due_at"),
         Index("ix_tasks_created_at", "created_at"),
+        Index("ix_tasks_started_by_user_id", "started_by_user_id"),
         Index("ix_tasks_archived_at", "archived_at"),
     )
 
@@ -349,6 +364,35 @@ class TaskEvent(Base):
     __table_args__ = (
         Index("ix_task_events_task_id", "task_id"),
         Index("ix_task_events_created_at", "created_at"),
+    )
+
+
+class TaskNotification(Base):
+    __tablename__ = "task_notifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    recipient_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+
+    type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    task: Mapped[Task] = relationship(lazy="selectin")
+    recipient_user: Mapped[User] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_task_notifications_status_scheduled_at", "status", "scheduled_at"),
+        Index("ix_task_notifications_recipient_status", "recipient_user_id", "status"),
+        UniqueConstraint("recipient_user_id", "dedupe_key", name="uq_task_notifications_recipient_dedupe"),
     )
 
 

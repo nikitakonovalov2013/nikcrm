@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form
+from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form, UploadFile, File
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,10 +11,12 @@ import json
 from shared.config import settings
 from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared.enums import UserStatus, Schedule, Position
+from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
+from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
 from sqlalchemy import select, delete
+from sqlalchemy import case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from decimal import Decimal
@@ -41,10 +43,15 @@ from .repository import AdminLogRepo
 from shared.enums import AdminActionType
 
 from pathlib import Path
+from uuid import uuid4
 
 from .dependencies import require_admin, require_staff, ensure_manager_allowed
 
 from shared.utils import format_number
+from shared.utils import MOSCOW_TZ, utc_now, format_moscow
+from shared.services.task_notifications import TaskNotificationService
+from shared.permissions import role_flags
+from shared.services.task_permissions import task_permissions, validate_status_transition
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -65,6 +72,10 @@ from shared.utils import format_date  # noqa: E402
 templates.env.globals["format_date"] = format_date
 
 
+UPLOADS_DIR = STATIC_DIR / "uploads" / "tasks"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 async def get_db() -> AsyncSession:
     async with get_async_session() as session:
         yield session
@@ -75,6 +86,171 @@ async def load_user(session: AsyncSession, user_id: int) -> User:
     if not user:
         raise HTTPException(404)
     return user
+
+
+async def load_staff_user(session: AsyncSession, staff_tg_id: int) -> User:
+    res = await session.execute(select(User).where(User.tg_id == int(staff_tg_id)).where(User.is_deleted == False))
+    u = res.scalar_one_or_none()
+    if not u:
+        raise HTTPException(status_code=403)
+    return u
+
+
+def _parse_due_at_msk(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    try:
+        # datetime-local: "YYYY-MM-DDTHH:MM" (no tz). Assume Moscow.
+        dt_naive = datetime.strptime(v, "%Y-%m-%dT%H:%M")
+        dt_msk = dt_naive.replace(tzinfo=MOSCOW_TZ)
+        return dt_msk.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+async def _save_uploads(files: list[UploadFile] | None) -> list[str]:
+    if not files:
+        return []
+    urls: list[str] = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        ext = Path(f.filename).suffix.lower()
+        if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            ext = ".jpg"
+        name = f"{uuid4().hex}{ext}"
+        path = UPLOADS_DIR / name
+        data = await f.read()
+        if not data:
+            continue
+        path.write_bytes(data)
+        urls.append(f"/crm/static/uploads/tasks/{name}")
+    return urls
+
+
+def _user_short(u: User) -> dict:
+    return {
+        "id": int(u.id),
+        "first_name": u.first_name,
+        "last_name": u.last_name,
+        "tg_id": int(u.tg_id),
+    }
+
+
+def _event_view(e: TaskEvent) -> dict:
+    actor = getattr(e, "actor_user", None)
+    actor_str = "—"
+    if actor is not None:
+        actor_str = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{actor.id}")
+    typ = e.type.value if hasattr(e.type, "value") else str(e.type)
+    payload = dict(getattr(e, "payload", None) or {})
+
+    status_display = {
+        TaskStatus.NEW.value: "Новая",
+        TaskStatus.IN_PROGRESS.value: "В работе",
+        TaskStatus.REVIEW.value: "На проверке",
+        TaskStatus.DONE.value: "Выполнено",
+        TaskStatus.ARCHIVED.value: "Архив",
+    }
+
+    title = {
+        TaskEventType.CREATED.value: "Создано",
+        TaskEventType.ASSIGNED_ADDED.value: "Назначен исполнитель",
+        TaskEventType.ASSIGNED_REMOVED.value: "Снят исполнитель",
+        TaskEventType.STATUS_CHANGED.value: "Смена статуса",
+        TaskEventType.COMMENT_ADDED.value: "Добавлен комментарий",
+        TaskEventType.ARCHIVED.value: "Архивировано",
+        TaskEventType.UNARCHIVED.value: "Разархивировано",
+    }.get(typ, typ)
+
+    extra: dict = {}
+    if typ == TaskEventType.STATUS_CHANGED.value:
+        fr = str(payload.get("from") or "")
+        to = str(payload.get("to") or "")
+        extra = {
+            "from_display": status_display.get(fr, fr),
+            "to_display": status_display.get(to, to),
+        }
+    return {
+        "id": int(e.id),
+        "type": typ,
+        "title": title,
+        "created_at_str": format_moscow(getattr(e, "created_at", None), "%d.%m.%Y %H:%M"),
+        "actor": {"id": int(getattr(actor, "id", 0) or 0), "name": actor_str},
+        "payload": payload,
+        **extra,
+    }
+
+
+def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
+    assignees = list(getattr(t, "assignees", None) or [])
+    assignees_str = ", ".join(
+        [
+            (f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip() or f"#{u.id}")
+            for u in assignees
+        ]
+    )
+    is_assigned_to_me = False
+    if actor_id is not None:
+        is_assigned_to_me = any(int(u.id) == int(actor_id) for u in assignees)
+    due_at_utc = getattr(t, "due_at", None)
+    due_at_str = format_moscow(due_at_utc, "%d.%m.%Y %H:%M") if due_at_utc else ""
+    is_overdue = bool(due_at_utc and due_at_utc < utc_now())
+    return {
+        "id": int(t.id),
+        "title": t.title,
+        "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+        "due_at_str": due_at_str,
+        "created_at_str": format_moscow(getattr(t, "created_at", None), "%d.%m.%Y %H:%M"),
+        "assignees_str": assignees_str,
+        "is_assigned_to_me": is_assigned_to_me,
+        "is_overdue": is_overdue,
+    }
+
+
+def _task_permissions(*, t: Task, actor: User, is_admin: bool, is_manager: bool) -> dict:
+    st = t.status.value if hasattr(t.status, "value") else str(t.status)
+    assignees = list(getattr(t, "assignees", None) or [])
+    perms = task_permissions(
+        status=str(st),
+        actor_user_id=int(actor.id),
+        created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+        assignee_user_ids=[int(u.id) for u in assignees],
+        started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+        is_admin=bool(is_admin),
+        is_manager=bool(is_manager),
+    )
+    return {
+        "take_in_progress": bool(perms.take_in_progress),
+        "finish_to_review": bool(perms.finish_to_review),
+        "accept_done": bool(perms.accept_done),
+        "send_back": bool(perms.send_back),
+        "archive": bool(perms.archive),
+        "unarchive": bool(perms.unarchive),
+        "comment": bool(perms.comment),
+    }
+
+
+async def _load_task_full(session: AsyncSession, task_id: int) -> Task:
+    res = await session.execute(
+        select(Task)
+        .where(Task.id == task_id)
+        .options(
+            selectinload(Task.assignees),
+            selectinload(Task.created_by_user),
+            selectinload(Task.comments).selectinload(TaskComment.author_user),
+            selectinload(Task.comments).selectinload(TaskComment.photos),
+            selectinload(Task.events).selectinload(TaskEvent.actor_user),
+        )
+    )
+    t = res.scalar_one_or_none()
+    if not t:
+        raise HTTPException(404)
+    return t
 
 
 @app.get("/auth")
@@ -295,6 +471,584 @@ async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None),
             repo = AdminLogRepo(session)
             await repo.log(admin_tg_id=admin_id, user_id=u.id, action=AdminActionType.BROADCAST, payload={"text": text})
     return Response(status_code=204, headers={"HX-Trigger": "close-modal"})
+
+
+# ========== Tasks (CRM) ==========
+
+
+@app.get("/tasks", response_class=HTMLResponse, name="tasks_board")
+async def tasks_board(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    q = (request.query_params.get("q") or "").strip()
+    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    priority = (request.query_params.get("priority") or "").strip()
+    due = (request.query_params.get("due") or "").strip()
+    assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
+    assignee_id: int | None = None
+    if assignee_id_raw:
+        try:
+            assignee_id = int(assignee_id_raw)
+        except Exception:
+            assignee_id = None
+
+    if not (is_admin or is_manager):
+        assignee_id = None
+
+    from shared.models import task_assignees
+    from sqlalchemy import exists, and_, or_
+
+    has_any_acl = exists(select(1).where(task_assignees.c.task_id == Task.id))
+    has_actor = exists(
+        select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+    )
+
+    urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
+
+    query = (
+        select(Task)
+        .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
+        .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
+        .order_by(urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+    )
+    if q:
+        from sqlalchemy import or_
+
+        like = f"%{q}%"
+        query = query.where(or_(Task.title.ilike(like), Task.description.ilike(like)))
+    if priority == TaskPriority.URGENT.value:
+        query = query.where(Task.priority == TaskPriority.URGENT)
+    elif priority == TaskPriority.NORMAL.value:
+        query = query.where(Task.priority == TaskPriority.NORMAL)
+
+    if due == "with_due":
+        query = query.where(Task.due_at.is_not(None))
+    elif due == "overdue":
+        query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
+
+    if assignee_id is not None:
+        has_selected = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
+        )
+        query = query.where(has_selected)
+    if mine:
+        # My tasks: assigned to me OR common
+        query = query.where(or_(~has_any_acl, has_actor))
+
+    res = await session.execute(query)
+    tasks = list(res.scalars().unique().all())
+
+    items_by = {TaskStatus.NEW.value: [], TaskStatus.IN_PROGRESS.value: [], TaskStatus.REVIEW.value: [], TaskStatus.DONE.value: []}
+    for t in tasks:
+        items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(
+            _task_card_view(t, actor_id=int(actor.id))
+        )
+
+    columns = [
+        {"status": TaskStatus.NEW.value, "title": "Новые", "items": items_by[TaskStatus.NEW.value]},
+        {"status": TaskStatus.IN_PROGRESS.value, "title": "В работе", "items": items_by[TaskStatus.IN_PROGRESS.value]},
+        {"status": TaskStatus.REVIEW.value, "title": "На проверке", "items": items_by[TaskStatus.REVIEW.value]},
+        {"status": TaskStatus.DONE.value, "title": "Выполнено", "items": items_by[TaskStatus.DONE.value]},
+    ]
+
+    res_u = await session.execute(
+        select(User)
+        .where(User.is_deleted == False)
+        .where(User.status == UserStatus.APPROVED)
+        .order_by(User.first_name, User.last_name, User.id)
+    )
+    users = list(res_u.scalars().all())
+    users_json = json.dumps([{"id": int(u.id), "first_name": u.first_name, "last_name": u.last_name} for u in users], ensure_ascii=False)
+
+    return templates.TemplateResponse(
+        "tasks/board.html",
+        {
+            "request": request,
+            "columns": columns,
+            "q": q,
+            "mine": mine,
+            "priority": priority,
+            "due": due,
+            "assignee_id": assignee_id,
+            "users": users,
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+            "users_json": users_json,
+        },
+    )
+
+
+@app.get("/tasks/archive", response_class=HTMLResponse, name="tasks_archive")
+async def tasks_archive(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    q = (request.query_params.get("q") or "").strip()
+    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    priority = (request.query_params.get("priority") or "").strip()
+    due = (request.query_params.get("due") or "").strip()
+    status_q = (request.query_params.get("status") or "").strip()
+    assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
+    assignee_id: int | None = None
+    if assignee_id_raw:
+        try:
+            assignee_id = int(assignee_id_raw)
+        except Exception:
+            assignee_id = None
+
+    from shared.models import task_assignees
+    from sqlalchemy import exists, and_, or_
+
+    has_any_acl = exists(select(1).where(task_assignees.c.task_id == Task.id))
+    has_actor = exists(
+        select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+    )
+
+    query = (
+        select(Task)
+        .where(Task.status == TaskStatus.ARCHIVED)
+        .options(selectinload(Task.assignees))
+        .order_by(Task.archived_at.desc().nullslast(), Task.updated_at.desc(), Task.id.desc())
+    )
+    if q:
+        from sqlalchemy import or_
+
+        like = f"%{q}%"
+        query = query.where(or_(Task.title.ilike(like), Task.description.ilike(like)))
+
+    if priority == TaskPriority.URGENT.value:
+        query = query.where(Task.priority == TaskPriority.URGENT)
+    elif priority == TaskPriority.NORMAL.value:
+        query = query.where(Task.priority == TaskPriority.NORMAL)
+
+    if due == "with_due":
+        query = query.where(Task.due_at.is_not(None))
+    elif due == "overdue":
+        query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
+
+    if mine:
+        query = query.where(or_(~has_any_acl, has_actor))
+
+    if assignee_id is not None:
+        has_selected = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
+        )
+        query = query.where(has_selected)
+
+    if status_q:
+        if status_q in {s.value for s in TaskStatus}:
+            query = query.where(Task.status == TaskStatus(status_q))
+
+    res = await session.execute(query)
+    tasks = list(res.scalars().unique().all())
+
+    items = []
+    for t in tasks:
+        v = _task_card_view(t)
+        v["archived_at_str"] = format_moscow(getattr(t, "archived_at", None), "%d.%m.%Y %H:%M")
+        items.append(v)
+
+    return templates.TemplateResponse(
+        "tasks/archive.html",
+        {
+            "request": request,
+            "items": items,
+            "q": q,
+            "mine": mine,
+            "priority": priority,
+            "due": due,
+            "status": status_q,
+            "assignee_id": assignee_id,
+            "users": list(
+                (
+                    await session.scalars(
+                        select(User)
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                        .order_by(User.first_name, User.last_name, User.id)
+                    )
+                ).all()
+            ),
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+        },
+    )
+
+
+@app.post("/api/tasks")
+async def tasks_api_create(
+    request: Request,
+    title: str = Form(...),
+    description: str | None = Form(None),
+    priority: str = Form("normal"),
+    due_at: str | None = Form(None),
+    assignee_ids: list[int] = Form([]),
+    photos: list[UploadFile] | None = File(None),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    pr = TaskPriority.URGENT if priority == TaskPriority.URGENT.value else TaskPriority.NORMAL
+    due_dt = _parse_due_at_msk(due_at)
+
+    users: list[User] = []
+    if assignee_ids:
+        users = list(
+            (
+                await session.scalars(
+                    select(User)
+                    .where(User.id.in_(assignee_ids))
+                    .where(User.is_deleted == False)
+                    .where(User.status == UserStatus.APPROVED)
+                )
+            ).all()
+        )
+
+    t = Task(
+        title=title.strip(),
+        description=(description or None),
+        priority=pr,
+        due_at=due_dt,
+        status=TaskStatus.NEW,
+        created_by_user_id=int(actor.id),
+        assignees=users,
+    )
+    session.add(t)
+    await session.flush()
+
+    session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.CREATED, payload=None))
+
+    try:
+        # Notify assignees only (common tasks don't notify by default)
+        users_assignees = list(getattr(t, "assignees", None) or [])
+        if users_assignees:
+            ns = TaskNotificationService(session)
+            actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+            for u in users_assignees:
+                await ns.enqueue(
+                    task_id=int(t.id),
+                    recipient_user_id=int(u.id),
+                    type="created",
+                    payload={
+                        "task_id": int(t.id),
+                        "actor_user_id": int(actor.id),
+                        "actor_name": actor_name,
+                    },
+                    dedupe_key=f"created:{int(t.id)}",
+                )
+    except Exception:
+        pass
+
+    urls = await _save_uploads(photos)
+    if urls:
+        try:
+            t.photo_file_id = str(urls[0])
+        except Exception:
+            pass
+        c = TaskComment(task_id=int(t.id), author_user_id=int(actor.id), text="")
+        session.add(c)
+        await session.flush()
+        for url in urls:
+            session.add(TaskCommentPhoto(comment_id=int(c.id), tg_file_id=url))
+        await session.flush()
+
+    return {"id": int(t.id)}
+
+
+@app.get("/api/tasks/{task_id}")
+async def tasks_api_detail(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    t = await _load_task_full(session, task_id)
+    is_admin = int(admin_id) in settings.admin_ids
+    is_manager = bool(actor.position == Position.MANAGER)
+
+    assignees = list(getattr(t, "assignees", None) or [])
+    comments = list(getattr(t, "comments", None) or [])
+    events = list(getattr(t, "events", None) or [])
+
+    def _comment_view(c: TaskComment) -> dict:
+        photos = list(getattr(c, "photos", None) or [])
+        return {
+            "id": int(c.id),
+            "text": c.text,
+            "created_at_str": format_moscow(getattr(c, "created_at", None), "%d.%m.%Y %H:%M"),
+            "author": _user_short(getattr(c, "author_user")),
+            "photos": [{"url": p.tg_file_id} for p in photos],
+        }
+
+    created_by = getattr(t, "created_by_user", None)
+    created_by_str = ""
+    if created_by is not None:
+        created_by_str = (f"{(created_by.first_name or '').strip()} {(created_by.last_name or '').strip()}".strip() or f"#{created_by.id}")
+
+    return {
+        "id": int(t.id),
+        "title": t.title,
+        "description": t.description,
+        "photo_file_id": getattr(t, "photo_file_id", None),
+        "priority": t.priority.value,
+        "status": t.status.value,
+        "due_at_str": format_moscow(getattr(t, "due_at", None), "%d.%m.%Y %H:%M") if getattr(t, "due_at", None) else "",
+        "created_by_str": created_by_str,
+        "assignees": [_user_short(u) for u in assignees],
+        "comments": [_comment_view(c) for c in sorted(comments, key=lambda x: x.created_at)],
+        "permissions": _task_permissions(t=t, actor=actor, is_admin=is_admin, is_manager=is_manager),
+        "events": [_event_view(e) for e in sorted(events, key=lambda x: x.created_at)],
+    }
+
+
+@app.post("/api/tasks/{task_id}/comments")
+async def tasks_api_add_comment(
+    task_id: int,
+    request: Request,
+    text: str | None = Form(None),
+    photos: list[UploadFile] | None = File(None),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    t = await _load_task_full(session, task_id)
+    c = TaskComment(task_id=int(t.id), author_user_id=int(actor.id), text=(text or None))
+    session.add(c)
+    await session.flush()
+
+    urls = await _save_uploads(photos)
+
+    session.add(
+        TaskEvent(
+            task_id=int(t.id),
+            actor_user_id=int(actor.id),
+            type=TaskEventType.COMMENT_ADDED,
+            payload={"has_text": bool(text and text.strip()), "photos_count": int(len(urls))},
+        )
+    )
+    for url in urls:
+        session.add(TaskCommentPhoto(comment_id=int(c.id), tg_file_id=url))
+    await session.flush()
+
+    try:
+        # Notify other side: executor <-> creator
+        assignees = list(getattr(t, "assignees", None) or [])
+        is_executor = any(int(u.id) == int(actor.id) for u in assignees) or (
+            (len(assignees) == 0)
+            and (getattr(t, "started_by_user_id", None) is not None)
+            and int(getattr(t, "started_by_user_id")) == int(actor.id)
+        )
+
+        recipients: list[int] = []
+        if is_executor:
+            recipients = [int(getattr(t, "created_by_user_id"))]
+        else:
+            if assignees:
+                recipients = [int(u.id) for u in assignees]
+            else:
+                sb = getattr(t, "started_by_user_id", None)
+                if sb is not None:
+                    recipients = [int(sb)]
+
+        recipients = [r for r in recipients if int(r) != int(actor.id)]
+        if recipients:
+            ns = TaskNotificationService(session)
+            actor_name = (
+                f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}"
+            )
+            for rid in recipients:
+                await ns.enqueue(
+                    task_id=int(t.id),
+                    recipient_user_id=int(rid),
+                    type="comment",
+                    payload={
+                        "task_id": int(t.id),
+                        "comment_id": int(getattr(c, "id", 0) or 0),
+                        "text": (text or ""),
+                        "photos_count": int(len(urls)),
+                        "actor_user_id": int(actor.id),
+                        "actor_name": actor_name,
+                    },
+                    dedupe_key=f"comment:{int(getattr(c, 'id', 0) or 0)}",
+                )
+    except Exception:
+        pass
+
+    # return refreshed detail view for convenience
+    return await tasks_api_detail(task_id, request, admin_id, session)
+
+
+@app.post("/api/tasks/{task_id}/status")
+async def tasks_api_change_status(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    body = await request.json()
+    new_status = (body.get("status") or "").strip()
+    comment = (body.get("comment") or "").strip()
+
+    t = await _load_task_full(session, task_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    old_status = t.status.value if hasattr(t.status, "value") else str(t.status)
+
+    perms = task_permissions(
+        status=str(old_status),
+        actor_user_id=int(actor.id),
+        created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+        assignee_user_ids=[int(u.id) for u in list(getattr(t, "assignees", None) or [])],
+        started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+        is_admin=is_admin,
+        is_manager=is_manager,
+    )
+
+    ok, code, msg = validate_status_transition(
+        from_status=str(old_status),
+        to_status=str(new_status),
+        perms=perms,
+        comment=comment,
+    )
+    if not ok:
+        raise HTTPException(status_code=int(code), detail=str(msg or "Ошибка"))
+
+    if new_status == TaskStatus.IN_PROGRESS.value:
+        t.status = TaskStatus.IN_PROGRESS
+        assignees = list(getattr(t, "assignees", None) or [])
+        if len(assignees) == 0:
+            t.started_by_user_id = int(actor.id)
+            t.started_at = utc_now()
+        if old_status == TaskStatus.REVIEW.value and perms.send_back:
+            session.add(TaskComment(task_id=int(t.id), author_user_id=int(actor.id), text=comment))
+    elif new_status == TaskStatus.REVIEW.value:
+        t.status = TaskStatus.REVIEW
+        t.completed_by_user_id = int(actor.id)
+        t.completed_at = utc_now()
+    elif new_status == TaskStatus.DONE.value:
+        t.status = TaskStatus.DONE
+
+    new_status_val = t.status.value if hasattr(t.status, "value") else str(t.status)
+    ev = TaskEvent(
+        task_id=int(t.id),
+        actor_user_id=int(actor.id),
+        type=TaskEventType.STATUS_CHANGED,
+        payload={"from": old_status, "to": new_status_val, "comment": comment or None},
+    )
+    session.add(ev)
+
+    await session.flush()
+
+    try:
+        # status notifications
+        recipients: list[int] = []
+        assignees = list(getattr(t, "assignees", None) or [])
+        executor_ids: list[int] = [int(u.id) for u in assignees]
+        if not executor_ids:
+            sb = getattr(t, "started_by_user_id", None)
+            if sb is not None:
+                executor_ids = [int(sb)]
+
+        if old_status == TaskStatus.NEW.value and new_status_val == TaskStatus.IN_PROGRESS.value:
+            recipients = [int(getattr(t, "created_by_user_id"))]
+        elif old_status == TaskStatus.IN_PROGRESS.value and new_status_val == TaskStatus.REVIEW.value:
+            recipients = [int(getattr(t, "created_by_user_id"))]
+        elif old_status == TaskStatus.REVIEW.value and new_status_val == TaskStatus.DONE.value:
+            recipients = list(executor_ids)
+        elif old_status == TaskStatus.REVIEW.value and new_status_val == TaskStatus.IN_PROGRESS.value:
+            recipients = list(executor_ids)
+
+        recipients = [r for r in recipients if r and int(r) != int(actor.id)]
+        if recipients:
+            ns = TaskNotificationService(session)
+            actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+            for rid in recipients:
+                await ns.enqueue(
+                    task_id=int(t.id),
+                    recipient_user_id=int(rid),
+                    type="status_changed",
+                    payload={
+                        "task_id": int(t.id),
+                        "from": str(old_status),
+                        "to": str(new_status_val),
+                        "comment": comment or None,
+                        "actor_user_id": int(actor.id),
+                        "actor_name": actor_name,
+                        "event_id": int(getattr(ev, "id", 0) or 0),
+                    },
+                    dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
+                )
+    except Exception:
+        pass
+    return {"ok": True, "id": int(t.id), "status": new_status_val}
+
+
+@app.post("/api/tasks/{task_id}/archive")
+async def tasks_api_archive(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    t = await _load_task_full(session, task_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    perms = task_permissions(
+        status=str(t.status.value if hasattr(t.status, "value") else str(t.status)),
+        actor_user_id=int(actor.id),
+        created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+        assignee_user_ids=[int(u.id) for u in list(getattr(t, "assignees", None) or [])],
+        started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+        is_admin=is_admin,
+        is_manager=is_manager,
+    )
+    if not perms.archive:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для архивирования")
+    t.status = TaskStatus.ARCHIVED
+    t.archived_at = utc_now()
+    session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.ARCHIVED, payload=None))
+    await session.flush()
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/unarchive")
+async def tasks_api_unarchive(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    t = await _load_task_full(session, task_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    st = t.status.value if hasattr(t.status, "value") else str(t.status)
+
+    perms = task_permissions(
+        status=str(st),
+        actor_user_id=int(actor.id),
+        created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+        assignee_user_ids=[int(u.id) for u in list(getattr(t, "assignees", None) or [])],
+        started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+        is_admin=is_admin,
+        is_manager=is_manager,
+    )
+    if not perms.unarchive:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для разархивирования")
+
+    t.status = TaskStatus.DONE
+    t.archived_at = None
+    session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.UNARCHIVED, payload=None))
+    await session.flush()
+    return {"ok": True}
 
 
 # ========== Materials Admin ==========

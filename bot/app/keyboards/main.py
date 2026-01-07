@@ -25,6 +25,7 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Po
 
         if is_admin or status == UserStatus.APPROVED:
             buttons.append(KeyboardButton(text="🛒 Закупки"))
+            buttons.append(KeyboardButton(text="✅ Задачи"))
 
         can_stocks = is_admin or (status == UserStatus.APPROVED and position in {Position.MANAGER, Position.MASTER})
         if can_stocks:

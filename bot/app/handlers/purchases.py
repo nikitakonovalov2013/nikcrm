@@ -11,6 +11,8 @@ from shared.config import settings
 from shared.db import get_async_session
 from shared.enums import UserStatus, PurchaseStatus
 from shared.utils import format_date, format_moscow, utc_now
+from bot.app.utils.telegram import send_html
+from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.states.purchases import PurchasesState
 from bot.app.keyboards.inline import purchases_cancel_kb, purchases_admin_kb
 from bot.app.keyboards.main import main_menu_kb
@@ -116,14 +118,8 @@ async def _notify_admins_about_purchase(user, purchase) -> None:
 @router.message(F.text.in_({"Закупки", "🛒 Закупки"}))
 @router.message(Command("purchases"))
 async def purchases_entry(message: Message, state: FSMContext):
-    async with get_async_session() as session:
-        urepo = UserRepository(session)
-        user = await urepo.get_by_tg_id(message.from_user.id)
+    user = await ensure_registered_or_reply(message)
     if not user:
-        await message.answer(
-            "ℹ️ Вы не зарегистрированы. Нажмите \"Зарегистрироваться\" ниже.",
-            reply_markup=main_menu_kb(None, message.from_user.id),
-        )
         return
     if user.status == UserStatus.BLACKLISTED:
         await message.answer(

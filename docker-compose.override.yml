@@ -1,0 +1,17 @@
+services:
+  web:
+    volumes:
+      - ./shared:/app/shared
+      - ./web:/app/web
+      - ./bot:/app/bot
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+    command: ["uvicorn", "web.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  bot:
+    volumes:
+      - ./shared:/app/shared
+      - ./bot:/app/bot
+      - ./web:/app/web
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini

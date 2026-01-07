@@ -17,6 +17,9 @@ def _commands_for(*, is_admin: bool, status: UserStatus | None, position: Positi
     if is_admin or status == UserStatus.APPROVED:
         cmds.append(BotCommand(command="purchases", description="Закупки"))
 
+        cmds.append(BotCommand(command="tasks", description="Задачи"))
+        
+
     can_stocks = is_admin or (status == UserStatus.APPROVED and position in {Position.MANAGER, Position.MASTER})
     if can_stocks:
         cmds.append(BotCommand(command="stocks", description="Остатки"))

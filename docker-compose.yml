@@ -1,5 +1,3 @@
-version: "3.9"
-
 x-tz-env: &tz-env
   TZ: Europe/Moscow
 
@@ -29,7 +27,8 @@ services:
   migrator:
     build:
       context: .
-      dockerfile: web/Dockerfile
+      dockerfile: Dockerfile
+      target: migrator
     env_file: .env
     environment:
       <<: *tz-env
@@ -45,7 +44,8 @@ services:
   bot:
     build:
       context: .
-      dockerfile: bot/Dockerfile
+      dockerfile: Dockerfile
+      target: bot
     env_file: .env
     environment:
       <<: *tz-env
@@ -63,7 +63,8 @@ services:
   web:
     build:
       context: .
-      dockerfile: web/Dockerfile
+      dockerfile: Dockerfile
+      target: web
     env_file: .env
     environment:
       <<: *tz-env

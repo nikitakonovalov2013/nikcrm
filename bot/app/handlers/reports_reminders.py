@@ -23,6 +23,7 @@ from bot.app.states.reports_reminders import ReportsRemindersState
 from bot.app.utils.telegram import edit_html, edit_html_by_id_from_message
 from bot.app.utils.datetime_fmt import format_date_ru
 from shared.permissions import can_access_reports
+from bot.app.guards.user_guard import ensure_registered_or_reply
 
 
 router = Router()
@@ -95,12 +96,8 @@ async def _deny(cb: CallbackQuery, state: FSMContext, *, note: str = "⛔ Нет
 @router.message(F.text.in_({"Отчёты и напоминания", "📊 Отчёты и напоминания"}))
 @router.message(Command("reports"))
 async def rr_entry(message: Message, state: FSMContext):
-    user = await _get_user(message.from_user.id)
+    user = await ensure_registered_or_reply(message)
     if not user:
-        await message.answer("ℹ️ Вы не зарегистрированы.", reply_markup=main_menu_kb(None, message.from_user.id))
-        return
-    if user.status == UserStatus.BLACKLISTED:
-        await message.answer("🚫 Доступ ограничен.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
         return
     if not _can_open_menu(user):
         await message.answer("⛔ Нет доступа.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
@@ -114,9 +111,8 @@ async def rr_entry(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "rr:menu")
 async def rr_menu(cb: CallbackQuery, state: FSMContext):
-    user = await _get_user(cb.from_user.id)
+    user = await ensure_registered_or_reply(cb)
     if not user:
-        await cb.answer()
         return
     if not _can_open_menu(user):
         await _deny(cb, state)
