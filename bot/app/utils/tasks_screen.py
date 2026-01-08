@@ -13,8 +13,8 @@ async def render_tasks_screen(
     photo: str | None = None,
 ) -> tuple[int, bool]:
     data = await state.get_data()
-    message_id = data.get("tasks_message_id")
-    has_media = bool(data.get("tasks_has_media"))
+    message_id = data.get("tasks_root_message_id") or data.get("tasks_message_id")
+    has_media = bool(data.get("tasks_root_has_media")) if ("tasks_root_has_media" in data) else bool(data.get("tasks_has_media"))
 
     if photo:
         if message_id and has_media:
@@ -42,11 +42,25 @@ async def render_tasks_screen(
                     await bot.delete_message(chat_id=chat_id, message_id=int(message_id))
                 except Exception:
                     pass
-            await state.update_data(tasks_message_id=int(sent.message_id), tasks_chat_id=int(chat_id), tasks_has_media=True)
+            await state.update_data(
+                tasks_root_message_id=int(sent.message_id),
+                tasks_root_chat_id=int(chat_id),
+                tasks_root_has_media=True,
+                tasks_message_id=int(sent.message_id),
+                tasks_chat_id=int(chat_id),
+                tasks_has_media=True,
+            )
             return int(sent.message_id), True
         except Exception:
             sent = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=reply_markup)
-            await state.update_data(tasks_message_id=int(sent.message_id), tasks_chat_id=int(chat_id), tasks_has_media=False)
+            await state.update_data(
+                tasks_root_message_id=int(sent.message_id),
+                tasks_root_chat_id=int(chat_id),
+                tasks_root_has_media=False,
+                tasks_message_id=int(sent.message_id),
+                tasks_chat_id=int(chat_id),
+                tasks_has_media=False,
+            )
             return int(sent.message_id), False
 
     if message_id and not has_media:
@@ -69,7 +83,14 @@ async def render_tasks_screen(
                 await bot.delete_message(chat_id=chat_id, message_id=int(message_id))
             except Exception:
                 pass
-        await state.update_data(tasks_message_id=int(sent.message_id), tasks_chat_id=int(chat_id), tasks_has_media=False)
+        await state.update_data(
+            tasks_root_message_id=int(sent.message_id),
+            tasks_root_chat_id=int(chat_id),
+            tasks_root_has_media=False,
+            tasks_message_id=int(sent.message_id),
+            tasks_chat_id=int(chat_id),
+            tasks_has_media=False,
+        )
         return int(sent.message_id), False
     except Exception:
         return int(message_id or 0), False

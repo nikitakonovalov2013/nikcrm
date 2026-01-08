@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     WEB_JWT_SECRET: str = "change_me"
     JWT_TTL_MINUTES: int = 10
 
+    # Internal service-to-service auth/token and base URL for bot -> web calls over docker network
+    INTERNAL_API_TOKEN: str = ""
+    INTERNAL_WEB_BASE_URL: str = "http://web:8000"
+
+    # Bot-side internal base URL for downloading web-hosted resources (e.g. /crm/static/uploads/...)
+    WEB_INTERNAL_BASE_URL: str = "http://web:8000"
+
     LOG_LEVEL: str = "INFO"
 
     class Config:

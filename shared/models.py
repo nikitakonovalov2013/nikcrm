@@ -114,6 +114,19 @@ class User(Base):
     )
 
 
+class MagicLinkToken(Base):
+    __tablename__ = "magic_link_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scope: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped["User"] = relationship()
+
+
 class AdminAction(Base):
     __tablename__ = "admin_actions"
 
@@ -232,6 +245,10 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    photo_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tg_photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[TaskStatus] = mapped_column(
         PG_ENUM(
             TaskStatus,

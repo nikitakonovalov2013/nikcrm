@@ -1,0 +1,6 @@
+{% extends "base_public.html" %}
+{% block title %}Задачи{% endblock %}
+{% block content %}
+<h2 class="subtitle">Задачи</h2>
+<div class="muted">Эта страница не используется напрямую. Откройте доску по адресу <a href="{{ request.url_for('tasks_board_public') }}">/crm/tasks/public</a>.</div>
+{% endblock %}

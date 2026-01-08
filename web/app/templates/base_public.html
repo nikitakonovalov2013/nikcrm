@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Задачи{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg">
+  <div class="container py">
+    <section class="content">
+      <div class="card">
+        {% block content %}{% endblock %}
+      </div>
+    </section>
+  </div>
+
+  <div id="modal" class="modal" x-data="{open:false}" x-cloak x-show="open" x-transition @close-modal.window="open=false" @open-modal.window="open=true">
+    <div class="modal-backdrop" @click="open=false"></div>
+    <div class="modal-content" x-trap.noscroll="open" @keyup.escape.window="open=false">
+      <button class="modal-close" aria-label="Закрыть модалку" @click="open=false">✕</button>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="crm-ui-dialog" class="crm-ui-dialog" aria-hidden="true">
+    <div id="crm-ui-dialog-overlay" class="crm-ui-dialog-overlay"></div>
+    <div id="crm-ui-dialog-panel" class="crm-ui-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="crm-ui-dialog-title">
+      <button id="crm-ui-dialog-close" class="crm-ui-dialog-close" type="button" aria-label="Закрыть">✕</button>
+      <div class="crm-ui-dialog-head">
+        <h3 id="crm-ui-dialog-title" class="crm-ui-dialog-title">Сообщение</h3>
+      </div>
+      <div class="crm-ui-dialog-body">
+        <p id="crm-ui-dialog-message" class="crm-ui-dialog-message"></p>
+
+        <div id="crm-ui-dialog-input-wrap" class="crm-ui-dialog-input-wrap" style="display:none">
+          <input id="crm-ui-dialog-input" class="crm-ui-dialog-input" type="text" />
+          <textarea id="crm-ui-dialog-textarea" class="crm-ui-dialog-textarea" rows="5" style="display:none"></textarea>
+          <div id="crm-ui-dialog-error" class="crm-ui-dialog-error" style="display:none">Заполните поле</div>
+        </div>
+      </div>
+      <div class="crm-ui-dialog-footer">
+        <button id="crm-ui-dialog-cancel" class="btn-outline" type="button">Отмена</button>
+        <button id="crm-ui-dialog-ok" class="btn" type="button" autofocus>ОК</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

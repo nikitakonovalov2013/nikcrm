@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends base_template %}
 {% block title %}Задачи{% endblock %}
 {% block content %}
 <div class="tasks-header">
@@ -7,7 +7,7 @@
     <div class="muted">Канбан-доска</div>
   </div>
   <div class="tasks-header-actions">
-    <a class="btn-outline" href="{{ request.url_for('tasks_archive') }}">Архив</a>
+    <a class="btn-outline" href="{{ archive_url }}">Архив</a>
     <button class="btn" type="button" onclick="window.tasksOpenCreate()">+ Создать задачу</button>
   </div>
 </div>
@@ -111,6 +111,9 @@
 <script>
 (function(){
   const modalBody = () => document.getElementById('modal-body');
+
+  const IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
+  const IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
 
   function openModal(html){
     const b = modalBody();
@@ -216,6 +219,19 @@
       can.archive ? '<button class="btn-outline" type="button" onclick="window.tasksArchive(' + task.id + ')">В архив</button>' : ''
     ].filter(Boolean).join('');
 
+    const mainPhotoUrl = task.photo_url || task.photo_path;
+    const proxyPhotoUrl = (task.tg_photo_file_id || task.photo_file_id) ? ('/crm/tasks/' + task.id + '/photo') : '';
+    const effectivePhotoUrl = mainPhotoUrl || proxyPhotoUrl;
+    const taskPhoto = effectivePhotoUrl
+      ? (
+          '<div class="task-main-photo">' +
+            '<a href="' + escapeHtml(effectivePhotoUrl) + '" target="_blank" rel="noopener">' +
+              '<img class="task-main-photo-img" src="' + escapeHtml(effectivePhotoUrl) + '" alt="task photo" />' +
+            '</a>' +
+          '</div>'
+        )
+      : '';
+
     const html = (
       '<div class="modal-header">Задача #' + task.id + '</div>' +
       '<div class="modal-body tasks-modal">' +
@@ -223,6 +239,7 @@
           '<div class="task-detail-title">' + escapeHtml(task.title) + '</div>' +
           '<div class="task-detail-badges">' + priority + status + '</div>' +
         '</div>' +
+        taskPhoto +
         (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
         '<div class="divider"></div>' +
         '<div class="task-detail-meta">' +
@@ -274,6 +291,10 @@
 
   window.tasksOpenCreate = function(){
     const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
+    const visibleUsers = (users || []).filter(u => {
+      if (IS_ADMIN || IS_MANAGER) return true;
+      return !(u && (u.is_admin || u.is_manager));
+    });
     const html = (
       '<div class="modal-header">Создать задачу</div>' +
       '<div class="modal-body tasks-modal">' +
@@ -301,7 +322,7 @@
             '<div class="masters-picker">' +
               '<div class="muted" style="margin-bottom: 6px;">Можно никого — будет «общая»</div>' +
               '<div class="masters-list">' +
-                users.map(u => (
+                visibleUsers.map(u => (
                   '<label class="masters-row">' +
                     '<input type="checkbox" name="assignee_ids" value="' + u.id + '" />' +
                     '<span>' + escapeHtml((u.first_name||'') + ' ' + (u.last_name||'')) + '</span>' +
@@ -312,7 +333,7 @@
           '</div>' +
           '<div class="task-form-row">' +
             '<div class="form-label">Фото (опционально)</div>' +
-            '<input class="form-control" type="file" name="photos" accept="image/*" multiple />' +
+            '<input class="form-control" type="file" name="photo" accept="image/*" />' +
           '</div>' +
           '<div class="task-modal-footer">' +
             '<button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent(\'close-modal\'))">Отмена</button>' +

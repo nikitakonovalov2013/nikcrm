@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends base_template %}
 {% block title %}Архив задач{% endblock %}
 {% block content %}
 <div class="tasks-header">
@@ -7,11 +7,11 @@
     <div class="muted">Архивные задачи</div>
   </div>
   <div class="tasks-header-actions">
-    <a class="btn-outline" href="{{ request.url_for('tasks_board') }}">← На доску</a>
+    <a class="btn-outline" href="{{ board_url }}">← На доску</a>
   </div>
 </div>
 
-<form class="tasks-filters" method="get" action="{{ request.url_for('tasks_archive') }}">
+<form class="tasks-filters" method="get" action="{{ archive_url }}">
   <label>
     Поиск
     <input type="text" name="q" value="{{ q or '' }}" placeholder="Заголовок или описание" />
@@ -178,6 +178,19 @@
       can.unarchive ? '<button class="btn" type="button" onclick="window.tasksUnarchive(' + task.id + ')">Разархивировать</button>' : ''
     ].filter(Boolean).join('');
 
+    const mainPhotoUrl = task.photo_url || task.photo_path;
+    const proxyPhotoUrl = (task.tg_photo_file_id || task.photo_file_id) ? ('/crm/tasks/' + task.id + '/photo') : '';
+    const effectivePhotoUrl = mainPhotoUrl || proxyPhotoUrl;
+    const taskPhoto = effectivePhotoUrl
+      ? (
+          '<div class="task-main-photo">' +
+            '<a href="' + escapeHtml(effectivePhotoUrl) + '" target="_blank" rel="noopener">' +
+              '<img class="task-main-photo-img" src="' + escapeHtml(effectivePhotoUrl) + '" alt="task photo" />' +
+            '</a>' +
+          '</div>'
+        )
+      : '';
+
     const html = (
       '<div class="modal-header">Задача #' + task.id + '</div>' +
       '<div class="modal-body">' +
@@ -185,6 +198,7 @@
           '<div class="task-detail-title">' + escapeHtml(task.title) + '</div>' +
           '<div class="task-detail-badges">' + priority + status + '</div>' +
         '</div>' +
+        taskPhoto +
         (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
         '<div class="divider"></div>' +
         '<div class="task-detail-grid">' +
