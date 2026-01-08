@@ -37,7 +37,7 @@ from bot.app.repository.tasks import TaskRepository
 from bot.app.services.tasks import TasksService
 from bot.app.states.tasks import TasksState
 from bot.app.utils.telegram import edit_html, send_html, send_new_and_delete_active
-from bot.app.utils.html import esc
+from bot.app.utils.html import esc, format_plain_url
 from bot.app.utils.tg_id import get_tg_user_id
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.utils.tasks_screen import render_tasks_screen
@@ -368,7 +368,7 @@ async def _render_menu(*, tg_id: int) -> tuple[str, object | None]:
             is_manager=bool(r.is_manager),
         )
 
-    text = "✅ <b>Задачи</b>\n\nВыберите действие:\n\n" + f"🌐 Доска задач: <a href=\"{esc(board_url)}\">Открыть</a>"
+    text = "✅ <b>Задачи</b>\n\nВыберите действие:\n\n" + format_plain_url("🌐 Доска задач:", board_url)
     kb = tasks_root_kb(can_view_all=can_view_all)
     return text, kb
 
@@ -1084,7 +1084,7 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
         scope = str(llc.get("scope") or data.get("tasks_scope") or "mine")
         status = str(llc.get("status") or data.get("tasks_status") or TaskStatus.NEW.value)
         page = int(llc.get("page") or data.get("tasks_page") or 0)
-        html = svc.render_task_detail_html(task, perms=perms) + f"\n\n🌐 Открыть на доске: <a href=\"{esc(board_url)}\">перейти</a>"
+        html = svc.render_task_detail_html(task, perms=perms) + "\n\n" + format_plain_url("🌐 Открыть на доске:", board_url)
 
         kb = task_detail_kb(
             task_id=int(task.id),
@@ -1225,6 +1225,7 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
             reply_markup=kb,
             state=state,
             photo=None,
+            disable_web_page_preview=True,
         )
 
 

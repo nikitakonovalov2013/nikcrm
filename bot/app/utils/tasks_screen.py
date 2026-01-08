@@ -11,6 +11,7 @@ async def render_tasks_screen(
     reply_markup: InlineKeyboardMarkup | None,
     state,
     photo: str | None = None,
+    disable_web_page_preview: bool = True,
 ) -> tuple[int, bool]:
     data = await state.get_data()
     message_id = data.get("tasks_root_message_id") or data.get("tasks_message_id")
@@ -71,13 +72,20 @@ async def render_tasks_screen(
                 text=text,
                 parse_mode="HTML",
                 reply_markup=reply_markup,
+                disable_web_page_preview=bool(disable_web_page_preview),
             )
             return int(message_id), False
         except Exception:
             pass
 
     try:
-        sent = await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=reply_markup)
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            disable_web_page_preview=bool(disable_web_page_preview),
+        )
         if message_id:
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=int(message_id))

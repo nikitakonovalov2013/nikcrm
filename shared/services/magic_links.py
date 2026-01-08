@@ -31,7 +31,12 @@ async def create_magic_token(
     return str(token)
 
 
-async def consume_magic_token(session: AsyncSession, *, token: str) -> User | None:
+async def validate_magic_token(
+    session: AsyncSession,
+    *,
+    token: str,
+    scope: str | None = None,
+) -> User | None:
     tok = (token or "").strip()
     if not tok:
         return None
@@ -42,15 +47,19 @@ async def consume_magic_token(session: AsyncSession, *, token: str) -> User | No
         return None
 
     now = utc_now()
-    if getattr(row, "used_at", None) is not None:
-        return None
-
     exp = getattr(row, "expires_at", None)
     if exp is None or exp < now:
         return None
 
-    row.used_at = now
-    await session.flush()
+    if scope is not None:
+        row_scope = getattr(row, "scope", None)
+        if str(row_scope or "") != str(scope):
+            return None
 
     res_u = await session.execute(select(User).where(User.id == int(row.user_id)).where(User.is_deleted == False))
     return res_u.scalar_one_or_none()
+
+
+async def consume_magic_token(session: AsyncSession, *, token: str) -> User | None:
+    # Backward-compatible alias: token validity is now determined only by expires_at.
+    return await validate_magic_token(session, token=str(token))

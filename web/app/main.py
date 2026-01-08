@@ -368,9 +368,9 @@ async def auth(token: str, request: Request):
 
 @app.get("/auth/tg")
 async def auth_tg(t: str, request: Request, next: str | None = None, session: AsyncSession = Depends(get_db)):
-    from shared.services.magic_links import consume_magic_token
+    from shared.services.magic_links import validate_magic_token
 
-    user = await consume_magic_token(session, token=str(t))
+    user = await validate_magic_token(session, token=str(t), scope="tasks")
     if not user:
         raise HTTPException(status_code=401, detail="Ссылка недействительна или истекла")
 
