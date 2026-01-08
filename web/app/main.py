@@ -88,6 +88,43 @@ UPLOADS_DIR = STATIC_DIR / "uploads" / "tasks"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _task_photo_path_from_key(photo_key: str | None) -> str | None:
+    if not photo_key:
+        return None
+    key = str(photo_key).lstrip("/")
+    return f"/crm/static/uploads/{key}"
+
+
+def _task_photo_url_from_key(photo_key: str | None) -> str | None:
+    path = _task_photo_path_from_key(photo_key)
+    return _to_public_url(path)
+
+
+def _task_photo_fs_path_from_key(photo_key: str) -> Path:
+    key = str(photo_key).lstrip("/")
+    return STATIC_DIR / "uploads" / key
+
+
+async def _save_task_photo(*, photo: UploadFile) -> tuple[str, str]:
+    ext = Path(getattr(photo, "filename", "") or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        ext = ".jpg"
+    name = f"{uuid4().hex}{ext}"
+    photo_key = f"tasks/{name}"
+    fs_path = _task_photo_fs_path_from_key(photo_key)
+    fs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = await photo.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой файл")
+    fs_path.write_bytes(data)
+
+    photo_path = _task_photo_path_from_key(photo_key)
+    if not photo_path:
+        raise HTTPException(status_code=500, detail="Не удалось сформировать путь фото")
+    return str(photo_key), str(photo_path)
+
+
 def _public_base_url() -> str:
     raw = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
     if not raw:
@@ -1112,11 +1149,12 @@ async def tasks_api_create(
     except Exception:
         pass
 
-    urls = await _save_uploads([photo] if photo else None)
-    if urls:
+    if photo:
         try:
-            t.photo_path = str(urls[0])
-            t.photo_url = _to_public_url(t.photo_path)
+            photo_key, photo_path = await _save_task_photo(photo=photo)
+            t.photo_key = str(photo_key)
+            t.photo_path = str(photo_path)
+            t.photo_url = _task_photo_url_from_key(t.photo_key)
         except Exception:
             pass
 
