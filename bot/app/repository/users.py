@@ -5,6 +5,7 @@ from shared.models import User
 from shared.enums import UserStatus, Schedule, Position
 from datetime import date
 from shared.utils import utc_now
+from shared.services.user_color import assign_user_color
 
 
 class UserAlreadyRegisteredError(Exception):
@@ -52,6 +53,8 @@ class UserRepository:
                 existing.rate_k = rate_k
                 existing.schedule = schedule
                 existing.position = position
+                if not getattr(existing, "color", None):
+                    existing.color = await assign_user_color(self.session, seed=int(tg_id))
                 existing.updated_at = utc_now()
                 await self.session.flush()
                 await self.session.refresh(existing)
@@ -68,6 +71,7 @@ class UserRepository:
             schedule=schedule,
             position=position,
             status=UserStatus.PENDING,
+            color=await assign_user_color(self.session, seed=int(tg_id)),
         )
         self.session.add(user)
         try:
@@ -92,6 +96,8 @@ class UserRepository:
                 existing2.rate_k = rate_k
                 existing2.schedule = schedule
                 existing2.position = position
+                if not getattr(existing2, "color", None):
+                    existing2.color = await assign_user_color(self.session, seed=int(tg_id))
                 existing2.updated_at = utc_now()
                 await self.session.flush()
                 await self.session.refresh(existing2)

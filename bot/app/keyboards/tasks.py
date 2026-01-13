@@ -11,9 +11,100 @@ def tasks_root_kb(*, can_view_all: bool) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👤 Мои задачи", callback_data="tasks:mine"),
         ]
     )
+
     if can_view_all:
         rows.append([InlineKeyboardButton(text="📋 Все задачи", callback_data="tasks:all")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="tasks:back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def tasks_edit_menu_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Название", callback_data=f"tasks:edit_field:{int(task_id)}:title")],
+            [InlineKeyboardButton(text="Описание", callback_data=f"tasks:edit_field:{int(task_id)}:description")],
+            [InlineKeyboardButton(text="Приоритет", callback_data=f"tasks:edit_field:{int(task_id)}:priority")],
+            [InlineKeyboardButton(text="Дедлайн", callback_data=f"tasks:edit_field:{int(task_id)}:due")],
+            [InlineKeyboardButton(text="Исполнители", callback_data=f"tasks:edit_field:{int(task_id)}:assignees")],
+            [InlineKeyboardButton(text="Фото", callback_data=f"tasks:edit_field:{int(task_id)}:photo")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:open_notify:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_cancel_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")]]
+    )
+
+
+def tasks_edit_priority_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Обычный", callback_data=f"tasks:edit_priority:{int(task_id)}:normal")],
+            [InlineKeyboardButton(text="🔥 Срочно", callback_data=f"tasks:edit_priority:{int(task_id)}:urgent")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_due_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Без дедлайна", callback_data=f"tasks:edit_due:{int(task_id)}:none")],
+            [
+                InlineKeyboardButton(text="Сегодня до 18:00", callback_data=f"tasks:edit_due:{int(task_id)}:today18"),
+                InlineKeyboardButton(text="Сегодня до 21:00", callback_data=f"tasks:edit_due:{int(task_id)}:today21"),
+            ],
+            [
+                InlineKeyboardButton(text="Завтра до 18:00", callback_data=f"tasks:edit_due:{int(task_id)}:tomorrow18"),
+                InlineKeyboardButton(text="Завтра до 21:00", callback_data=f"tasks:edit_due:{int(task_id)}:tomorrow21"),
+            ],
+            [
+                InlineKeyboardButton(text="До конца недели", callback_data=f"tasks:edit_due:{int(task_id)}:eow"),
+                InlineKeyboardButton(text="До конца месяца", callback_data=f"tasks:edit_due:{int(task_id)}:eom"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_photo_kb(*, task_id: int, has_photo: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text="Заменить фото", callback_data=f"tasks:edit_photo:{int(task_id)}:replace")])
+    if has_photo:
+        rows.append([InlineKeyboardButton(text="Удалить фото", callback_data=f"tasks:edit_photo:{int(task_id)}:remove")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")])
+    rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def tasks_edit_assignees_kb(
+    *,
+    task_id: int,
+    users: list[tuple[int, str]],
+    selected_ids: set[int],
+    page: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for uid, name in users:
+        prefix = "✅ " if int(uid) in selected_ids else "☑️ "
+        rows.append([InlineKeyboardButton(text=prefix + str(name), callback_data=f"tasks:edit_assignee:{int(task_id)}:{int(uid)}")])
+
+    nav: list[InlineKeyboardButton] = []
+    if has_prev:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"tasks:edit_assignees_page:{int(task_id)}:{int(page)-1}"))
+    nav.append(InlineKeyboardButton(text="Готово", callback_data=f"tasks:edit_assignees_done:{int(task_id)}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"tasks:edit_assignees_page:{int(task_id)}:{int(page)+1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")])
+    rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -70,6 +161,10 @@ def task_detail_kb(
     can_to_review: bool,
     can_accept_done: bool,
     can_send_back: bool,
+    can_edit: bool = False,
+    can_archive: bool = False,
+    can_unarchive: bool = False,
+    is_archived: bool = False,
     back_kind: str | None = None,
     back_page: int | None = None,
     back_cb: str | None = None,
@@ -89,18 +184,26 @@ def task_detail_kb(
     if main:
         rows.append(main[:4])
 
+    if bool(is_archived):
+        if bool(can_unarchive):
+            rows.append([InlineKeyboardButton(text="↩️ Разархивировать", callback_data=f"task_unarchive:{int(task_id)}")])
+        else:
+            rows.append([InlineKeyboardButton(text="📦 В архиве", callback_data="noop")])
+    else:
+        if bool(can_archive):
+            rows.append([InlineKeyboardButton(text="🗄 В архив", callback_data=f"task_archive:{int(task_id)}")])
+
     back_callback = "tasks:menu"
     if back_cb is not None:
         back_callback = str(back_cb)
     elif back_kind is not None and back_page is not None:
         back_callback = f"tasks:list:{back_kind}:{int(back_page)}"
 
-    rows.append(
-        [
-            InlineKeyboardButton(text="💬 Комментарий", callback_data=f"tasks:comment:{task_id}"),
-            InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback),
-        ]
-    )
+    tail: list[InlineKeyboardButton] = [InlineKeyboardButton(text="💬 Комментарий", callback_data=f"tasks:comment:{task_id}")]
+    if can_edit:
+        tail.append(InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"tasks:edit:{int(task_id)}"))
+    tail.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback))
+    rows.append(tail[:3])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -210,3 +313,99 @@ def tasks_create_confirm_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="❌ Отмена", callback_data="tasks:create_cancel")],
         ]
     )
+
+
+def tasks_edit_menu_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Название", callback_data=f"tasks:edit_field:{int(task_id)}:title")],
+            [InlineKeyboardButton(text="Описание", callback_data=f"tasks:edit_field:{int(task_id)}:description")],
+            [InlineKeyboardButton(text="Приоритет", callback_data=f"tasks:edit_field:{int(task_id)}:priority")],
+            [InlineKeyboardButton(text="Дедлайн", callback_data=f"tasks:edit_field:{int(task_id)}:due")],
+            [InlineKeyboardButton(text="Исполнители", callback_data=f"tasks:edit_field:{int(task_id)}:assignees")],
+            [InlineKeyboardButton(text="Фото", callback_data=f"tasks:edit_field:{int(task_id)}:photo")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:open_notify:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_cancel_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")]]
+    )
+
+
+def tasks_edit_priority_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Обычный", callback_data=f"tasks:edit_priority:{int(task_id)}:normal")],
+            [InlineKeyboardButton(text="🔥 Срочно", callback_data=f"tasks:edit_priority:{int(task_id)}:urgent")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_due_kb(*, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Без дедлайна", callback_data=f"tasks:edit_due:{int(task_id)}:none")],
+            [
+                InlineKeyboardButton(text="Сегодня до 18:00", callback_data=f"tasks:edit_due:{int(task_id)}:today18"),
+                InlineKeyboardButton(text="Сегодня до 21:00", callback_data=f"tasks:edit_due:{int(task_id)}:today21"),
+            ],
+            [
+                InlineKeyboardButton(text="Завтра до 18:00", callback_data=f"tasks:edit_due:{int(task_id)}:tomorrow18"),
+                InlineKeyboardButton(text="Завтра до 21:00", callback_data=f"tasks:edit_due:{int(task_id)}:tomorrow21"),
+            ],
+            [
+                InlineKeyboardButton(text="До конца недели", callback_data=f"tasks:edit_due:{int(task_id)}:eow"),
+                InlineKeyboardButton(text="До конца месяца", callback_data=f"tasks:edit_due:{int(task_id)}:eom"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
+        ]
+    )
+
+
+def tasks_edit_photo_kb(*, task_id: int, has_photo: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text="Заменить фото", callback_data=f"tasks:edit_photo:{int(task_id)}:replace")])
+    if has_photo:
+        rows.append([InlineKeyboardButton(text="Удалить фото", callback_data=f"tasks:edit_photo:{int(task_id)}:remove")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")])
+    rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def tasks_edit_assignees_kb(
+    *,
+    task_id: int,
+    users: list[tuple[int, str]],
+    selected_ids: set[int],
+    page: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for uid, name in users:
+        prefix = "✅ " if int(uid) in selected_ids else "☑️ "
+        rows.append(
+            [InlineKeyboardButton(text=prefix + str(name), callback_data=f"tasks:edit_assignee:{int(task_id)}:{int(uid)}")]
+        )
+
+    nav: list[InlineKeyboardButton] = []
+    if has_prev:
+        nav.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"tasks:edit_assignees_page:{int(task_id)}:{int(page)-1}")
+        )
+    nav.append(InlineKeyboardButton(text="Готово", callback_data=f"tasks:edit_assignees_done:{int(task_id)}"))
+    if has_next:
+        nav.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"tasks:edit_assignees_page:{int(task_id)}:{int(page)+1}")
+        )
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")])
+    rows.append([InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

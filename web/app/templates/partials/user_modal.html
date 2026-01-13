@@ -59,6 +59,55 @@
         {% endfor %}
       </select>
     </label>
+    <label>
+      Цвет
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="user-color-preview" class="user-color-dot" style="width:16px; height:16px; background: {{ user.color or '#64748B' }}"></span>
+        <input
+          type="color"
+          value="{{ user.color or '#64748B' }}"
+          onchange="(function(v){
+            try {
+              document.getElementById('user-color-value').value = v;
+              document.getElementById('user-color-hex').value = v;
+              document.getElementById('user-color-preview').style.background = v;
+            } catch(e){}
+          })(this.value)"
+          style="width:44px; height:34px; padding:0; border:1px solid #e5e7eb; border-radius:10px; background:#fff;"
+        />
+        <span style="position:relative; display:inline-flex; align-items:center;">
+          <input
+            id="user-color-hex"
+            type="text"
+            value="{{ user.color or '#64748B' }}"
+            inputmode="text"
+            autocapitalize="characters"
+            spellcheck="false"
+            oninput="(function(v){
+              v = String(v||'').trim();
+              try {
+                document.getElementById('user-color-value').value = v;
+                document.getElementById('user-color-preview').style.background = v;
+              } catch(e){}
+            })(this.value)"
+            style="width:120px; padding-right:30px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;"
+          />
+          <button
+            type="button"
+            title="Автоцвет"
+            onclick="(function(){
+              try {
+                document.getElementById('user-color-value').value = '';
+                document.getElementById('user-color-hex').value = '';
+                document.getElementById('user-color-preview').style.background = '#ffffff';
+              } catch(e){}
+            })()"
+            style="position:absolute; right:6px; width:20px; height:20px; border-radius:999px; border:1px solid #e5e7eb; background:#fff; color:#64748b; line-height:18px; padding:0; cursor:pointer;"
+          >×</button>
+        </span>
+        <input id="user-color-value" type="hidden" name="color" value="{{ user.color or '#64748B' }}" />
+      </div>
+    </label>
     <div class="form-row" style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px;">
       <button class="btn" type="submit">Сохранить</button>
       <button

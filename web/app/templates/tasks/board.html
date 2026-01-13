@@ -12,7 +12,7 @@
   </div>
 </div>
 
-<form class="tasks-filters" method="get" action="{{ request.url_for('tasks_board') }}">
+<form class="tasks-filters" method="get" action="{{ board_url or request.url_for('tasks_board') }}">
   <div class="tasks-filters-search">
     <label class="tasks-filter">
       <span class="tasks-filter-label">Поиск</span>
@@ -61,7 +61,7 @@
 
     <div class="tasks-filters-actions">
       <button class="btn-outline" type="submit">Применить</button>
-      <a class="btn-outline" href="{{ request.url_for('tasks_board') }}">Сбросить</a>
+      <a class="btn-outline" href="{{ board_url or request.url_for('tasks_board') }}">Сбросить</a>
     </div>
   </div>
 </form>
@@ -89,8 +89,18 @@
                 <div class="task-due muted">Дедлайн: —</div>
               {% endif %}
               <div class="task-assignees">
-                {% if t.assignees_str %}
-                  {{ t.assignees_str }}
+                {% if t.assignees and (t.assignees|length > 0) %}
+                  <span class="task-assignee-dots-inline" aria-hidden="true">
+                    {% for a in t.assignees[:3] %}
+                      {% if a.get('color') %}
+                        <span class="task-assignee-dot" title="{{ (a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '') }}" style="background: {{ a.get('color') }}"></span>
+                      {% endif %}
+                    {% endfor %}
+                    {% if t.assignees|length > 3 %}
+                      <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
+                    {% endif %}
+                  </span>
+                  <span class="task-assignees-text">{{ t.assignees_str }}</span>
                 {% else %}
                   <span class="muted">Общая</span>
                 {% endif %}
@@ -131,6 +141,14 @@
       const who = escapeHtml((e.actor && e.actor.name) ? e.actor.name : '—');
       const title = escapeHtml(e.title || e.type || '');
       let details = '';
+      if (e.type === 'edited') {
+        const lines = (e.payload && Array.isArray(e.payload.human)) ? e.payload.human : [];
+        if (lines.length) {
+          details = '<ul class="muted" style="margin-top:6px; padding-left: 18px;">' +
+            lines.map(x => '<li>' + escapeHtml(String(x || '')) + '</li>').join('') +
+          '</ul>';
+        }
+      }
       if (e.type === 'status_changed') {
         const frRaw = (e && (e.from_display || (e.payload && e.payload.from))) || '';
         const toRaw = (e && (e.to_display || (e.payload && e.payload.to))) || '';
@@ -174,7 +192,12 @@
 
   function renderAssignees(users){
     if (!users || users.length === 0) return '<span class="muted">Общая</span>';
-    return users.map(u => escapeHtml((u.first_name || '') + ' ' + (u.last_name || '')).trim() || ('#' + u.id)).join(', ');
+    return users.map(u => {
+      const name = escapeHtml(((u.first_name || '') + ' ' + (u.last_name || '')).trim() || ('#' + u.id));
+      const c = (u && u.color) ? String(u.color) : '';
+      const dot = c ? ('<span class="task-assignee-dot" style="background:' + escapeHtml(c) + '"></span>') : '';
+      return '<span style="display:inline-flex; align-items:center; gap:6px; margin-right:8px;">' + dot + name + '</span>';
+    }).join('');
   }
 
   function renderComments(items){
@@ -216,7 +239,8 @@
       can.finish_to_review ? '<button class="btn" type="button" onclick="window.tasksChangeStatus(' + task.id + ',\'review\')">На проверку</button>' : '',
       can.accept_done ? '<button class="btn" type="button" onclick="window.tasksChangeStatus(' + task.id + ',\'done\')">Принять</button>' : '',
       can.send_back ? '<button class="btn-warn" type="button" onclick="window.tasksSendBackPrompt(' + task.id + ')">На доработку</button>' : '',
-      can.archive ? '<button class="btn-outline" type="button" onclick="window.tasksArchive(' + task.id + ')">В архив</button>' : ''
+      can.archive ? '<button class="btn-outline" type="button" onclick="window.tasksArchive(' + task.id + ')">В архив</button>' : '',
+      (IS_ADMIN || IS_MANAGER) ? '<button class="btn-outline" type="button" onclick="window.tasksOpenEdit(' + task.id + ')">✏️ Редактировать</button>' : ''
     ].filter(Boolean).join('');
 
     const mainPhotoUrl = task.photo_url || task.photo_path;
@@ -280,7 +304,12 @@
   }
 
   async function apiJson(url, opts){
-    const r = await fetch(url, opts || {});
+    const o = Object.assign({ credentials: 'include' }, (opts || {}));
+    const r = await fetch(url, o);
+    if (r.status === 401) {
+      try { window.location.href = '/crm/auth/tg'; } catch (_){ }
+      throw new Error('Сессия истекла');
+    }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       const msg = (data && (data.detail || data.error)) ? (data.detail || data.error) : ('HTTP ' + r.status);
@@ -365,6 +394,142 @@
       openModal(renderDetailModal(task));
     } catch (e) {
       await window.crmAlert((e && e.message) || 'Не удалось загрузить задачу');
+    }
+  };
+
+  function toDateTimeLocalFromMskStr(mskStr){
+    // mskStr: "DD.MM.YYYY HH:MM"
+    try {
+      const s = String(mskStr || '').trim();
+      if (!s) return '';
+      const [dPart, tPart] = s.split(' ');
+      if (!dPart || !tPart) return '';
+      const [dd, mm, yyyy] = dPart.split('.').map(x => parseInt(x, 10));
+      const [hh, mi] = tPart.split(':').map(x => parseInt(x, 10));
+      if (!dd || !mm || !yyyy) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return String(yyyy) + '-' + pad(mm) + '-' + pad(dd) + 'T' + pad(hh || 0) + ':' + pad(mi || 0);
+    } catch (_){
+      return '';
+    }
+  }
+
+  window.tasksOpenEdit = async function(taskId){
+    try {
+      const task = await apiJson('/crm/api/tasks/' + String(taskId));
+      const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
+      const visibleUsers = (users || []).filter(u => {
+        if (IS_ADMIN || IS_MANAGER) return true;
+        return !(u && (u.is_admin || u.is_manager));
+      });
+
+      const selectedIds = new Set((task.assignees || []).map(u => String(u.id)));
+      const dueVal = task.due_at_str ? toDateTimeLocalFromMskStr(task.due_at_str) : '';
+      const hasPhoto = !!(task.photo_url || task.photo_path || task.tg_photo_file_id || task.photo_file_id);
+
+      const html = (
+        '<div class="modal-header">Редактировать · Задача #' + task.id + '</div>' +
+        '<div class="modal-body tasks-modal">' +
+          '<form id="task-edit-form" class="task-form" onsubmit="return window.tasksSubmitEdit(event, ' + task.id + ')">' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Заголовок</div>' +
+              '<input class="form-control" type="text" name="title" required value="' + escapeHtml(task.title || '') + '" />' +
+            '</div>' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Описание</div>' +
+              '<textarea class="form-control" name="description" rows="5">' + escapeHtml(task.description || '') + '</textarea>' +
+            '</div>' +
+            '<div class="task-form-grid">' +
+              '<div class="task-form-row">' +
+                '<div class="form-label">Приоритет</div>' +
+                '<select class="form-control" name="priority">' +
+                  '<option value="normal" ' + (task.priority === 'normal' ? 'selected' : '') + '>Обычный</option>' +
+                  '<option value="urgent" ' + (task.priority === 'urgent' ? 'selected' : '') + '>Срочно</option>' +
+                '</select>' +
+              '</div>' +
+              '<div class="task-form-row">' +
+                '<div class="form-label">Дедлайн (МСК)</div>' +
+                '<input class="form-control" type="datetime-local" name="due_at" value="' + escapeHtml(dueVal) + '" />' +
+              '</div>' +
+            '</div>' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Исполнители</div>' +
+              '<div class="masters-picker">' +
+                '<div class="muted" style="margin-bottom: 6px;">Можно никого — будет «общая»</div>' +
+                '<div class="masters-list">' +
+                  visibleUsers.map(u => (
+                    '<label class="masters-row">' +
+                      '<input type="checkbox" name="assignee_ids" value="' + u.id + '" ' + (selectedIds.has(String(u.id)) ? 'checked' : '') + ' />' +
+                      '<span>' + escapeHtml(((u.first_name||'') + ' ' + (u.last_name||'')).trim() || ('#' + u.id)) + '</span>' +
+                    '</label>'
+                  )).join('') +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="task-form-row">' +
+              '<div class="form-label">Фото</div>' +
+              (hasPhoto ? '<div class="muted" style="margin-bottom:6px;">Сейчас: есть</div>' : '<div class="muted" style="margin-bottom:6px;">Сейчас: нет</div>') +
+              '<input class="form-control" type="file" name="photo" accept="image/*" />' +
+              (hasPhoto ? (
+                '<label class="checkbox-row" style="margin-top:10px;">' +
+                  '<input type="checkbox" name="remove_photo" value="1" />' +
+                  '<span>Удалить фото</span>' +
+                '</label>'
+              ) : '') +
+            '</div>' +
+            '<div class="task-modal-footer">' +
+              '<button type="button" class="btn-outline" onclick="window.tasksOpenDetail(' + task.id + ')">Отмена</button>' +
+              '<button type="submit" class="btn">Сохранить</button>' +
+            '</div>' +
+          '</form>' +
+        '</div>'
+      );
+      openModal(html);
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось открыть редактирование');
+    }
+  };
+
+  window.tasksSubmitEdit = async function(ev, taskId){
+    ev.preventDefault();
+    const form = ev.target;
+    const fd = new FormData(form);
+    const title = String(fd.get('title') || '').trim();
+    const description = String(fd.get('description') || '');
+    const priority = String(fd.get('priority') || 'normal');
+    const dueAt = String(fd.get('due_at') || '').trim();
+    const removePhoto = !!fd.get('remove_photo');
+    const assigneeIds = (fd.getAll('assignee_ids') || []).map(x => parseInt(String(x), 10)).filter(x => Number.isFinite(x) && x > 0);
+    const photo = fd.get('photo');
+
+    try {
+      if (removePhoto) {
+        await apiJson('/crm/api/tasks/' + String(taskId) + '/photo', { method: 'DELETE' });
+      }
+
+      await apiJson('/crm/api/tasks/' + String(taskId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title,
+          description: description,
+          priority: priority,
+          due_at: dueAt || null,
+          assignee_ids: assigneeIds,
+        })
+      });
+
+      if (photo && typeof photo === 'object' && photo.size) {
+        const up = new FormData();
+        up.append('photo', photo);
+        await apiJson('/crm/api/tasks/' + String(taskId) + '/photo_web', { method: 'POST', body: up });
+      }
+
+      await window.tasksOpenDetail(taskId);
+      return false;
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось сохранить');
+      return false;
     }
   };
 

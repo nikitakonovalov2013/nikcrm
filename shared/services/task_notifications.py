@@ -4,15 +4,17 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 
+from sqlalchemy import text
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.db import add_after_commit_callback
 from shared.models import Task, TaskNotification, User
 from shared.utils import MOSCOW_TZ, utc_now
 
 
-WORK_START = time(10, 0)
-WORK_END = time(18, 0)
+WORK_START = time(8, 0)
+WORK_END = time(22, 0)
 
 
 def next_allowed_send_at(*, now_utc: datetime) -> datetime:
@@ -46,6 +48,18 @@ class EnqueueResult:
 class TaskNotificationService:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def _notify_after_commit(self, *, recipient_user_id: int, notification_id: int | None) -> None:
+        # Lightweight wake-up signal for bot worker. Actual sending is still driven by DB state.
+        payload = f"recipient={int(recipient_user_id)};id={int(notification_id or 0)}"
+        try:
+            await self.session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": "task_notifications", "payload": payload},
+            )
+        except Exception:
+            # Never fail core flows due to notification signal problems.
+            pass
 
     async def enqueue(
         self,
@@ -89,6 +103,12 @@ class TaskNotificationService:
         )
         self.session.add(n)
         await self.session.flush()
+
+        # Event-driven wake up (after commit).
+        add_after_commit_callback(
+            self.session,
+            lambda: self._notify_after_commit(recipient_user_id=int(recipient_user_id), notification_id=int(n.id)),
+        )
         return EnqueueResult(created=True, notification_id=int(n.id))
 
     async def resolve_recipients_tg_ids(self, *, user_ids: list[int]) -> dict[int, int]:

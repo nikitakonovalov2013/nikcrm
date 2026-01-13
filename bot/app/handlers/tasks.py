@@ -23,6 +23,12 @@ from bot.app.keyboards.tasks import (
     tasks_status_kb,
     tasks_list_kb,
     task_detail_kb,
+    tasks_edit_menu_kb,
+    tasks_edit_cancel_kb,
+    tasks_edit_priority_kb,
+    tasks_edit_due_kb,
+    tasks_edit_photo_kb,
+    tasks_edit_assignees_kb,
     tasks_skip_photos_kb,
     tasks_text_cancel_kb,
     tasks_create_cancel_kb,
@@ -42,6 +48,9 @@ from bot.app.utils.tg_id import get_tg_user_id
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.utils.tasks_screen import render_tasks_screen
 from bot.app.utils.urls import build_task_board_magic_link, build_tasks_board_magic_link
+from shared.services.task_notifications import TaskNotificationService
+from shared.services.task_edit import update_task_with_audit
+from fastapi import HTTPException
 
 
 router = Router()
@@ -978,6 +987,27 @@ async def cb_tasks_create_confirm(cb: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
 
+        # Enqueue notifications for assignees (event-driven wake-up after commit via NOTIFY).
+        try:
+            recipients = [int(x) for x in (assignee_ids or []) if int(x) > 0 and int(x) != int(actor.id)]
+            if recipients:
+                ns = TaskNotificationService(session)
+                actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+                for rid in recipients:
+                    await ns.enqueue(
+                        task_id=int(t.id),
+                        recipient_user_id=int(rid),
+                        type="created",
+                        payload={
+                            "task_id": int(t.id),
+                            "actor_user_id": int(actor.id),
+                            "actor_name": actor_name,
+                        },
+                        dedupe_key=f"created:{int(t.id)}",
+                    )
+        except Exception:
+            pass
+
     await _preserve_tasks_ui_and_clear_state(state)
     await state.update_data(tasks_chat_id=int(cb.message.chat.id))
     await _show_task_detail(cb, state, task_id=int(t.id))
@@ -1086,12 +1116,18 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
         page = int(llc.get("page") or data.get("tasks_page") or 0)
         html = svc.render_task_detail_html(task, perms=perms) + "\n\n" + format_plain_url("🌐 Открыть на доске:", board_url)
 
+        can_edit = bool(r.is_admin or r.is_manager)
+        is_archived = str(task.status.value if hasattr(task.status, "value") else str(task.status)) == TaskStatus.ARCHIVED.value
         kb = task_detail_kb(
             task_id=int(task.id),
             can_take=bool(perms.take_in_progress),
             can_to_review=bool(perms.finish_to_review),
             can_accept_done=bool(perms.accept_done),
             can_send_back=bool(perms.send_back),
+            can_edit=bool(can_edit),
+            can_archive=bool(perms.archive),
+            can_unarchive=bool(perms.unarchive),
+            is_archived=bool(is_archived),
             back_cb=f"tasks:list:{scope}:{status}:{page}",
         )
 
@@ -1227,6 +1263,531 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
             photo=None,
             disable_web_page_preview=True,
         )
+
+
+@router.callback_query(F.data.startswith("task_archive:"))
+async def cb_task_archive(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 2:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[1])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    await cb.answer()
+    try:
+        async with get_async_session() as session:
+            await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"archived": True})
+    except HTTPException as e:
+        if int(getattr(e, "status_code", 0) or 0) == 403:
+            await cb.answer("Недостаточно прав", show_alert=True)
+            return
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    except Exception:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.callback_query(F.data.startswith("task_unarchive:"))
+async def cb_task_unarchive(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 2:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[1])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    await cb.answer()
+    try:
+        async with get_async_session() as session:
+            await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"archived": False})
+    except HTTPException as e:
+        if int(getattr(e, "status_code", 0) or 0) == 403:
+            await cb.answer("Недостаточно прав", show_alert=True)
+            return
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    except Exception:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.callback_query(F.data.startswith("tasks:edit:"))
+async def cb_tasks_edit_menu(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    r = role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        await cb.answer("Нет доступа")
+        return
+
+    await cb.answer()
+    await _preserve_tasks_ui_and_clear_state(state)
+    await state.set_state(TasksState.edit_menu)
+    await state.update_data(edit_task_id=int(task_id), tasks_chat_id=int(cb.message.chat.id))
+    await render_tasks_screen(
+        bot=cb.bot,
+        chat_id=int(cb.message.chat.id),
+        text="✏️ <b>Редактирование</b>\n\nЧто редактируем?",
+        reply_markup=tasks_edit_menu_kb(task_id=int(task_id)),
+        state=state,
+        photo=None,
+    )
+
+
+@router.callback_query(TasksState.edit_menu, F.data.startswith("tasks:edit_cancel:"))
+async def cb_tasks_edit_cancel(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        task_id = 0
+    await cb.answer()
+    await _preserve_tasks_ui_and_clear_state(state)
+    if task_id:
+        await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.callback_query(TasksState.edit_menu, F.data.startswith("tasks:edit_field:"))
+async def cb_tasks_edit_select_field(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    field = str(parts[3])
+
+    await cb.answer()
+    await state.update_data(edit_task_id=int(task_id), edit_field=str(field))
+
+    if field == "title":
+        await state.set_state(TasksState.edit_title)
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="✏️ <b>Название</b>\n\nВведите новое название:",
+            reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
+            state=state,
+            photo=None,
+        )
+        return
+
+    if field == "description":
+        await state.set_state(TasksState.edit_description)
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="✏️ <b>Описание</b>\n\nВведите новое описание (можно пустое):",
+            reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
+            state=state,
+            photo=None,
+        )
+        return
+
+    if field == "priority":
+        await state.set_state(TasksState.edit_priority)
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="✏️ <b>Приоритет</b>\n\nВыберите приоритет:",
+            reply_markup=tasks_edit_priority_kb(task_id=int(task_id)),
+            state=state,
+            photo=None,
+        )
+        return
+
+    if field == "due":
+        await state.set_state(TasksState.edit_due)
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="✏️ <b>Дедлайн</b>\n\nВыберите вариант:",
+            reply_markup=tasks_edit_due_kb(task_id=int(task_id)),
+            state=state,
+            photo=None,
+        )
+        return
+
+    if field == "assignees":
+        await state.set_state(TasksState.edit_assignees)
+        await state.update_data(edit_assignees_page=0)
+        await _render_edit_assignees(cb, state, task_id=int(task_id), page=0)
+        return
+
+    if field == "photo":
+        await state.set_state(TasksState.edit_photo)
+        async with get_async_session() as session:
+            repo = TaskRepository(session)
+            task = await repo.get_task_full(int(task_id))
+            has_photo = bool(getattr(task, "photo_key", None) or getattr(task, "photo_path", None) or getattr(task, "photo_url", None) or getattr(task, "tg_photo_file_id", None) or getattr(task, "photo_file_id", None)) if task else False
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="✏️ <b>Фото</b>\n\nВыберите действие:",
+            reply_markup=tasks_edit_photo_kb(task_id=int(task_id), has_photo=bool(has_photo)),
+            state=state,
+            photo=None,
+        )
+        return
+
+    await render_tasks_screen(
+        bot=cb.bot,
+        chat_id=int(cb.message.chat.id),
+        text="⚠️ Неподдерживаемое поле.",
+        reply_markup=tasks_edit_menu_kb(task_id=int(task_id)),
+        state=state,
+        photo=None,
+    )
+
+
+async def _render_edit_assignees(cb: CallbackQuery, state: FSMContext, *, task_id: int, page: int) -> None:
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    async with get_async_session() as session:
+        repo = TaskRepository(session)
+        users = await repo.list_assignable_users()
+        task = await repo.get_task_full(int(task_id))
+
+    items: list[tuple[int, str]] = []
+    for u in users:
+        name = (f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip() or f"#{int(u.id)}")
+        items.append((int(u.id), str(name)))
+
+    per_page = 10
+    page = max(0, int(page))
+    start = page * per_page
+    end = start + per_page
+    slice_items = items[start:end]
+    has_prev = page > 0
+    has_next = end < len(items)
+
+    selected = set(int(u.id) for u in list(getattr(task, "assignees", None) or [])) if task else set()
+    data = await state.get_data()
+    cur = set(int(x) for x in (data.get("edit_assignee_ids") or list(selected)))
+    await state.update_data(edit_assignee_ids=list(cur), edit_assignees_page=int(page))
+
+    await render_tasks_screen(
+        bot=cb.bot,
+        chat_id=int(cb.message.chat.id),
+        text="👥 <b>Исполнители</b>\n\nВыберите исполнителей (можно никого):",
+        reply_markup=tasks_edit_assignees_kb(
+            task_id=int(task_id),
+            users=slice_items,
+            selected_ids=set(cur),
+            page=int(page),
+            has_prev=bool(has_prev),
+            has_next=bool(has_next),
+        ),
+        state=state,
+        photo=None,
+    )
+
+
+@router.callback_query(TasksState.edit_assignees, F.data.startswith("tasks:edit_assignees_page:"))
+async def cb_tasks_edit_assignees_page(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+        page = int(parts[3])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    await cb.answer()
+    await _render_edit_assignees(cb, state, task_id=int(task_id), page=int(page))
+
+
+@router.callback_query(TasksState.edit_assignees, F.data.startswith("tasks:edit_assignee:"))
+async def cb_tasks_edit_toggle_assignee(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+        uid = int(parts[3])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    await cb.answer()
+    data = await state.get_data()
+    ids = [int(x) for x in (data.get("edit_assignee_ids") or [])]
+    if uid in ids:
+        ids = [x for x in ids if x != uid]
+    else:
+        ids.append(uid)
+    await state.update_data(edit_assignee_ids=ids)
+    page = int(data.get("edit_assignees_page") or 0)
+    await _render_edit_assignees(cb, state, task_id=int(task_id), page=int(page))
+
+
+@router.callback_query(TasksState.edit_assignees, F.data.startswith("tasks:edit_assignees_done:"))
+async def cb_tasks_edit_assignees_done(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    await cb.answer()
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    data = await state.get_data()
+    ids = [int(x) for x in (data.get("edit_assignee_ids") or [])]
+
+    async with get_async_session() as session:
+        await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"assignee_ids": ids})
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.message(TasksState.edit_title)
+async def st_tasks_edit_title(message: Message, state: FSMContext):
+    actor = await ensure_registered_or_reply(message)
+    if not actor:
+        return
+    data = await state.get_data()
+    task_id = int(data.get("edit_task_id") or 0)
+    title = (message.text or "").strip()
+    if not task_id or not title:
+        await message.answer("⚠️ Введите название.", reply_markup=tasks_edit_cancel_kb(task_id=task_id))
+        return
+    async with get_async_session() as session:
+        await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"title": str(title)})
+    await _preserve_tasks_ui_and_clear_state(state)
+    await render_tasks_screen(
+        bot=message.bot,
+        chat_id=int(message.chat.id),
+        text="✅ Сохранено",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Открыть задачу", callback_data=f"tasks:open_notify:{int(task_id)}")]]
+        ),
+        state=state,
+        photo=None,
+    )
+
+
+@router.message(TasksState.edit_description)
+async def st_tasks_edit_description(message: Message, state: FSMContext):
+    actor = await ensure_registered_or_reply(message)
+    if not actor:
+        return
+    data = await state.get_data()
+    task_id = int(data.get("edit_task_id") or 0)
+    if not task_id:
+        return
+    desc = (message.text or "").strip()
+    async with get_async_session() as session:
+        await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"description": desc})
+    await _preserve_tasks_ui_and_clear_state(state)
+    await render_tasks_screen(
+        bot=message.bot,
+        chat_id=int(message.chat.id),
+        text="✅ Сохранено",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Открыть задачу", callback_data=f"tasks:open_notify:{int(task_id)}")]]
+        ),
+        state=state,
+        photo=None,
+    )
+
+
+@router.callback_query(TasksState.edit_priority, F.data.startswith("tasks:edit_priority:"))
+async def cb_tasks_edit_priority(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    val = str(parts[3])
+    pr = TaskPriority.URGENT.value if val == TaskPriority.URGENT.value else TaskPriority.NORMAL.value
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+    await cb.answer()
+    async with get_async_session() as session:
+        await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"priority": str(pr)})
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.callback_query(TasksState.edit_due, F.data.startswith("tasks:edit_due:"))
+async def cb_tasks_edit_due(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    preset = str(parts[3])
+    due_dt = _due_from_preset(preset)
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+    await cb.answer()
+    async with get_async_session() as session:
+        await update_task_with_audit(
+            session=session,
+            actor=actor,
+            task_id=int(task_id),
+            patch={"due_at": due_dt.isoformat() if due_dt else None},
+        )
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await _show_task_detail(cb, state, task_id=int(task_id))
+
+
+@router.callback_query(TasksState.edit_photo, F.data.startswith("tasks:edit_photo:"))
+async def cb_tasks_edit_photo_action(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    if len(parts) != 4:
+        await cb.answer("Ошибка")
+        return
+    try:
+        task_id = int(parts[2])
+    except Exception:
+        await cb.answer("Ошибка")
+        return
+    action = str(parts[3])
+
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    await cb.answer()
+    if action == "remove":
+        async with get_async_session() as session:
+            await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"remove_photo": True}, photo_action="removed")
+        await _preserve_tasks_ui_and_clear_state(state)
+        await _show_task_detail(cb, state, task_id=int(task_id))
+        return
+
+    if action == "replace":
+        await state.set_state(TasksState.edit_photo)
+        await state.update_data(edit_task_id=int(task_id), edit_photo_mode="replace")
+        await render_tasks_screen(
+            bot=cb.bot,
+            chat_id=int(cb.message.chat.id),
+            text="📎 <b>Фото</b>\n\nОтправьте новое фото:",
+            reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
+            state=state,
+            photo=None,
+        )
+        return
+
+
+@router.message(TasksState.edit_photo)
+async def st_tasks_edit_photo(message: Message, state: FSMContext):
+    actor = await ensure_registered_or_reply(message)
+    if not actor:
+        return
+    data = await state.get_data()
+    task_id = int(data.get("edit_task_id") or 0)
+    mode = str(data.get("edit_photo_mode") or "")
+    if mode != "replace" or not task_id:
+        return
+
+    fid = None
+    try:
+        fid = message.photo[-1].file_id if getattr(message, "photo", None) else None
+    except Exception:
+        fid = None
+    if not fid:
+        await message.answer("⚠️ Пришлите фото.")
+        return
+
+    upload_payload = await _upload_tg_photo_to_web_storage(tg_file_id=str(fid), bot=message.bot)
+    if not upload_payload:
+        await message.answer("⚠️ Не удалось загрузить фото.")
+        return
+
+    async with get_async_session() as session:
+        await update_task_with_audit(
+            session=session,
+            actor=actor,
+            task_id=int(task_id),
+            patch={
+                "photo_key": str(upload_payload.get("photo_key") or "") or None,
+                "photo_path": str(upload_payload.get("photo_path") or "") or None,
+                "photo_url": str(upload_payload.get("photo_url") or "") or None,
+                "tg_photo_file_id": str(fid),
+            },
+            photo_action="replaced",
+        )
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await state.update_data(tasks_chat_id=int(message.chat.id))
+    await render_tasks_screen(
+        bot=message.bot,
+        chat_id=int(message.chat.id),
+        text="✅ Сохранено",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Открыть задачу", callback_data=f"tasks:open_notify:{int(task_id)}")]]
+        ),
+        state=state,
+        photo=None,
+    )
 
 
 @router.callback_query(F.data.startswith("tasks:status:"))

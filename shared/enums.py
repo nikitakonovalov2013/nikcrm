@@ -53,6 +53,7 @@ class TaskEventType(StrEnum):
     CREATED = "created"
     ASSIGNED_ADDED = "assigned_added"
     ASSIGNED_REMOVED = "assigned_removed"
+    EDITED = "edited"
     STATUS_CHANGED = "status_changed"
     COMMENT_ADDED = "comment_added"
     ARCHIVED = "archived"

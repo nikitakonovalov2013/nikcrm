@@ -9,6 +9,7 @@ from typing import Optional, List
 import json
 import logging
 import httpx
+import re
 
 from shared.config import settings
 from shared.db import get_async_session
@@ -61,6 +62,8 @@ from shared.utils import MOSCOW_TZ, utc_now, format_moscow
 from shared.services.task_notifications import TaskNotificationService
 from shared.permissions import role_flags
 from shared.services.task_permissions import task_permissions, validate_status_transition
+from shared.services.task_audit import diff_task_for_audit
+from shared.services.task_edit import update_task_with_audit
 
 
 logger = logging.getLogger(__name__)
@@ -234,6 +237,7 @@ def _user_short(u: User) -> dict:
         "first_name": u.first_name,
         "last_name": u.last_name,
         "tg_id": int(u.tg_id),
+        "color": str(getattr(u, "color", "") or ""),
     }
 
 
@@ -257,6 +261,7 @@ def _event_view(e: TaskEvent) -> dict:
         TaskEventType.CREATED.value: "Создано",
         TaskEventType.ASSIGNED_ADDED.value: "Назначен исполнитель",
         TaskEventType.ASSIGNED_REMOVED.value: "Снят исполнитель",
+        TaskEventType.EDITED.value: "Изменено",
         TaskEventType.STATUS_CHANGED.value: "Смена статуса",
         TaskEventType.COMMENT_ADDED.value: "Добавлен комментарий",
         TaskEventType.ARCHIVED.value: "Архивировано",
@@ -290,6 +295,15 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
             for u in assignees
         ]
     )
+    assignees_view = [
+        {
+            "id": int(getattr(u, "id", 0) or 0),
+            "first_name": (getattr(u, "first_name", None) or None),
+            "last_name": (getattr(u, "last_name", None) or None),
+            "color": (getattr(u, "color", None) or None),
+        }
+        for u in assignees
+    ]
     is_assigned_to_me = False
     if actor_id is not None:
         is_assigned_to_me = any(int(u.id) == int(actor_id) for u in assignees)
@@ -303,6 +317,7 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
         "status": t.status.value if hasattr(t.status, "value") else str(t.status),
         "due_at_str": due_at_str,
         "created_at_str": format_moscow(getattr(t, "created_at", None), "%d.%m.%Y %H:%M"),
+        "assignees": assignees_view,
         "assignees_str": assignees_str,
         "is_assigned_to_me": is_assigned_to_me,
         "is_overdue": is_overdue,
@@ -348,6 +363,287 @@ async def _load_task_full(session: AsyncSession, task_id: int) -> Task:
     if not t:
         raise HTTPException(404)
     return t
+
+
+def _assignees_snapshot(t: Task) -> list[dict]:
+    assignees = list(getattr(t, "assignees", None) or [])
+    out: list[dict] = []
+    for u in assignees:
+        fio = f"{(getattr(u, 'first_name', '') or '').strip()} {(getattr(u, 'last_name', '') or '').strip()}".strip()
+        out.append({"id": int(getattr(u, "id", 0) or 0), "name": fio or f"#{int(getattr(u, 'id', 0) or 0)}"})
+    return out
+
+
+def _task_snapshot(t: Task) -> dict:
+    return {
+        "title": str(getattr(t, "title", "") or ""),
+        "description": str(getattr(t, "description", "") or ""),
+        "priority": (getattr(getattr(t, "priority", None), "value", None) or str(getattr(t, "priority", "") or "")),
+        "due_at": getattr(t, "due_at", None),
+        "status": (getattr(getattr(t, "status", None), "value", None) or str(getattr(t, "status", "") or "")),
+        "assignees": _assignees_snapshot(t),
+        "has_photo": bool(getattr(t, "photo_key", None) or getattr(t, "photo_path", None) or getattr(t, "photo_url", None) or getattr(t, "tg_photo_file_id", None) or getattr(t, "photo_file_id", None)),
+        "photo_key": getattr(t, "photo_key", None),
+    }
+
+
+def _parse_due_at_iso_or_msk(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        # API contract: naive timestamps are treated as Moscow
+        dt = dt.replace(tzinfo=MOSCOW_TZ)
+    return dt.astimezone(timezone.utc)
+
+
+async def _apply_task_patch_with_audit(
+    *,
+    session: AsyncSession,
+    actor: User,
+    task_id: int,
+    patch: dict,
+    photo_action: str | None = None,
+) -> bool:
+    t = await _load_task_full(session, int(task_id))
+
+    # permissions: only admin/manager can edit task fields
+    r = role_flags(tg_id=int(getattr(actor, "tg_id", 0) or 0), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования")
+
+    before = _task_snapshot(t)
+
+    # apply fields
+    if "title" in patch and patch.get("title") is not None:
+        t.title = str(patch.get("title") or "").strip()
+
+    if "description" in patch:
+        desc_raw = patch.get("description")
+        desc = str(desc_raw).strip() if desc_raw is not None else ""
+        t.description = desc or None
+
+    if "priority" in patch and patch.get("priority") is not None:
+        p = str(patch.get("priority") or "").strip()
+        t.priority = TaskPriority.URGENT if p == TaskPriority.URGENT.value else TaskPriority.NORMAL
+
+    if "due_at" in patch:
+        due_raw = patch.get("due_at")
+        t.due_at = _parse_due_at_iso_or_msk(str(due_raw) if due_raw is not None else None)
+
+    # assignees
+    if "assignee_ids" in patch and patch.get("assignee_ids") is not None:
+        ids = [int(x) for x in (patch.get("assignee_ids") or []) if int(x) > 0]
+        users: list[User] = []
+        if ids:
+            users = list(
+                (
+                    await session.scalars(
+                        select(User)
+                        .where(User.id.in_(ids))
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                    )
+                ).all()
+            )
+            if len(users) != len(set(ids)):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Исполнители не найдены")
+        t.assignees = users
+
+    # archived toggle (optional)
+    if "archived" in patch and patch.get("archived") is not None:
+        want_archived = bool(patch.get("archived"))
+        old_status = t.status.value if hasattr(t.status, "value") else str(t.status)
+        perms = task_permissions(
+            status=str(old_status),
+            actor_user_id=int(actor.id),
+            created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+            assignee_user_ids=[int(u.id) for u in list(getattr(t, "assignees", None) or [])],
+            started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+            is_admin=bool(r.is_admin),
+            is_manager=bool(r.is_manager),
+        )
+        if want_archived:
+            if not perms.archive:
+                raise HTTPException(status_code=403, detail="Недостаточно прав для архивирования")
+            t.status = TaskStatus.ARCHIVED
+            t.archived_at = utc_now()
+        else:
+            if old_status == TaskStatus.ARCHIVED.value:
+                if not perms.unarchive:
+                    raise HTTPException(status_code=403, detail="Недостаточно прав для разархивирования")
+                t.status = TaskStatus.DONE
+                t.archived_at = None
+
+    # status (keep current transition rules)
+    if "status" in patch and patch.get("status") is not None:
+        new_status = str(patch.get("status") or "").strip()
+        old_status = t.status.value if hasattr(t.status, "value") else str(t.status)
+        perms = task_permissions(
+            status=str(old_status),
+            actor_user_id=int(actor.id),
+            created_by_user_id=int(getattr(t, "created_by_user_id", 0) or 0) or None,
+            assignee_user_ids=[int(u.id) for u in list(getattr(t, "assignees", None) or [])],
+            started_by_user_id=(int(getattr(t, "started_by_user_id")) if getattr(t, "started_by_user_id", None) is not None else None),
+            is_admin=bool(r.is_admin),
+            is_manager=bool(r.is_manager),
+        )
+        ok, code, msg = validate_status_transition(
+            from_status=str(old_status),
+            to_status=str(new_status),
+            perms=perms,
+            comment=None,
+        )
+        if not ok:
+            raise HTTPException(status_code=int(code), detail=str(msg or "Ошибка"))
+        if new_status == TaskStatus.IN_PROGRESS.value:
+            t.status = TaskStatus.IN_PROGRESS
+        elif new_status == TaskStatus.REVIEW.value:
+            t.status = TaskStatus.REVIEW
+            t.completed_by_user_id = int(actor.id)
+            t.completed_at = utc_now()
+        elif new_status == TaskStatus.DONE.value:
+            t.status = TaskStatus.DONE
+
+    # remove photo (keeps files best-effort)
+    if bool(patch.get("remove_photo")):
+        try:
+            key = str(getattr(t, "photo_key", "") or "").strip()
+            if key:
+                fs_path = _task_photo_fs_path_from_key(key)
+                if fs_path.exists():
+                    fs_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+        except Exception:
+            pass
+        t.photo_key = None
+        t.photo_path = None
+        t.photo_url = None
+        try:
+            t.tg_photo_file_id = None
+        except Exception:
+            pass
+        try:
+            t.photo_file_id = None
+        except Exception:
+            pass
+
+    await session.flush()
+
+    after = _task_snapshot(t)
+    if photo_action:
+        after["photo_action"] = str(photo_action)
+
+    changes, human = diff_task_for_audit(before=before, after=after)
+    if not changes:
+        return False
+
+    session.add(
+        TaskEvent(
+            task_id=int(t.id),
+            actor_user_id=int(actor.id),
+            type=TaskEventType.EDITED,
+            payload={
+                "changes": [
+                    {"type": c.type, "field": c.field, "before": c.before, "after": c.after, "human": c.human}
+                    for c in changes
+                ],
+                "human": list(human),
+            },
+        )
+    )
+    await session.flush()
+    return True
+
+
+@app.patch("/api/tasks/{task_id}")
+async def tasks_api_patch(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Неверный формат")
+
+    await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch=dict(body or {}))
+    return await tasks_api_detail(int(task_id), request, admin_id, session)
+
+
+@app.patch("/crm/api/tasks/{task_id}")
+async def tasks_api_patch_crm(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_patch(task_id=task_id, request=request, admin_id=admin_id, session=session)
+
+
+@app.post("/api/tasks/{task_id}/photo_web")
+async def tasks_api_set_photo_web(
+    task_id: int,
+    request: Request,
+    photo: UploadFile = File(...),
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    t = await _load_task_full(session, int(task_id))
+    had_photo = bool(getattr(t, "photo_key", None) or getattr(t, "photo_path", None) or getattr(t, "photo_url", None))
+    photo_key, photo_path = await _save_task_photo(photo=photo)
+    t.photo_key = str(photo_key)
+    t.photo_path = str(photo_path)
+    t.photo_url = _task_photo_url_from_key(t.photo_key)
+    await session.flush()
+
+    action = "replaced" if had_photo else "added"
+    await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={}, photo_action=action)
+    return await tasks_api_detail(int(task_id), request, admin_id, session)
+
+
+@app.post("/crm/api/tasks/{task_id}/photo_web")
+async def tasks_api_set_photo_web_crm(
+    task_id: int,
+    request: Request,
+    photo: UploadFile = File(...),
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_set_photo_web(task_id=task_id, request=request, photo=photo, admin_id=admin_id, session=session)
+
+
+@app.delete("/api/tasks/{task_id}/photo")
+async def tasks_api_delete_photo(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    await update_task_with_audit(session=session, actor=actor, task_id=int(task_id), patch={"remove_photo": True}, photo_action="removed")
+    return await tasks_api_detail(int(task_id), request, admin_id, session)
+
+
+@app.delete("/crm/api/tasks/{task_id}/photo")
+async def tasks_api_delete_photo_crm(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_delete_photo(task_id=task_id, request=request, admin_id=admin_id, session=session)
 
 
 async def _download_tg_file_bytes(*, file_id: str) -> tuple[bytes | None, str | None]:
@@ -474,7 +770,8 @@ async def user_update(
     schedule: Optional[str] = Form(None),
     position: Optional[str] = Form(None),
     status_value: Optional[str] = Form(None),
-    admin_id: int = Depends(require_admin),
+    color: Optional[str] = Form(None),
+    admin_id: int = Depends(require_admin_or_manager),
     session: AsyncSession = Depends(get_db),
 ):
     user = await load_user(session, user_id)
@@ -499,6 +796,17 @@ async def user_update(
         user.position = Position(position) if position else None
     if status_value is not None and status_value in {s.value for s in UserStatus}:
         user.status = UserStatus(status_value)
+    if color is not None:
+        from shared.services.user_color import assign_user_color
+
+        c = str(color or "").strip()
+        if not c:
+            seed = int(getattr(user, "tg_id", 0) or getattr(user, "id", 0) or 0)
+            user.color = await assign_user_color(session, seed=seed)
+        else:
+            if not re.match(r"^#[0-9A-Fa-f]{6}$", c):
+                raise HTTPException(status_code=422, detail="Неверный цвет")
+            user.color = c.upper()
     await session.flush()
     # log edit
     repo = AdminLogRepo(session)
@@ -736,6 +1044,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
                 "last_name": u.last_name,
                 "is_admin": bool(int(getattr(u, "tg_id", 0) or 0) in settings.admin_ids),
                 "is_manager": bool(u.status == UserStatus.APPROVED and u.position == Position.MANAGER),
+                "color": str(getattr(u, "color", "") or ""),
             }
             for u in users
         ],
@@ -746,6 +1055,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
         "tasks/board.html",
         {
             "request": request,
+            "board_url": request.url_for("tasks_board"),
             "columns": columns,
             "q": q,
             "mine": mine,
@@ -766,6 +1076,22 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
 async def tasks_board_public(request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)):
     actor = await load_staff_user(session, admin_id)
 
+    # Default for public board: show "Мои задачи" only on the very first visit.
+    # After that the user must be able to disable the filter (URL without mine).
+    seen = (request.cookies.get("public_board_seen") or "").strip() == "1"
+    if (not request.query_params) and (not seen):
+        url = str(request.url)
+        resp = RedirectResponse(url + "?mine=1", status_code=302)
+        resp.set_cookie(
+            "public_board_seen",
+            "1",
+            httponly=False,
+            secure=False,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 30,
+        )
+        return resp
+
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
@@ -776,7 +1102,8 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     due = (request.query_params.get("due") or "").strip()
 
     # Public board: show all tasks (same as admin board), but without sidebar
-    from sqlalchemy import or_ as _or
+    from shared.models import task_assignees
+    from sqlalchemy import or_ as _or, exists, and_
 
     urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
     query = (
@@ -799,7 +1126,10 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
     if mine:
-        pass
+        has_actor = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+        )
+        query = query.where(has_actor)
 
     res = await session.execute(query)
     tasks = list(res.scalars().unique().all())
@@ -830,16 +1160,18 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
                 "last_name": u.last_name,
                 "is_admin": bool(int(getattr(u, "tg_id", 0) or 0) in settings.admin_ids),
                 "is_manager": bool(u.status == UserStatus.APPROVED and u.position == Position.MANAGER),
+                "color": str(getattr(u, "color", "") or ""),
             }
             for u in users
         ],
         ensure_ascii=False,
     )
 
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         "tasks/board.html",
         {
             "request": request,
+            "board_url": request.url_for("tasks_board_public"),
             "columns": columns,
             "q": q,
             "mine": mine,
@@ -854,6 +1186,69 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             "archive_url": request.url_for("tasks_archive_public"),
         },
     )
+
+    if not seen:
+        resp.set_cookie(
+            "public_board_seen",
+            "1",
+            httponly=False,
+            secure=False,
+            samesite="lax",
+            max_age=60 * 60 * 24 * 30,
+        )
+
+    return resp
+
+
+@app.get("/api/public/tasks")
+async def tasks_api_public_list(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+
+    q = (request.query_params.get("q") or "").strip()
+    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    priority = (request.query_params.get("priority") or "").strip()
+    due = (request.query_params.get("due") or "").strip()
+    status_q = (request.query_params.get("status") or "").strip()
+
+    from shared.models import task_assignees
+    from sqlalchemy import or_ as _or, exists, and_
+
+    urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
+    query = (
+        select(Task)
+        .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE, TaskStatus.ARCHIVED]))
+        .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
+        .order_by(urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+    )
+    if q:
+        like = f"%{q}%"
+        query = query.where(_or(Task.title.ilike(like), Task.description.ilike(like)))
+    if priority == TaskPriority.URGENT.value:
+        query = query.where(Task.priority == TaskPriority.URGENT)
+    elif priority == TaskPriority.NORMAL.value:
+        query = query.where(Task.priority == TaskPriority.NORMAL)
+    if due == "with_due":
+        query = query.where(Task.due_at.is_not(None))
+    elif due == "overdue":
+        query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
+    if status_q and status_q in {s.value for s in TaskStatus}:
+        query = query.where(Task.status == TaskStatus(status_q))
+    if mine:
+        has_actor = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+        )
+        query = query.where(has_actor)
+
+    res = await session.execute(query)
+    tasks = list(res.scalars().unique().all())
+    return {
+        "items": [_task_card_view(t, actor_id=int(actor.id)) for t in tasks],
+        "mine": bool(mine),
+    }
 
 
 @app.get("/tasks/archive", response_class=HTMLResponse, name="tasks_archive")

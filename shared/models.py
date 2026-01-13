@@ -75,6 +75,7 @@ class User(Base):
         ),
         default=UserStatus.PENDING,
     )
+    color: Mapped[str] = mapped_column(String(7), nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(

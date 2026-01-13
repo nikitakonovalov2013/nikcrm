@@ -82,14 +82,15 @@ img, canvas, svg{max-width:100%}
 .table thead th,.table tbody td{white-space:normal;overflow-wrap:break-word;word-break:break-word;text-align:center;vertical-align:middle}
 /* Column widths for 9-column layout: TG ID, Имя, Фамилия, Дата рождения, Ставка, График, Должность, Статус, Действия */
 .table thead th:nth-child(1),.table tbody td:nth-child(1){width:12%} /* TG ID */
-.table thead th:nth-child(2),.table tbody td:nth-child(2){width:14%} /* Имя */
-.table thead th:nth-child(3),.table tbody td:nth-child(3){width:14%} /* Фамилия */
-.table thead th:nth-child(4),.table tbody td:nth-child(4){width:12%} /* Дата рождения */
-.table thead th:nth-child(5),.table tbody td:nth-child(5){width:12%} /* Ставка */
-.table thead th:nth-child(6),.table tbody td:nth-child(6){width:12%} /* График */
-.table thead th:nth-child(7),.table tbody td:nth-child(7){width:12%} /* Должность */
-.table thead th:nth-child(8),.table tbody td:nth-child(8){width:12%} /* Статус */
-.table thead th:nth-child(9),.table tbody td:nth-child(9){width:10%} /* Действия */
+.table thead th:nth-child(2),.table tbody td:nth-child(2){width:8%}
+.table thead th:nth-child(3),.table tbody td:nth-child(3){width:13%}
+.table thead th:nth-child(4),.table tbody td:nth-child(4){width:13%}
+.table thead th:nth-child(5),.table tbody td:nth-child(5){width:12%}
+.table thead th:nth-child(6),.table tbody td:nth-child(6){width:11%}
+.table thead th:nth-child(7),.table tbody td:nth-child(7){width:10%}
+.table thead th:nth-child(8),.table tbody td:nth-child(8){width:11%}
+.table thead th:nth-child(9),.table tbody td:nth-child(9){width:12%}
+.table thead th:nth-child(10),.table tbody td:nth-child(10){width:10%}
 
 /* Actions cell: horizontal icon buttons, fully centered (data rows only) */
 .table tbody td.actions-cell{display:flex;gap:8px;align-items:center;justify-content:center;width:100%}
@@ -312,10 +313,17 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .task-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .task-title{font-weight:700;color:#0f172a;line-height:1.25}
 .task-urgent{font-size:16px;line-height:1}
+.task-assignee-dots{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-left:auto}
+.task-assignee-dots-inline{display:inline-flex;align-items:center;gap:6px;margin-right:8px;vertical-align:middle}
+.task-assignee-dot{width:14px;height:14px;border-radius:999px;border:1px solid rgba(2,6,23,.14);box-shadow:0 1px 2px rgba(2,6,23,.10)}
+.task-assignee-more{font-size:12px;font-weight:700;color:#64748b}
+.task-assignees-text{vertical-align:middle}
 .task-card-actions{margin-top:10px;display:flex;justify-content:flex-end}
 .task-meta{margin-top:8px;display:flex;flex-direction:column;gap:6px}
 .task-due{font-size:13px;color:#334155}
 .task-assignees{font-size:13px;color:#0f172a;white-space:normal;overflow-wrap:break-word;word-break:normal}
+
+.user-color-dot{display:inline-block;width:12px;height:12px;border-radius:999px;border:1px solid rgba(2,6,23,.12);vertical-align:middle;margin-right:6px}
 
 .task-pill{display:inline-flex;align-items:center;border:1px solid #e5e7eb;background:#f8fafc;color:#0f172a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap}
 .task-pill.urgent{border-color:#fecaca;background:#fef2f2;color:#991b1b}

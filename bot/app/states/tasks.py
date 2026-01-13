@@ -10,6 +10,14 @@ class TasksState(StatesGroup):
     create_assignees = State()
     create_confirm = State()
 
+    edit_menu = State()
+    edit_title = State()
+    edit_description = State()
+    edit_priority = State()
+    edit_due = State()
+    edit_assignees = State()
+    edit_photo = State()
+
     comment_text = State()
     comment_photos = State()
     rework_text = State()

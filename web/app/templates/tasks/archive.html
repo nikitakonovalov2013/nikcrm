@@ -72,8 +72,18 @@
       <div class="task-meta">
         <div class="muted">Архивировано: {{ t.archived_at_str or '' }}</div>
         <div class="task-assignees">
-          {% if t.assignees_str %}
-            {{ t.assignees_str }}
+          {% if t.assignees and (t.assignees|length > 0) %}
+            <span class="task-assignee-dots-inline" aria-hidden="true">
+              {% for a in t.assignees[:3] %}
+                {% if a.get('color') %}
+                  <span class="task-assignee-dot" title="{{ (a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '') }}" style="background: {{ a.get('color') }}"></span>
+                {% endif %}
+              {% endfor %}
+              {% if t.assignees|length > 3 %}
+                <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
+              {% endif %}
+            </span>
+            <span class="task-assignees-text">{{ t.assignees_str }}</span>
           {% else %}
             <span class="muted">Общая</span>
           {% endif %}
@@ -105,6 +115,14 @@
       const who = escapeHtml((e.actor && e.actor.name) ? e.actor.name : '—');
       const title = escapeHtml(e.title || e.type || '');
       let details = '';
+      if (e.type === 'edited') {
+        const lines = (e.payload && Array.isArray(e.payload.human)) ? e.payload.human : [];
+        if (lines.length) {
+          details = '<ul class="muted" style="margin-top:6px; padding-left: 18px;">' +
+            lines.map(x => '<li>' + escapeHtml(String(x || '')) + '</li>').join('') +
+          '</ul>';
+        }
+      }
       if (e.type === 'status_changed') {
         const frRaw = (e && (e.from_display || (e.payload && e.payload.from))) || '';
         const toRaw = (e && (e.to_display || (e.payload && e.payload.to))) || '';
@@ -175,7 +193,8 @@
     const status = '<span class="task-pill">' + escapeHtml(statusMap[task.status] || task.status) + '</span>';
     const can = task.permissions || {};
     const actionBtns = [
-      can.unarchive ? '<button class="btn" type="button" onclick="window.tasksUnarchive(' + task.id + ')">Разархивировать</button>' : ''
+      can.unarchive ? '<button class="btn" type="button" onclick="window.tasksUnarchive(' + task.id + ')">Разархивировать</button>' : '',
+      '<button class="btn-outline" type="button" onclick="window.tasksOpenEdit(' + task.id + ')">✏️ Редактировать</button>'
     ].filter(Boolean).join('');
 
     const mainPhotoUrl = task.photo_url || task.photo_path;
