@@ -61,20 +61,16 @@
     </label>
     <label>
       Цвет
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span id="user-color-preview" class="user-color-dot" style="width:16px; height:16px; background: {{ user.color or '#64748B' }}"></span>
-        <input
-          type="color"
-          value="{{ user.color or '#64748B' }}"
-          onchange="(function(v){
-            try {
-              document.getElementById('user-color-value').value = v;
-              document.getElementById('user-color-hex').value = v;
-              document.getElementById('user-color-preview').style.background = v;
-            } catch(e){}
-          })(this.value)"
-          style="width:44px; height:34px; padding:0; border:1px solid #e5e7eb; border-radius:10px; background:#fff;"
-        />
+      <div class="user-color-field">
+        <button type="button" class="user-color-trigger" id="user-color-trigger" aria-haspopup="dialog" aria-expanded="false" title="Выбрать цвет">
+          <span id="user-color-preview" class="user-color-dot user-color-dot-lg" style="background: {{ user.color or '#64748B' }}"></span>
+        </button>
+        <div class="user-color-popover" id="user-color-popover" hidden>
+          <div class="user-color-popover-body">
+            <input id="user-color-picker" type="color" value="{{ user.color or '#64748B' }}" />
+            <button type="button" class="btn" id="user-color-apply">Применить</button>
+          </div>
+        </div>
         <span style="position:relative; display:inline-flex; align-items:center;">
           <input
             id="user-color-hex"
@@ -108,6 +104,71 @@
         <input id="user-color-value" type="hidden" name="color" value="{{ user.color or '#64748B' }}" />
       </div>
     </label>
+    <script>
+    (function(){
+      try {
+        const root = document.getElementById('modal-body') || document;
+        const trigger = root.querySelector('#user-color-trigger');
+        const pop = root.querySelector('#user-color-popover');
+        const picker = root.querySelector('#user-color-picker');
+        const applyBtn = root.querySelector('#user-color-apply');
+        const hex = root.querySelector('#user-color-hex');
+        const hidden = root.querySelector('#user-color-value');
+        const preview = root.querySelector('#user-color-preview');
+        if (!trigger || !pop || !picker || !applyBtn || !hex || !hidden || !preview) return;
+        if (trigger.dataset.bound === '1') return;
+        trigger.dataset.bound = '1';
+
+        let draftColor = String(picker.value || '').trim();
+        const open = () => {
+          draftColor = String(picker.value || '').trim();
+          pop.hidden = false;
+          trigger.setAttribute('aria-expanded', 'true');
+          try { picker.focus(); } catch(e){}
+        };
+        const close = () => {
+          pop.hidden = true;
+          trigger.setAttribute('aria-expanded', 'false');
+        };
+        const commit = (v) => {
+          const val = String(v || '').trim();
+          hidden.value = val;
+          hex.value = val;
+          preview.style.background = val;
+          picker.value = val || picker.value;
+        };
+
+        trigger.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (pop.hidden) open(); else close();
+        });
+
+        picker.addEventListener('input', () => {
+          draftColor = String(picker.value || '').trim();
+        });
+
+        applyBtn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          commit(draftColor);
+          close();
+        });
+
+        document.addEventListener('click', (ev) => {
+          if (pop.hidden) return;
+          const t = ev.target;
+          if (pop.contains(t) || trigger.contains(t)) return;
+          close();
+        }, true);
+
+        document.addEventListener('keydown', (ev) => {
+          if (pop.hidden) return;
+          if (ev.key === 'Escape') close();
+        });
+      } catch(e){}
+    })();
+    </script>
     <div class="form-row" style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px;">
       <button class="btn" type="submit">Сохранить</button>
       <button
