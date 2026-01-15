@@ -69,8 +69,11 @@
 <div class="kanban">
   {% for col in columns %}
     <section class="kanban-col" data-status="{{ col["status"] }}">
-      <div class="kanban-col-header">
-        <div class="kanban-col-title">{{ col["title"] }}</div>
+      <div class="kanban-col-header" role="button" tabindex="0" title="Свернуть/развернуть">
+        <div class="kanban-col-title">
+          <span class="kanban-col-chevron" aria-hidden="true">▾</span>
+          <span class="kanban-col-title-text">{{ col["title"] }}</span>
+        </div>
         <div class="kanban-col-count">{{ col.get("items", [])|length }}</div>
       </div>
       <div class="kanban-col-body" id="col-{{ col["status"] }}">
@@ -120,6 +123,71 @@
 
 <script>
 (function(){
+  const COLLAPSED_KEY = 'crm.tasks.board.collapsedCols';
+  const kanbanRoot = () => document.querySelector('.kanban');
+
+  function loadCollapsed(){
+    try {
+      const raw = window.localStorage.getItem(COLLAPSED_KEY);
+      if (raw === null) {
+        return new Set(['review', 'done']);
+      }
+      const arr = JSON.parse(raw || '[]');
+      if (!Array.isArray(arr)) return new Set();
+      return new Set(arr.map(x => String(x || '').trim()).filter(Boolean));
+    } catch (_){
+      return new Set();
+    }
+  }
+
+  function saveCollapsed(set){
+    try {
+      const arr = Array.from(set || []).map(x => String(x || '').trim()).filter(Boolean);
+      window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(arr));
+    } catch (_){ }
+  }
+
+  function applyCollapsedFromStorage(){
+    const root = kanbanRoot();
+    if (!root) return;
+    const collapsed = loadCollapsed();
+    root.querySelectorAll('.kanban-col').forEach(col => {
+      const st = String(col.getAttribute('data-status') || '').trim();
+      col.classList.toggle('is-collapsed', collapsed.has(st));
+    });
+  }
+
+  function bindCollapseHandlers(){
+    const root = kanbanRoot();
+    if (!root) return;
+    root.querySelectorAll('.kanban-col').forEach(col => {
+      const header = col.querySelector('.kanban-col-header');
+      if (!header) return;
+      if (header.dataset.boundCollapse === '1') return;
+      header.dataset.boundCollapse = '1';
+
+      const toggle = () => {
+        const st = String(col.getAttribute('data-status') || '').trim();
+        const collapsed = loadCollapsed();
+        const next = !col.classList.contains('is-collapsed');
+        col.classList.toggle('is-collapsed', next);
+        if (next) collapsed.add(st); else collapsed.delete(st);
+        saveCollapsed(collapsed);
+      };
+
+      header.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        toggle();
+      });
+      header.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          toggle();
+        }
+      });
+    });
+  }
+
   const modalBody = () => document.getElementById('modal-body');
 
   const IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
@@ -189,6 +257,10 @@
       .replaceAll('"','&quot;')
       .replaceAll("'",'&#039;');
   }
+
+  // Init collapse state
+  applyCollapsedFromStorage();
+  bindCollapseHandlers();
 
   function renderAssignees(users){
     if (!users || users.length === 0) return '<span class="muted">Общая</span>';
