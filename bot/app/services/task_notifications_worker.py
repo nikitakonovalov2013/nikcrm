@@ -11,9 +11,14 @@ from shared.config import settings
 from shared.db import get_async_session
 from shared.enums import TaskPriority, TaskStatus
 from shared.utils import format_moscow, utc_now
+from shared.permissions import role_flags
 
 from bot.app.repository.task_notifications import TaskNotificationRepository
-from bot.app.utils.html import esc
+from bot.app.repository.tasks import TaskRepository
+from bot.app.services.tasks import TasksService
+from bot.app.keyboards.tasks import task_detail_kb
+from bot.app.utils.html import esc, format_plain_url
+from bot.app.utils.urls import build_tasks_board_magic_link
 
 
 _logger = logging.getLogger(__name__)
@@ -68,12 +73,6 @@ async def notifications_listener(*, wakeup: asyncio.Event) -> None:
                     pass
 
 
-def _open_task_kb(*, task_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Открыть задачу", callback_data=f"tasks:open_notify:{int(task_id)}")]]
-    )
-
-
 def _format_task_short(task) -> str:
     title = (getattr(task, "title", "") or "").strip()
     st = getattr(task, "status", None)
@@ -104,6 +103,16 @@ def _format_task_short(task) -> str:
     return "\n".join(lines)
 
 
+def _status_human_local(v: str) -> str:
+    return {
+        TaskStatus.NEW.value: "Новая",
+        TaskStatus.IN_PROGRESS.value: "В работе",
+        TaskStatus.REVIEW.value: "На проверке",
+        TaskStatus.DONE.value: "Выполнено",
+        TaskStatus.ARCHIVED.value: "Архив",
+    }.get(v, v)
+
+
 def render_notification_html(*, n) -> str:
     task = getattr(n, "task", None)
     payload = dict(getattr(n, "payload", None) or {})
@@ -116,15 +125,6 @@ def render_notification_html(*, n) -> str:
         actor_name = "—"
 
     base = _format_task_short(task) if task else f"<b>Задача #{payload.get('task_id')}</b>"
-
-    def _status_human_local(v: str) -> str:
-        return {
-            TaskStatus.NEW.value: "Новая",
-            TaskStatus.IN_PROGRESS.value: "В работе",
-            TaskStatus.REVIEW.value: "На проверке",
-            TaskStatus.DONE.value: "Выполнено",
-            TaskStatus.ARCHIVED.value: "Архив",
-        }.get(v, v)
 
     if typ == "created":
         return f"🆕 <b>Новая задача</b>\n\n{base}\n\n<b>Инициатор:</b> {esc(actor_name)}"
@@ -150,6 +150,31 @@ def render_notification_html(*, n) -> str:
         return f"🔔 <b>Напоминание</b>\n\n{base}\n\n<b>Инициатор:</b> {esc(actor_name)}"
 
     return f"🔔 <b>Уведомление</b>\n\n{base}"
+
+
+def _format_status_changed_compact(*, task, payload: dict, board_url: str) -> str:
+    title = esc((getattr(task, "title", "") or "").strip())
+    fr = _status_human_local(str(payload.get("from") or ""))
+    to = _status_human_local(str(payload.get("to") or ""))
+    due_at = getattr(task, "due_at", None)
+    due_str = format_moscow(due_at, "%d.%m.%Y %H:%M") if due_at else ""
+    assignees = list(getattr(task, "assignees", None) or [])
+    assignees_str = ""
+    if assignees:
+        assignees_str = ", ".join((str(getattr(u, "first_name", "") or "").strip() + " " + str(getattr(u, "last_name", "") or "").strip()).strip() or str(getattr(u, "tg_id", "") or "") for u in assignees)
+        assignees_str = esc(assignees_str)
+
+    lines: list[str] = []
+    lines.append(f"🔔 <b>{title}</b>")
+    lines.append("")
+    lines.append(f"<b>Статус:</b> {esc(fr)} → {esc(to)}")
+    if due_str:
+        lines.append(f"<b>Дедлайн (МСК):</b> {esc(due_str)}")
+    if assignees_str:
+        lines.append(f"<b>Исполнители:</b> {assignees_str}")
+    lines.append("")
+    lines.append(format_plain_url("🌐 Доска задач:", str(board_url)))
+    return "\n".join(lines)
 
 
 async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int = 30) -> None:
@@ -180,13 +205,93 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                             chat_id = int(getattr(recipient, "tg_id"))
                             task = getattr(n, "task", None)
                             task_id = int(getattr(task, "id")) if task is not None else int(getattr(n, "task_id"))
-                            text = render_notification_html(n=n)
 
-                            await bot.send_message(
-                                chat_id=chat_id,
-                                text=text,
-                                reply_markup=_open_task_kb(task_id=task_id),
+                            # Build the same keyboard as in task detail view, using existing permissions logic.
+                            tasks_repo = TaskRepository(session)
+                            tasks_svc = TasksService(tasks_repo)
+                            actor, task2, perms = await tasks_svc.get_detail(tg_id=chat_id, task_id=int(task_id))
+                            if not actor or not task2 or not perms:
+                                # Fallback to legacy text-only, but without "Открыть задачу" button.
+                                text = render_notification_html(n=n)
+                                sent = await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=text,
+                                    parse_mode="HTML",
+                                    reply_markup=None,
+                                    disable_web_page_preview=True,
+                                )
+                                await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
+                                await repo.mark_sent(n=n, now=now)
+                                continue
+
+                            r = role_flags(
+                                tg_id=int(chat_id),
+                                admin_ids=settings.admin_ids,
+                                status=getattr(actor, "status", None),
+                                position=getattr(actor, "position", None),
                             )
+                            board_url = await build_tasks_board_magic_link(
+                                session=session,
+                                user=actor,
+                                is_admin=bool(r.is_admin),
+                                is_manager=bool(r.is_manager),
+                                ttl_minutes=60,
+                            )
+
+                            can_edit = bool(r.is_admin or r.is_manager)
+                            is_archived = str(task2.status.value if hasattr(task2.status, "value") else str(task2.status)) == TaskStatus.ARCHIVED.value
+                            kb = task_detail_kb(
+                                task_id=int(task2.id),
+                                can_take=bool(perms.take_in_progress),
+                                can_to_review=bool(perms.finish_to_review),
+                                can_accept_done=bool(perms.accept_done),
+                                can_send_back=bool(perms.send_back),
+                                can_edit=bool(can_edit),
+                                can_archive=bool(perms.archive),
+                                can_unarchive=bool(perms.unarchive),
+                                is_archived=bool(is_archived),
+                                back_cb="tasks:menu",
+                            )
+
+                            payload = dict(getattr(n, "payload", None) or {})
+                            if str(getattr(n, "type", "")) == "status_changed":
+                                text = _format_status_changed_compact(task=task2, payload=payload, board_url=board_url)
+                            else:
+                                # Keep existing formats for other notification types, but append board URL explicitly.
+                                text = render_notification_html(n=n) + "\n\n" + format_plain_url("🌐 Доска задач:", str(board_url))
+
+                            # Prefer edit of last sent notification for this task+recipient.
+                            edited = False
+                            last_sent = await repo.get_last_sent_for_task_recipient(task_id=int(task_id), recipient_user_id=int(getattr(recipient, "id")))
+                            if last_sent is not None:
+                                lp = dict(getattr(last_sent, "payload", None) or {})
+                                last_chat_id = lp.get("tg_chat_id")
+                                last_message_id = lp.get("tg_message_id")
+                                if last_chat_id and last_message_id:
+                                    try:
+                                        await bot.edit_message_text(
+                                            chat_id=int(last_chat_id),
+                                            message_id=int(last_message_id),
+                                            text=text,
+                                            parse_mode="HTML",
+                                            reply_markup=kb,
+                                            disable_web_page_preview=True,
+                                        )
+                                        await repo.store_delivery_info(n=n, chat_id=int(last_chat_id), message_id=int(last_message_id))
+                                        edited = True
+                                    except Exception:
+                                        edited = False
+
+                            if not edited:
+                                sent = await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=text,
+                                    parse_mode="HTML",
+                                    reply_markup=kb,
+                                    disable_web_page_preview=True,
+                                )
+                                await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
+
                             await repo.mark_sent(n=n, now=now)
                         except Exception as e:
                             # basic 3 attempts with simple backoff

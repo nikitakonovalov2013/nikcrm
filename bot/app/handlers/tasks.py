@@ -46,7 +46,7 @@ from bot.app.utils.telegram import edit_html, send_html, send_new_and_delete_act
 from bot.app.utils.html import esc, format_plain_url
 from bot.app.utils.tg_id import get_tg_user_id
 from bot.app.guards.user_guard import ensure_registered_or_reply
-from bot.app.utils.tasks_screen import render_tasks_screen
+from bot.app.utils.tasks_screen import render_tasks_screen, render_tasks_screen_on_message
 from bot.app.utils.urls import build_task_board_magic_link, build_tasks_board_magic_link
 from shared.services.task_notifications import TaskNotificationService
 from shared.services.task_edit import update_task_with_audit
@@ -405,14 +405,20 @@ async def _get_user(tg_id: int):
 
 async def _deny_and_back_to_menu(cb: CallbackQuery, state: FSMContext, note: str = "⛔ Недостаточно прав") -> None:
     await cb.answer()
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=_deny_text(note),
-        reply_markup=None,
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=_deny_text(note),
+            reply_markup=None,
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
     await _edit_menu(cb, state)
 
 
@@ -434,14 +440,20 @@ async def _show_status_menu(cb: CallbackQuery, state: FSMContext, *, scope: str)
 
     title = "👤 <b>Мои задачи</b> — выберите статус" if scope == "mine" else "📋 <b>Все задачи</b> — выберите статус"
     kb = tasks_status_kb(scope=str(scope), can_view_archive=bool(can_view_archive))
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=title,
-        reply_markup=kb,
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=title,
+            reply_markup=kb,
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 def _status_to_enum_value(st: str) -> str:
@@ -520,14 +532,20 @@ async def _show_list_scope_status(
             has_prev=bool(has_prev),
             has_next=bool(has_next),
         )
-        await render_tasks_screen(
-            bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
-            text=text,
-            reply_markup=kb,
-            state=state,
-            photo=None,
-        )
+        if cb.message:
+            cb_chat_id = int(cb.message.chat.id)
+            cb_message_id = int(cb.message.message_id)
+            cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+            mid, has_media = await render_tasks_screen_on_message(
+                bot=cb.bot,
+                chat_id=cb_chat_id,
+                message_id=cb_message_id,
+                has_media=bool(cb_has_media),
+                text=text,
+                reply_markup=kb,
+                photo=None,
+            )
+            await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
         return
 
     async with get_async_session() as session2:
@@ -551,14 +569,20 @@ async def _show_list_scope_status(
         has_prev=bool(has_prev),
         has_next=bool(has_next),
     )
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=text,
-        reply_markup=kb,
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=text,
+            reply_markup=kb,
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.message(F.text.in_({"✅ Задачи", "Задачи"}))
@@ -598,15 +622,20 @@ async def tasks_entry(message: Message, state: FSMContext):
 async def _edit_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await _preserve_tasks_ui_and_clear_state(state)
     text, kb = await _render_menu(tg_id=get_tg_user_id(cb))
-    await state.update_data(tasks_chat_id=int(cb.message.chat.id))
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=text,
-        reply_markup=kb,
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=text,
+            reply_markup=kb,
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(F.data == "tasks:menu")
@@ -671,15 +700,26 @@ async def cb_tasks_new(cb: CallbackQuery, state: FSMContext):
         create_assignees_page=0,
     )
     data0 = await state.get_data()
-    mid, _has_media = await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=_with_draft(data0, "➕ <b>Новая задача</b>\n\nВведите заголовок:"),
-        reply_markup=tasks_create_cancel_kb(),
-        state=state,
-        photo=None,
-    )
-    await state.update_data(active_bot_chat_id=int(cb.message.chat.id), active_bot_message_id=int(mid) if mid else None)
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=_with_draft(data0, "➕ <b>Новая задача</b>\n\nВведите заголовок:"),
+            reply_markup=tasks_create_cancel_kb(),
+            photo=None,
+        )
+        await state.update_data(
+            active_bot_chat_id=int(cb_chat_id),
+            active_bot_message_id=int(mid) if mid else None,
+            tasks_chat_id=int(cb_chat_id),
+            tasks_message_id=int(mid),
+            tasks_has_media=bool(has_media),
+        )
 
 
 @router.callback_query(F.data == "tasks:create_cancel")
@@ -712,15 +752,26 @@ async def cb_tasks_create_desc_skip(cb: CallbackQuery, state: FSMContext):
     await state.update_data(draft_description=None)
     await state.set_state(TasksState.create_photo)
     data = await state.get_data()
-    mid, _has_media = await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=_with_draft(data, "🖼️ <b>Фото задачи</b>\n\nПришлите фото (как изображение) или нажмите <b>Пропустить</b>."),
-        reply_markup=tasks_create_photo_kb(),
-        state=state,
-        photo=None,
-    )
-    await state.update_data(active_bot_chat_id=int(cb.message.chat.id), active_bot_message_id=int(mid) if mid else None)
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=_with_draft(data, "🖼️ <b>Фото задачи</b>\n\nПришлите фото (как изображение) или нажмите <b>Пропустить</b>."),
+            reply_markup=tasks_create_photo_kb(),
+            photo=None,
+        )
+        await state.update_data(
+            active_bot_chat_id=int(cb_chat_id),
+            active_bot_message_id=int(mid) if mid else None,
+            tasks_chat_id=int(cb_chat_id),
+            tasks_message_id=int(mid),
+            tasks_has_media=bool(has_media),
+        )
 
 
 @router.message(TasksState.create_description)
@@ -855,14 +906,20 @@ async def _render_create_assignees(cb: CallbackQuery, state: FSMContext, *, page
     text = _with_draft(data2, "👥 <b>Исполнители</b>\n\nВыберите исполнителей (можно никого):")
     kb = tasks_create_assignees_kb(users=items, selected_ids=selected, page=page, has_prev=has_prev, has_next=has_next)
     await state.update_data(create_assignees_page=int(page))
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=text,
-        reply_markup=kb,
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=text,
+            reply_markup=kb,
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(TasksState.create_due, F.data.startswith("tasks:create_due:"))
@@ -919,14 +976,20 @@ async def cb_tasks_create_assignees_done(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     data = await state.get_data()
     await state.set_state(TasksState.create_confirm)
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text=_with_draft(data, "✅ <b>Подтверждение</b>\n\nПроверьте данные и нажмите <b>Создать</b>.", full=True),
-        reply_markup=tasks_create_confirm_kb(),
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text=_with_draft(data, "✅ <b>Подтверждение</b>\n\nПроверьте данные и нажмите <b>Создать</b>.", full=True),
+            reply_markup=tasks_create_confirm_kb(),
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(TasksState.create_confirm, F.data == "tasks:create_back_assignees")
@@ -1073,13 +1136,6 @@ async def cb_tasks_open_notify(cb: CallbackQuery, state: FSMContext):
     if not cb.message:
         return
 
-    # Treat the notification message as the main tasks UI message to keep single-message behavior.
-    has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
-    await state.update_data(
-        tasks_chat_id=int(cb.message.chat.id),
-        tasks_message_id=int(cb.message.message_id),
-        tasks_has_media=bool(has_media),
-    )
     await _show_task_detail(cb, state, task_id=task_id)
 
 
@@ -1140,43 +1196,43 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
         # 1) try tg file id
         # 2) else try URL
         # 3) if URL rejected by TG, download bytes and send as file
+        if not cb.message:
+            await cb.answer("Ошибка", show_alert=True)
+            return
+
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+
+        # Always render on the message that triggered the callback.
         if tg_fid:
-            await render_tasks_screen(
+            mid, has_media = await render_tasks_screen_on_message(
                 bot=cb.bot,
-                chat_id=int(cb.message.chat.id),
+                chat_id=cb_chat_id,
+                message_id=cb_message_id,
+                has_media=bool(cb_has_media),
                 text=html,
                 reply_markup=kb,
-                state=state,
                 photo=str(tg_fid),
             )
+            await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
             return
 
         if photo_url:
             try:
-                prev_data = await state.get_data()
-                prev_msg_id = prev_data.get("tasks_root_message_id") or prev_data.get("tasks_message_id")
-                sent = await cb.bot.send_photo(
-                    chat_id=int(cb.message.chat.id),
-                    photo=str(photo_url),
-                    caption=html,
-                    parse_mode="HTML",
+                mid, has_media = await render_tasks_screen_on_message(
+                    bot=cb.bot,
+                    chat_id=cb_chat_id,
+                    message_id=cb_message_id,
+                    has_media=bool(cb_has_media),
+                    text=html,
                     reply_markup=kb,
+                    photo=str(photo_url),
                 )
-                if prev_msg_id:
-                    try:
-                        await cb.bot.delete_message(chat_id=int(cb.message.chat.id), message_id=int(prev_msg_id))
-                    except Exception:
-                        pass
-                await state.update_data(
-                    tasks_root_message_id=int(sent.message_id),
-                    tasks_root_chat_id=int(cb.message.chat.id),
-                    tasks_root_has_media=True,
-                    tasks_message_id=int(sent.message_id),
-                    tasks_chat_id=int(cb.message.chat.id),
-                    tasks_has_media=True,
-                )
+                await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
                 try:
-                    fid = sent.photo[-1].file_id if getattr(sent, "photo", None) else None
+                    # If we sent a new photo, we can't access the Message object here; keep best-effort silent.
+                    fid = None
                 except Exception:
                     fid = None
                 if fid:
@@ -1201,30 +1257,18 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
                     r = await client.get(str(download_url))
                     if r.status_code == 200 and r.content:
                         up = BufferedInputFile(bytes(r.content), filename="task.jpg")
-                        prev_data = await state.get_data()
-                        prev_msg_id = prev_data.get("tasks_root_message_id") or prev_data.get("tasks_message_id")
-                        sent = await cb.bot.send_photo(
-                            chat_id=int(cb.message.chat.id),
-                            photo=up,
-                            caption=html,
-                            parse_mode="HTML",
+                        mid, has_media = await render_tasks_screen_on_message(
+                            bot=cb.bot,
+                            chat_id=cb_chat_id,
+                            message_id=cb_message_id,
+                            has_media=bool(cb_has_media),
+                            text=html,
                             reply_markup=kb,
+                            photo=up,
                         )
-                        if prev_msg_id:
-                            try:
-                                await cb.bot.delete_message(chat_id=int(cb.message.chat.id), message_id=int(prev_msg_id))
-                            except Exception:
-                                pass
-                        await state.update_data(
-                            tasks_root_message_id=int(sent.message_id),
-                            tasks_root_chat_id=int(cb.message.chat.id),
-                            tasks_root_has_media=True,
-                            tasks_message_id=int(sent.message_id),
-                            tasks_chat_id=int(cb.message.chat.id),
-                            tasks_has_media=True,
-                        )
+                        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
                         try:
-                            fid = sent.photo[-1].file_id if getattr(sent, "photo", None) else None
+                            fid = None
                         except Exception:
                             fid = None
                         if fid:
@@ -1243,26 +1287,29 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
                 logging.exception("Failed to download/send task photo", extra={"task_id": int(getattr(task, "id", 0) or 0)})
 
         if (photo_url or photo_path) and not tg_fid:
-            await render_tasks_screen(
+            mid, has_media = await render_tasks_screen_on_message(
                 bot=cb.bot,
-                chat_id=int(cb.message.chat.id),
+                chat_id=cb_chat_id,
+                message_id=cb_message_id,
+                has_media=bool(cb_has_media),
                 text=html + "\n\n⚠️ Фото недоступно.",
                 reply_markup=kb,
-                state=state,
                 photo=None,
             )
+            await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
             return
 
-        await state.update_data(tasks_chat_id=int(cb.message.chat.id))
-        await render_tasks_screen(
+        mid, has_media = await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
             text=html,
             reply_markup=kb,
-            state=state,
             photo=None,
             disable_web_page_preview=True,
         )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(F.data.startswith("task_archive:"))
@@ -1358,14 +1405,20 @@ async def cb_tasks_edit_menu(cb: CallbackQuery, state: FSMContext):
     await _preserve_tasks_ui_and_clear_state(state)
     await state.set_state(TasksState.edit_menu)
     await state.update_data(edit_task_id=int(task_id), tasks_chat_id=int(cb.message.chat.id))
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text="✏️ <b>Редактирование</b>\n\nЧто редактируем?",
-        reply_markup=tasks_edit_menu_kb(task_id=int(task_id)),
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text="✏️ <b>Редактирование</b>\n\nЧто редактируем?",
+            reply_markup=tasks_edit_menu_kb(task_id=int(task_id)),
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(TasksState.edit_menu, F.data.startswith("tasks:edit_cancel:"))
@@ -1400,50 +1453,58 @@ async def cb_tasks_edit_select_field(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.update_data(edit_task_id=int(task_id), edit_field=str(field))
 
+    cb_chat_id = int(cb.message.chat.id) if cb.message else 0
+    cb_message_id = int(cb.message.message_id) if cb.message else 0
+    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None)) if cb.message else False
+
     if field == "title":
         await state.set_state(TasksState.edit_title)
-        await render_tasks_screen(
+        await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=int(cb_chat_id),
+            message_id=int(cb_message_id),
+            has_media=bool(cb_has_media),
             text="✏️ <b>Название</b>\n\nВведите новое название:",
             reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
-            state=state,
             photo=None,
         )
         return
 
     if field == "description":
         await state.set_state(TasksState.edit_description)
-        await render_tasks_screen(
+        await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=int(cb_chat_id),
+            message_id=int(cb_message_id),
+            has_media=bool(cb_has_media),
             text="✏️ <b>Описание</b>\n\nВведите новое описание (можно пустое):",
             reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
-            state=state,
             photo=None,
         )
         return
 
     if field == "priority":
         await state.set_state(TasksState.edit_priority)
-        await render_tasks_screen(
+        await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=int(cb_chat_id),
+            message_id=int(cb_message_id),
+            has_media=bool(cb_has_media),
             text="✏️ <b>Приоритет</b>\n\nВыберите приоритет:",
             reply_markup=tasks_edit_priority_kb(task_id=int(task_id)),
-            state=state,
             photo=None,
         )
         return
 
     if field == "due":
         await state.set_state(TasksState.edit_due)
-        await render_tasks_screen(
+        await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=int(cb_chat_id),
+            message_id=int(cb_message_id),
+            has_media=bool(cb_has_media),
             text="✏️ <b>Дедлайн</b>\n\nВыберите вариант:",
             reply_markup=tasks_edit_due_kb(task_id=int(task_id)),
-            state=state,
             photo=None,
         )
         return
@@ -1460,22 +1521,24 @@ async def cb_tasks_edit_select_field(cb: CallbackQuery, state: FSMContext):
             repo = TaskRepository(session)
             task = await repo.get_task_full(int(task_id))
             has_photo = bool(getattr(task, "photo_key", None) or getattr(task, "photo_path", None) or getattr(task, "photo_url", None) or getattr(task, "tg_photo_file_id", None) or getattr(task, "photo_file_id", None)) if task else False
-        await render_tasks_screen(
+        await render_tasks_screen_on_message(
             bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
+            chat_id=int(cb_chat_id),
+            message_id=int(cb_message_id),
+            has_media=bool(cb_has_media),
             text="✏️ <b>Фото</b>\n\nВыберите действие:",
             reply_markup=tasks_edit_photo_kb(task_id=int(task_id), has_photo=bool(has_photo)),
-            state=state,
             photo=None,
         )
         return
 
-    await render_tasks_screen(
+    await render_tasks_screen_on_message(
         bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
+        chat_id=int(cb_chat_id),
+        message_id=int(cb_message_id),
+        has_media=bool(cb_has_media),
         text="⚠️ Неподдерживаемое поле.",
         reply_markup=tasks_edit_menu_kb(task_id=int(task_id)),
-        state=state,
         photo=None,
     )
 
@@ -1508,21 +1571,27 @@ async def _render_edit_assignees(cb: CallbackQuery, state: FSMContext, *, task_i
     cur = set(int(x) for x in (data.get("edit_assignee_ids") or list(selected)))
     await state.update_data(edit_assignee_ids=list(cur), edit_assignees_page=int(page))
 
-    await render_tasks_screen(
-        bot=cb.bot,
-        chat_id=int(cb.message.chat.id),
-        text="👥 <b>Исполнители</b>\n\nВыберите исполнителей (можно никого):",
-        reply_markup=tasks_edit_assignees_kb(
-            task_id=int(task_id),
-            users=slice_items,
-            selected_ids=set(cur),
-            page=int(page),
-            has_prev=bool(has_prev),
-            has_next=bool(has_next),
-        ),
-        state=state,
-        photo=None,
-    )
+    if cb.message:
+        cb_chat_id = int(cb.message.chat.id)
+        cb_message_id = int(cb.message.message_id)
+        cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+        mid, has_media = await render_tasks_screen_on_message(
+            bot=cb.bot,
+            chat_id=cb_chat_id,
+            message_id=cb_message_id,
+            has_media=bool(cb_has_media),
+            text="👥 <b>Исполнители</b>\n\nВыберите исполнителей (можно никого):",
+            reply_markup=tasks_edit_assignees_kb(
+                task_id=int(task_id),
+                users=slice_items,
+                selected_ids=set(cur),
+                page=int(page),
+                has_prev=bool(has_prev),
+                has_next=bool(has_next),
+            ),
+            photo=None,
+        )
+        await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
 @router.callback_query(TasksState.edit_assignees, F.data.startswith("tasks:edit_assignees_page:"))
@@ -1726,14 +1795,20 @@ async def cb_tasks_edit_photo_action(cb: CallbackQuery, state: FSMContext):
     if action == "replace":
         await state.set_state(TasksState.edit_photo)
         await state.update_data(edit_task_id=int(task_id), edit_photo_mode="replace")
-        await render_tasks_screen(
-            bot=cb.bot,
-            chat_id=int(cb.message.chat.id),
-            text="📎 <b>Фото</b>\n\nОтправьте новое фото:",
-            reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
-            state=state,
-            photo=None,
-        )
+        if cb.message:
+            cb_chat_id = int(cb.message.chat.id)
+            cb_message_id = int(cb.message.message_id)
+            cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+            mid, has_media = await render_tasks_screen_on_message(
+                bot=cb.bot,
+                chat_id=cb_chat_id,
+                message_id=cb_message_id,
+                has_media=bool(cb_has_media),
+                text="📎 <b>Фото</b>\n\nОтправьте новое фото:",
+                reply_markup=tasks_edit_cancel_kb(task_id=int(task_id)),
+                photo=None,
+            )
+            await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
         return
 
 
@@ -1829,43 +1904,67 @@ async def cb_tasks_change_status(cb: CallbackQuery, state: FSMContext):
                 await ensure_registered_or_reply(cb)
                 return
             if code == "not_found":
-                await render_tasks_screen(
-                    bot=cb.bot,
-                    chat_id=int(cb.message.chat.id),
-                    text="⚠️ Задача не найдена.",
-                    reply_markup=None,
-                    state=state,
-                    photo=None,
-                )
+                if cb.message:
+                    cb_chat_id = int(cb.message.chat.id)
+                    cb_message_id = int(cb.message.message_id)
+                    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+                    mid, has_media = await render_tasks_screen_on_message(
+                        bot=cb.bot,
+                        chat_id=cb_chat_id,
+                        message_id=cb_message_id,
+                        has_media=bool(cb_has_media),
+                        text="⚠️ Задача не найдена.",
+                        reply_markup=None,
+                        photo=None,
+                    )
+                    await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
                 return
             if code == "forbidden":
-                await render_tasks_screen(
-                    bot=cb.bot,
-                    chat_id=int(cb.message.chat.id),
-                    text=_deny_text(),
-                    reply_markup=None,
-                    state=state,
-                    photo=None,
-                )
+                if cb.message:
+                    cb_chat_id = int(cb.message.chat.id)
+                    cb_message_id = int(cb.message.message_id)
+                    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+                    mid, has_media = await render_tasks_screen_on_message(
+                        bot=cb.bot,
+                        chat_id=cb_chat_id,
+                        message_id=cb_message_id,
+                        has_media=bool(cb_has_media),
+                        text=_deny_text(),
+                        reply_markup=None,
+                        photo=None,
+                    )
+                    await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
                 return
             if code == "comment_required":
-                await render_tasks_screen(
+                if cb.message:
+                    cb_chat_id = int(cb.message.chat.id)
+                    cb_message_id = int(cb.message.message_id)
+                    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+                    mid, has_media = await render_tasks_screen_on_message(
+                        bot=cb.bot,
+                        chat_id=cb_chat_id,
+                        message_id=cb_message_id,
+                        has_media=bool(cb_has_media),
+                        text="⚠️ Нужен комментарий для этого действия.",
+                        reply_markup=None,
+                        photo=None,
+                    )
+                    await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
+                return
+            if cb.message:
+                cb_chat_id = int(cb.message.chat.id)
+                cb_message_id = int(cb.message.message_id)
+                cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None))
+                mid, has_media = await render_tasks_screen_on_message(
                     bot=cb.bot,
-                    chat_id=int(cb.message.chat.id),
-                    text="⚠️ Нужен комментарий для этого действия.",
+                    chat_id=cb_chat_id,
+                    message_id=cb_message_id,
+                    has_media=bool(cb_has_media),
+                    text="⚠️ Не удалось выполнить действие.",
                     reply_markup=None,
-                    state=state,
                     photo=None,
                 )
-                return
-            await render_tasks_screen(
-                bot=cb.bot,
-                chat_id=int(cb.message.chat.id),
-                text="⚠️ Не удалось выполнить действие.",
-                reply_markup=None,
-                state=state,
-                photo=None,
-            )
+                await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
             return
 
     await _show_task_detail(cb, state, task_id=task_id)
@@ -1880,17 +1979,19 @@ async def cb_tasks_comment(cb: CallbackQuery, state: FSMContext):
     task_id = int(parts[2])
 
     await cb.answer()
-    data = await state.get_data()
-    chat_id = data.get("tasks_chat_id") or (cb.message.chat.id if cb.message else None)
+    chat_id = cb.message.chat.id if cb.message else None
     await _preserve_tasks_ui_and_clear_state(state)
     await state.set_state(TasksState.comment_text)
     await state.update_data(task_id=task_id, photos=[], tasks_chat_id=int(chat_id) if chat_id else None)
-    mid, _has_media = await render_tasks_screen(
+    cb_message_id = int(cb.message.message_id) if cb.message else 0
+    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None)) if cb.message else False
+    mid, _has_media = await render_tasks_screen_on_message(
         bot=cb.bot,
         chat_id=int(chat_id),
+        message_id=int(cb_message_id),
+        has_media=bool(cb_has_media),
         text="💬 <b>Комментарий</b>\n\nВведите текст комментария (обязательно, либо фото на следующем шаге):",
         reply_markup=tasks_text_cancel_kb(task_id=task_id),
-        state=state,
         photo=None,
     )
     await state.update_data(active_bot_chat_id=int(chat_id), active_bot_message_id=int(mid) if mid else None)
@@ -1937,18 +2038,20 @@ async def cb_rework(cb: CallbackQuery, state: FSMContext):
     task_id = int(parts[2])
     await cb.answer()
 
-    data = await state.get_data()
-    chat_id = data.get("tasks_chat_id") or (cb.message.chat.id if cb.message else None)
+    chat_id = cb.message.chat.id if cb.message else None
     await state.set_state(TasksState.rework_text)
     await state.update_data(task_id=task_id, tasks_chat_id=int(chat_id) if chat_id else None)
-    mid, _has_media = await render_tasks_screen(
+    cb_message_id = int(cb.message.message_id) if cb.message else 0
+    cb_has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None)) if cb.message else False
+    mid, _has_media = await render_tasks_screen_on_message(
         bot=cb.bot,
         chat_id=int(chat_id),
+        message_id=int(cb_message_id),
+        has_media=bool(cb_has_media),
         text="↩️ <b>На доработку</b>\n\nВведите комментарий (обязательно):",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data=f"tasks:rework_cancel:{int(task_id)}")]]
         ),
-        state=state,
         photo=None,
     )
     await state.update_data(active_bot_chat_id=int(chat_id), active_bot_message_id=int(mid) if mid else None)
