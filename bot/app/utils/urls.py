@@ -58,6 +58,34 @@ def get_tasks_board_url(*, is_admin: bool, is_manager: bool) -> str:
     return base + path
 
 
+def get_schedule_url(*, is_admin: bool, is_manager: bool) -> str:
+    path = "/crm/schedule" if (is_admin or is_manager) else "/crm/schedule/public"
+    base = _public_base_url()
+    if not base:
+        _logger.error("PUBLIC base URL is empty; falling back to relative path: %s", path)
+        return path
+    return base + path
+
+
+async def build_schedule_magic_link(
+    *,
+    session,
+    user,
+    is_admin: bool,
+    is_manager: bool,
+    ttl_minutes: int = 15,
+) -> str:
+    next_path = "/crm/schedule" if (is_admin or is_manager) else "/crm/schedule/public"
+    tok = await create_magic_token(session, user_id=int(getattr(user, "id")), ttl_minutes=int(ttl_minutes), scope="schedule")
+
+    base = _public_base_url()
+    rel = f"/crm/auth/tg?t={quote(str(tok))}&next={quote(str(next_path), safe='') }&scope=schedule"
+    if not base:
+        _logger.warning("PUBLIC base URL is empty; returning relative magic-link")
+        return rel
+    return base + rel
+
+
 async def build_tasks_board_magic_link(
     *,
     session,

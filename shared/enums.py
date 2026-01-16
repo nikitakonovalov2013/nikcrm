@@ -58,3 +58,20 @@ class TaskEventType(StrEnum):
     COMMENT_ADDED = "comment_added"
     ARCHIVED = "archived"
     UNARCHIVED = "unarchived"
+
+
+class ShiftInstanceStatus(StrEnum):
+    PLANNED = "planned"
+    STARTED = "started"
+    CLOSED = "closed"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    NEEDS_REWORK = "needs_rework"
+
+
+class ShiftSwapRequestStatus(StrEnum):
+    OPEN = "open"
+    ACCEPTED = "accepted"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"

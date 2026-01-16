@@ -10,6 +10,7 @@ import json
 import logging
 import httpx
 import re
+import calendar
 
 from shared.config import settings
 from shared.db import get_async_session
@@ -18,6 +19,9 @@ from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriorit
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
 from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
+from shared.models import WorkShiftDay
+from shared.models import ShiftInstance
+from shared.models import ShiftSwapRequest
 from sqlalchemy import select, delete
 from sqlalchemy import case
 from sqlalchemy.exc import IntegrityError
@@ -700,10 +704,16 @@ async def auth(token: str, request: Request):
 
 
 @app.get("/auth/tg")
-async def auth_tg(t: str, request: Request, next: str | None = None, session: AsyncSession = Depends(get_db)):
+async def auth_tg(
+    t: str,
+    request: Request,
+    next: str | None = None,
+    scope: str | None = "tasks",
+    session: AsyncSession = Depends(get_db),
+):
     from shared.services.magic_links import validate_magic_token
 
-    user = await validate_magic_token(session, token=str(t), scope="tasks")
+    user = await validate_magic_token(session, token=str(t), scope=(str(scope) if scope is not None else None))
     if not user:
         raise HTTPException(status_code=401, detail="Ссылка недействительна или истекла")
 
@@ -736,6 +746,537 @@ async def auth_tg(t: str, request: Request, next: str | None = None, session: As
     resp = RedirectResponse(url=target, status_code=302)
     resp.set_cookie("admin_token", token, httponly=True, secure=False, samesite="lax")
     return resp
+
+
+# ========== Work schedule (CRM) ==========
+
+
+@app.get("/schedule", response_class=HTMLResponse, name="schedule_page")
+async def schedule_page(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    users_json = "[]"
+    try:
+        res_u = await session.execute(
+            select(User)
+            .where(User.is_deleted == False)
+            .where(User.status == UserStatus.APPROVED)
+            .order_by(User.first_name, User.last_name, User.id)
+        )
+        users = list(res_u.scalars().all())
+        users_json = json.dumps(
+            [
+                {
+                    "id": int(getattr(u, "id")),
+                    "name": (" ".join([str(getattr(u, "first_name", "") or "").strip(), str(getattr(u, "last_name", "") or "").strip()]).strip())
+                    or str(getattr(u, "username", "") or "")
+                    or f"User #{int(getattr(u, 'id'))}",
+                }
+                for u in users
+            ]
+        )
+    except Exception:
+        pass
+    return templates.TemplateResponse(
+        "schedule/calendar.html",
+        {
+            "request": request,
+            "base_template": "base.html",
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+            "users_json": users_json,
+        },
+    )
+
+
+@app.get("/schedule/public", response_class=HTMLResponse, name="schedule_page_public")
+async def schedule_page_public(
+    request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)
+):
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    return templates.TemplateResponse(
+        "schedule/calendar.html",
+        {
+            "request": request,
+            "base_template": "base_public.html",
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+        },
+    )
+
+
+@app.get("/api/schedule/month")
+async def schedule_api_month(
+    request: Request,
+    year: int,
+    month: int,
+    user_id: int | None = None,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+    target_user_id = int(actor.id)
+    if user_id is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        target_user_id = int(user_id)
+
+    y = int(year)
+    m = int(month)
+    if m < 1 or m > 12:
+        raise HTTPException(status_code=422, detail="Неверный месяц")
+
+    _, last_day = calendar.monthrange(y, m)
+    start = datetime(y, m, 1, tzinfo=MOSCOW_TZ).date()
+    end = datetime(y, m, last_day, tzinfo=MOSCOW_TZ).date()
+
+    # Staff (transparency): who is working each day
+    staff_rows = list(
+        (
+            await session.execute(
+                select(WorkShiftDay, User)
+                .join(User, User.id == WorkShiftDay.user_id)
+                .where(WorkShiftDay.day >= start)
+                .where(WorkShiftDay.day <= end)
+                .where(WorkShiftDay.kind == "work")
+                .where(User.is_deleted == False)
+                .where(User.status == UserStatus.APPROVED)
+                .order_by(User.first_name, User.last_name, User.id)
+            )
+        ).all()
+    )
+
+    # Shift facts for all staff in this range (to show per-user status in calendar cells)
+    staff_user_ids = sorted({int(getattr(u, "id")) for _, u in staff_rows if getattr(u, "id", None) is not None})
+    staff_facts: dict[tuple[int, str], ShiftInstance] = {}
+    if staff_user_ids:
+        fact_rows_all = list(
+            (
+                await session.scalars(
+                    select(ShiftInstance)
+                    .where(ShiftInstance.user_id.in_(staff_user_ids))
+                    .where(ShiftInstance.day >= start)
+                    .where(ShiftInstance.day <= end)
+                )
+            ).all()
+        )
+        for fr in fact_rows_all:
+            d = getattr(fr, "day", None)
+            uid = getattr(fr, "user_id", None)
+            if d is None or uid is None:
+                continue
+            staff_facts[(int(uid), str(d))] = fr
+    staff_by_day: dict[str, list[dict]] = {}
+    for wsd, u in staff_rows:
+        d = getattr(wsd, "day", None)
+        if not d:
+            continue
+        day_key = str(d)
+        uid = int(getattr(u, "id"))
+        name = (
+            " ".join(
+                [
+                    str(getattr(u, "first_name", "") or "").strip(),
+                    str(getattr(u, "last_name", "") or "").strip(),
+                ]
+            ).strip()
+            or str(getattr(u, "username", "") or "")
+            or f"User #{int(getattr(u, 'id'))}"
+        )
+        fact = staff_facts.get((uid, day_key))
+        staff_by_day.setdefault(day_key, []).append(
+            {
+                "user_id": uid,
+                "name": name,
+                "color": str(getattr(u, "color", "#94a3b8") or "#94a3b8"),
+                "hours": getattr(wsd, "hours", None),
+                "is_emergency": bool(getattr(wsd, "is_emergency", False)),
+                "shift_status": str(getattr(fact, "status", "") or "") if fact is not None else "",
+                "shift_approval_required": bool(getattr(fact, "approval_required", False)) if fact is not None else False,
+            }
+        )
+
+    # Plan/fact for selected user (editing)
+    fact_rows = list(
+        (
+            await session.scalars(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(target_user_id))
+                .where(ShiftInstance.day >= start)
+                .where(ShiftInstance.day <= end)
+            )
+        ).all()
+    )
+    fact_by_day: dict[str, ShiftInstance] = {}
+    for fr in fact_rows:
+        d = getattr(fr, "day", None)
+        if d is None:
+            continue
+        fact_by_day[str(d)] = fr
+
+    plan_rows = list(
+        (
+            await session.scalars(
+                select(WorkShiftDay)
+                .where(WorkShiftDay.user_id == int(target_user_id))
+                .where(WorkShiftDay.day >= start)
+                .where(WorkShiftDay.day <= end)
+            )
+        ).all()
+    )
+
+    out: dict[str, dict] = {}
+    for r in plan_rows:
+        d = getattr(r, "day", None)
+        if not d:
+            continue
+        day_key = str(d)
+        fact = fact_by_day.get(day_key)
+        amount: int | None = None
+        status: str | None = None
+        approval_required: bool | None = None
+        if fact is not None:
+            status = str(getattr(fact, "status", None) or "") or None
+            approval_required = bool(getattr(fact, "approval_required", False))
+            amount = (
+                getattr(fact, "amount_approved", None)
+                if getattr(fact, "amount_approved", None) is not None
+                else (
+                    getattr(fact, "amount_submitted", None)
+                    if getattr(fact, "amount_submitted", None) is not None
+                    else getattr(fact, "amount_default", None)
+                )
+            )
+
+        day_staff = staff_by_day.get(day_key, [])
+        out[day_key] = {
+            "kind": str(getattr(r, "kind", "") or ""),
+            "hours": getattr(r, "hours", None),
+            "is_emergency": bool(getattr(r, "is_emergency", False)),
+            "shift_status": status,
+            "shift_amount": amount,
+            "shift_approval_required": approval_required,
+            "staff_total": len(day_staff),
+            "staff_preview": day_staff[:3],
+        }
+
+    # Include days where the selected user has no plan record, but we still want staff preview and/or fact
+    for day_key, day_staff in staff_by_day.items():
+        if day_key in out:
+            continue
+        fact = fact_by_day.get(day_key)
+        status: str | None = None
+        approval_required: bool | None = None
+        amount: int | None = None
+        if fact is not None:
+            status = str(getattr(fact, "status", None) or "") or None
+            approval_required = bool(getattr(fact, "approval_required", False))
+            amount = (
+                getattr(fact, "amount_approved", None)
+                if getattr(fact, "amount_approved", None) is not None
+                else (
+                    getattr(fact, "amount_submitted", None)
+                    if getattr(fact, "amount_submitted", None) is not None
+                    else getattr(fact, "amount_default", None)
+                )
+            )
+        out[day_key] = {
+            "kind": "",
+            "hours": None,
+            "is_emergency": bool(getattr(fact, "is_emergency", False)) if fact is not None else False,
+            "shift_status": status,
+            "shift_amount": amount,
+            "shift_approval_required": approval_required,
+            "staff_total": len(day_staff),
+            "staff_preview": day_staff[:3],
+        }
+
+    # Include pure-fact days (if fact exists but plan is empty and there are no staff rows)
+    for day_key, fact in fact_by_day.items():
+        if day_key in out:
+            continue
+        status = str(getattr(fact, "status", None) or "") or None
+        approval_required = bool(getattr(fact, "approval_required", False))
+        amount = (
+            getattr(fact, "amount_approved", None)
+            if getattr(fact, "amount_approved", None) is not None
+            else (
+                getattr(fact, "amount_submitted", None)
+                if getattr(fact, "amount_submitted", None) is not None
+                else getattr(fact, "amount_default", None)
+            )
+        )
+        out[day_key] = {
+            "kind": "",
+            "hours": None,
+            "is_emergency": bool(getattr(fact, "is_emergency", False)),
+            "shift_status": status,
+            "shift_amount": amount,
+            "shift_approval_required": approval_required,
+            "staff_total": 0,
+            "staff_preview": [],
+        }
+
+    return {"year": y, "month": m, "days": out}
+
+
+@app.post("/api/schedule/day")
+async def schedule_api_day(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Неверный формат")
+
+    day_raw = str(body.get("day") or "").strip()
+    kind = str(body.get("kind") or "").strip()
+    hours_raw = body.get("hours")
+    target_user_id = body.get("user_id")
+
+    if not day_raw:
+        raise HTTPException(status_code=422, detail="Не задан день")
+    try:
+        day = datetime.strptime(day_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная дата")
+
+    uid = int(actor.id)
+    if target_user_id is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        try:
+            uid = int(target_user_id)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверный user_id")
+
+    # Load existing row
+    existing = (
+        await session.execute(
+            select(WorkShiftDay)
+            .where(WorkShiftDay.user_id == int(uid))
+            .where(WorkShiftDay.day == day)
+        )
+    ).scalar_one_or_none()
+
+    if not kind:
+        if existing is not None:
+            await session.delete(existing)
+            await session.flush()
+        return {"ok": True}
+
+    if kind not in {"work", "off"}:
+        raise HTTPException(status_code=422, detail="Неверный тип")
+
+    hours: int | None = None
+    if kind == "work":
+        try:
+            hours = int(hours_raw) if hours_raw is not None else 8
+        except Exception:
+            hours = 8
+        if hours not in {8, 10, 12}:
+            raise HTTPException(status_code=422, detail="Неверные часы")
+    else:
+        hours = None
+
+    if existing is None:
+        existing = WorkShiftDay(user_id=int(uid), day=day, kind=kind, hours=hours, is_emergency=False)
+        session.add(existing)
+    else:
+        existing.kind = kind
+        existing.hours = hours
+        existing.is_emergency = bool(getattr(existing, "is_emergency", False))
+
+    await session.flush()
+    return {"ok": True}
+
+
+@app.get("/api/schedule/day/staff")
+async def schedule_api_day_staff(
+    request: Request,
+    day: str,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    _ = await load_staff_user(session, admin_id)
+
+    day_raw = str(day or "").strip()
+    try:
+        d = datetime.strptime(day_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная дата")
+
+    rows = list(
+        (
+            await session.execute(
+                select(WorkShiftDay, User)
+                .join(User, User.id == WorkShiftDay.user_id)
+                .where(WorkShiftDay.day == d)
+                .where(WorkShiftDay.kind == "work")
+                .where(User.is_deleted == False)
+                .where(User.status == UserStatus.APPROVED)
+                .order_by(User.first_name, User.last_name, User.id)
+            )
+        ).all()
+    )
+
+    # Facts for this day to show per-user status
+    user_ids = sorted({int(getattr(u, "id")) for _, u in rows if getattr(u, "id", None) is not None})
+    facts_by_user: dict[int, ShiftInstance] = {}
+    if user_ids:
+        frs = list(
+            (
+                await session.scalars(
+                    select(ShiftInstance)
+                    .where(ShiftInstance.day == d)
+                    .where(ShiftInstance.user_id.in_(user_ids))
+                )
+            ).all()
+        )
+        for fr in frs:
+            uid = getattr(fr, "user_id", None)
+            if uid is None:
+                continue
+            facts_by_user[int(uid)] = fr
+
+    out = []
+    for shift, u in rows:
+        name = (" ".join([str(getattr(u, "first_name", "") or "").strip(), str(getattr(u, "last_name", "") or "").strip()]).strip())
+        if not name:
+            name = str(getattr(u, "username", "") or "") or f"User #{int(getattr(u, 'id'))}"
+        uid = int(getattr(u, "id"))
+        fact = facts_by_user.get(uid)
+        out.append(
+            {
+                "user_id": uid,
+                "name": name,
+                "color": str(getattr(u, "color", "#94a3b8") or "#94a3b8"),
+                "kind": str(getattr(shift, "kind", "") or ""),
+                "hours": getattr(shift, "hours", None),
+                "is_emergency": bool(getattr(shift, "is_emergency", False)),
+                "shift_status": str(getattr(fact, "status", "") or "") if fact is not None else "",
+                "shift_approval_required": bool(getattr(fact, "approval_required", False)) if fact is not None else False,
+            }
+        )
+
+    swap = (
+        await session.execute(
+            select(ShiftSwapRequest)
+            .where(ShiftSwapRequest.day == d)
+            .order_by(ShiftSwapRequest.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    swap_info = None
+    if swap is not None:
+        swap_info = {
+            "id": int(getattr(swap, "id")),
+            "status": str(getattr(swap, "status", "") or ""),
+            "from_user_id": int(getattr(swap, "from_user_id")),
+            "accepted_by_user_id": int(getattr(swap, "accepted_by_user_id")) if getattr(swap, "accepted_by_user_id", None) else None,
+            "bonus_amount": getattr(swap, "bonus_amount", None),
+            "reason": str(getattr(swap, "reason", "") or ""),
+        }
+
+    return {"day": str(d), "staff": out, "swap_request": swap_info}
+
+
+@app.post("/api/schedule/emergency")
+async def schedule_api_emergency(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Неверный формат")
+
+    day_raw = str(body.get("day") or "").strip()
+    hours_raw = body.get("hours")
+    comment = str(body.get("comment") or "").strip() or None
+    replace = bool(body.get("replace") or False)
+    target_user_id = body.get("user_id")
+
+    if not day_raw:
+        raise HTTPException(status_code=422, detail="Не задан день")
+    try:
+        d = datetime.strptime(day_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная дата")
+
+    try:
+        hours = int(hours_raw)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверные часы")
+    if hours not in {8, 10, 12}:
+        raise HTTPException(status_code=422, detail="Неверные часы")
+
+    uid = int(actor.id)
+    if target_user_id is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        try:
+            uid = int(target_user_id)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверный user_id")
+
+    existing = (
+        await session.execute(
+            select(WorkShiftDay)
+            .where(WorkShiftDay.user_id == int(uid))
+            .where(WorkShiftDay.day == d)
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        if bool(getattr(existing, "is_emergency", False)):
+            # Don't create duplicates; allow editing existing emergency
+            existing.kind = "work"
+            existing.hours = hours
+            existing.comment = comment
+            await session.flush()
+            return {"ok": True, "updated": True}
+
+        # Existing planned shift: require explicit replace
+        if not replace:
+            raise HTTPException(status_code=409, detail="Смена уже запланирована. Заменить?")
+
+        existing.kind = "work"
+        existing.hours = hours
+        existing.is_emergency = True
+        existing.comment = comment
+        await session.flush()
+        return {"ok": True, "replaced": True}
+
+    row = WorkShiftDay(user_id=int(uid), day=d, kind="work", hours=hours, is_emergency=True, comment=comment)
+    session.add(row)
+    await session.flush()
+    return {"ok": True, "created": True}
 
 
 @app.get("/", response_class=HTMLResponse)

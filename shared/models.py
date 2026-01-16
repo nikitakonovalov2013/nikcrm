@@ -4,6 +4,7 @@ from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy import UniqueConstraint
 from datetime import datetime, date, time
+from typing import Optional
 from .db import Base
 from .enums import (
     UserStatus,
@@ -14,6 +15,8 @@ from .enums import (
     TaskStatus,
     TaskPriority,
     TaskEventType,
+    ShiftInstanceStatus,
+    ShiftSwapRequestStatus,
 )
 from .utils import utc_now
 
@@ -126,6 +129,137 @@ class MagicLinkToken(Base):
     scope: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped["User"] = relationship()
+
+
+class WorkShiftDay(Base):
+    __tablename__ = "work_shift_days"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_emergency: Mapped[bool] = mapped_column(Boolean, default=False)
+    comment: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    user: Mapped["User"] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_work_shift_days_user_day"),
+        Index("ix_work_shift_days_kind", "kind"),
+    )
+
+
+class ShiftInstance(Base):
+    __tablename__ = "shift_instances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+
+    planned_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_emergency: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    status: Mapped[ShiftInstanceStatus] = mapped_column(
+        PG_ENUM(
+            ShiftInstanceStatus,
+            name="shift_instance_status_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=ShiftInstanceStatus.PLANNED,
+    )
+
+    base_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    extra_hours: Mapped[int] = mapped_column(Integer, default=0)
+    overtime_hours: Mapped[int] = mapped_column(Integer, default=0)
+    extra_hour_rate: Mapped[int] = mapped_column(Integer, default=300)
+    overtime_hour_rate: Mapped[int] = mapped_column(Integer, default=400)
+
+    amount_default: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount_submitted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount_approved: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    approval_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    user: Mapped["User"] = relationship(lazy="selectin", foreign_keys=[user_id])
+    approved_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[approved_by_user_id])
+
+    events: Mapped[list["ShiftInstanceEvent"]] = relationship(
+        back_populates="shift",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", name="uq_shift_instances_user_day"),
+        Index("ix_shift_instances_status", "status"),
+        Index("ix_shift_instances_day_status", "day", "status"),
+    )
+
+
+class ShiftInstanceEvent(Base):
+    __tablename__ = "shift_instance_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shift_instances.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    shift: Mapped["ShiftInstance"] = relationship(back_populates="events")
+    actor_user: Mapped[Optional["User"]] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_shift_instance_events_shift_created_at", "shift_id", "created_at"),
+    )
+
+
+class ShiftSwapRequest(Base):
+    __tablename__ = "shift_swap_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    from_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    planned_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(String(50))
+    bonus_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    status: Mapped[ShiftSwapRequestStatus] = mapped_column(
+        PG_ENUM(
+            ShiftSwapRequestStatus,
+            name="shift_swap_request_status_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=ShiftSwapRequestStatus.OPEN,
+    )
+
+    accepted_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    from_user: Mapped["User"] = relationship(lazy="selectin", foreign_keys=[from_user_id])
+    accepted_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[accepted_by_user_id])
+
+    __table_args__ = (
+        Index("ix_shift_swap_requests_status", "status"),
+        Index("ix_shift_swap_requests_day_status", "day", "status"),
+    )
 
 
 class AdminAction(Base):

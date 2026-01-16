@@ -1,0 +1,59 @@
+{% extends base_template %}
+{% block title %}График работы{% endblock %}
+{% block content %}
+<div class="tasks-header">
+  <div>
+    <h2 class="subtitle">График работы</h2>
+    <div class="muted">План и фактические смены</div>
+  </div>
+  <div class="tasks-header-actions">
+    <button class="btn" type="button" id="schedule-emergency">⚡ Экстренная смена</button>
+    <button class="btn-outline" type="button" id="schedule-today">Сегодня</button>
+  </div>
+</div>
+
+<div class="schedule-toolbar">
+  <div class="schedule-toolbar-left">
+    <div class="schedule-quick">
+      <div class="schedule-quick-title">Быстрая разметка:</div>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work8">8ч</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work10">10ч</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work12">12ч</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="off">Выходной</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="clear">Очистить</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="">Снять режим</button>
+    </div>
+  </div>
+  <div class="schedule-toolbar-right" id="schedule-user-wrap" style="display:none">
+    <div class="schedule-user-label">Сотрудник:</div>
+    <select class="input" id="schedule-user"></select>
+  </div>
+</div>
+
+<div class="schedule-cal">
+  <div class="schedule-cal-head">
+    <button class="btn-outline" type="button" id="schedule-prev">←</button>
+    <div class="schedule-cal-title" id="schedule-title">—</div>
+    <button class="btn-outline" type="button" id="schedule-next">→</button>
+  </div>
+
+  <div class="schedule-cal-weekdays">
+    <div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div>
+  </div>
+
+  <div class="schedule-cal-grid" id="schedule-grid"></div>
+
+  <div class="schedule-legend">
+    <div class="schedule-legend-item"><span class="schedule-dot work"></span><span>Рабочий день</span></div>
+    <div class="schedule-legend-item"><span class="schedule-dot off"></span><span>Выходной</span></div>
+    <div class="schedule-legend-item"><span class="schedule-dot none"></span><span>Экстренная ⚡</span></div>
+    <div class="schedule-legend-item"><span class="schedule-dot none"></span><span>Не задано</span></div>
+  </div>
+</div>
+
+<link rel="stylesheet" href="{{ url_for('static', path='schedule.css') }}" />
+<script>
+  window.SCHEDULE_USERS = {{ users_json|default('[]')|safe }};
+</script>
+<script defer src="{{ url_for('static', path='schedule.js') }}"></script>
+{% endblock %}

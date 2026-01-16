@@ -14,7 +14,9 @@ from sqlalchemy import select, func
 from shared.config import settings
 from shared.db import get_async_session
 from shared.enums import Position, UserStatus
-from shared.models import MaterialSupply, MaterialConsumption, User
+from shared.models import MaterialSupply, MaterialConsumption, User, WorkShiftDay
+from shared.services.magic_links import create_magic_token
+from bot.app.utils.urls import get_schedule_url
 from bot.app.repository.reminders_settings import ReminderSettingsRepository
 from bot.app.services.stocks_reports import build_report
 from bot.app.services.stocks_reports_format import format_report_html
@@ -106,6 +108,73 @@ async def reminder_job() -> None:
     await bot.session.close()
 
 
+async def shifts_morning_job() -> None:
+    tz = _tz()
+    now = datetime.now(tz)
+    today = now.date()
+
+    _logger.info("shifts_morning_job tick", extra={"now": now.isoformat(), "day": str(today)})
+
+    async with get_async_session() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(WorkShiftDay, User)
+                    .join(User, User.id == WorkShiftDay.user_id)
+                    .where(WorkShiftDay.day == today)
+                    .where(WorkShiftDay.kind == "work")
+                    .where(User.is_deleted == False)
+                    .where(User.status == UserStatus.APPROVED)
+                )
+            ).all()
+        )
+
+        bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+        try:
+            for wsd, u in rows:
+                chat_id = int(getattr(u, "tg_id", 0) or 0)
+                if not chat_id:
+                    continue
+
+                hours = getattr(wsd, "hours", None)
+                h_txt = f" ({int(hours)}ч)" if hours else ""
+
+                tok = await create_magic_token(session, user_id=int(getattr(u, "id")), ttl_minutes=60, scope="schedule")
+                link = f"{get_schedule_url(is_admin=False, is_manager=False)}"
+                # Use tg-auth route to set cookie
+                base = str(getattr(settings, "INTERNAL_WEB_BASE_URL", "") or "").strip() or "http://web:8000"
+                if base.endswith("/"):
+                    base = base[:-1]
+                web_link = base + f"/crm/auth/tg?t={tok}&next=%2Fcrm%2Fschedule%2Fpublic&scope=schedule"
+
+                text = (
+                    f"⏰ <b>Смена сегодня</b>\n\n"
+                    f"Сегодня у вас смена{h_txt}.\n"
+                    f"Откройте меню графика, чтобы начать или закрыть смену.\n"
+                    f"\n🔗 График: {web_link}"
+                )
+
+                kb = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ Начать смену", "callback_data": f"shift:start:{today.isoformat()}"},
+                        ],
+                        [
+                            {"text": "📅 Меню графика", "callback_data": "sched_menu:open"},
+                        ],
+                        [
+                            {"text": "🔗 Открыть график", "url": web_link},
+                        ],
+                    ]
+                }
+                try:
+                    await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+                except Exception:
+                    _logger.exception("failed to send shift morning msg", extra={"chat_id": chat_id})
+        finally:
+            await bot.session.close()
+
+
 async def daily_report_job() -> None:
     tz = _tz()
     now = datetime.now(tz)
@@ -192,6 +261,13 @@ def schedule_jobs() -> None:
         replace_existing=True,
     )
 
+    sched.add_job(
+        shifts_morning_job,
+        CronTrigger(hour=8, minute=0, timezone=tz),
+        id="shifts_morning",
+        replace_existing=True,
+    )
+
     _logger.info(
         "scheduler default jobs scheduled",
         extra={
@@ -224,6 +300,14 @@ async def reschedule_from_db() -> None:
         daily_report_job,
         CronTrigger(hour=s.daily_report_time.hour, minute=s.daily_report_time.minute, timezone=tz),
         id="stocks_daily_report",
+        replace_existing=True,
+    )
+
+    # Shift notifications: fixed at 08:00 by default (can be made configurable later)
+    sched.add_job(
+        shifts_morning_job,
+        CronTrigger(hour=8, minute=0, timezone=tz),
+        id="shifts_morning",
         replace_existing=True,
     )
 
