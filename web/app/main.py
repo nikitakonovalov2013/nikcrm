@@ -1,3 +1,5 @@
+import builtins
+
 from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form, UploadFile, File, Header
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -1001,7 +1003,7 @@ async def schedule_api_month(
     year: int,
     month: int,
     user_id: int | None = None,
-    all: bool | None = None,
+    all_mode: bool | None = None,
     admin_id: int = Depends(require_authenticated_user),
     session: AsyncSession = Depends(get_db),
 ):
@@ -1011,7 +1013,7 @@ async def schedule_api_month(
     is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
 
     target_user_id: int | None = int(actor.id)
-    want_all = bool(all)
+    want_all = bool(all_mode)
     if want_all:
         target_user_id = None
     elif user_id is not None:
@@ -1116,7 +1118,17 @@ async def schedule_api_month(
         for day_key, day_staff in staff_by_day.items():
             any_work = any(str(x.get("kind") or "") == "work" for x in (day_staff or []))
             any_off = any(str(x.get("kind") or "") == "off" for x in (day_staff or []))
-            agg_kind = "work" if any_work else ("off" if (day_staff and (not any_work) and any_off and all(str(x.get("kind") or "") == "off" for x in (day_staff or []))) else "")
+            # Important: do not shadow Python built-ins like `all`/`any` (query params may be named `all`).
+            agg_kind = "work" if any_work else (
+                "off"
+                if (
+                    day_staff
+                    and (not any_work)
+                    and any_off
+                    and builtins.all(str(x.get("kind") or "") == "off" for x in (day_staff or []))
+                )
+                else ""
+            )
             work_staff = [x for x in (day_staff or []) if str(x.get("kind") or "") == "work"]
             out[day_key] = {
                 "kind": agg_kind,
