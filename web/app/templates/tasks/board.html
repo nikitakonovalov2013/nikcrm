@@ -363,7 +363,8 @@
           '</div>' +
           '<div class="task-form-row">' +
             '<div class="form-label">Фото (опционально)</div>' +
-            '<input class="form-control" type="file" name="photos" accept="image/*" multiple />' +
+            '<div class="muted" style="margin-bottom:6px;">Максимум: 20 MB на файл</div>' +
+            '<input class="form-control" type="file" name="photos" accept="image/*" multiple data-max-mb="20" />' +
           '</div>' +
           '<div class="task-modal-footer">' +
             '<button type="button" class="btn-outline" onclick="(' + closeModal.toString() + ')()">Закрыть</button>' +
@@ -381,6 +382,9 @@
     if (r.status === 401) {
       try { window.location.href = '/crm/auth/tg'; } catch (_){ }
       throw new Error('Сессия истекла');
+    }
+    if (r.status === 413) {
+      throw new Error('Файл слишком большой. Максимум: 20 MB');
     }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -541,7 +545,8 @@
             '<div class="task-form-row">' +
               '<div class="form-label">Фото</div>' +
               (hasPhoto ? '<div class="muted" style="margin-bottom:6px;">Сейчас: есть</div>' : '<div class="muted" style="margin-bottom:6px;">Сейчас: нет</div>') +
-              '<input class="form-control" type="file" name="photo" accept="image/*" />' +
+              '<div class="muted" style="margin-bottom:6px;">Максимум: 20 MB</div>' +
+              '<input class="form-control" type="file" name="photo" accept="image/*" data-max-mb="20" />' +
               (hasPhoto ? (
                 '<label class="checkbox-row" style="margin-top:10px;">' +
                   '<input type="checkbox" name="remove_photo" value="1" />' +
@@ -573,6 +578,14 @@
     const removePhoto = !!fd.get('remove_photo');
     const assigneeIds = (fd.getAll('assignee_ids') || []).map(x => parseInt(String(x), 10)).filter(x => Number.isFinite(x) && x > 0);
     const photo = fd.get('photo');
+
+    if (photo && typeof photo === 'object' && photo.size) {
+      const maxBytes = 20 * 1024 * 1024;
+      if (photo.size > maxBytes) {
+        await window.crmAlert('Файл слишком большой. Максимум: 20 MB');
+        return false;
+      }
+    }
 
     try {
       if (removePhoto) {
@@ -710,6 +723,14 @@
     const form = ev.target;
     const fd = new FormData(form);
     try {
+      const maxBytes = 20 * 1024 * 1024;
+      const photos = fd.getAll('photos') || [];
+      for (const f of photos) {
+        if (f && typeof f === 'object' && f.size && f.size > maxBytes) {
+          await window.crmAlert('Файл слишком большой. Максимум: 20 MB');
+          return false;
+        }
+      }
       const task = await apiJson('/crm/api/tasks/' + String(taskId) + '/comments', { method: 'POST', body: fd });
       // refresh comments in modal without closing
       const list = document.getElementById('task-comments-list');

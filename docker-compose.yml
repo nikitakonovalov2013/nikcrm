@@ -38,6 +38,8 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     volumes:
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./migrations:/app/migrations:ro
       - *tz-localtime
       - *tz-timezone
 

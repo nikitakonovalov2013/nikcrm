@@ -16,12 +16,19 @@
   <div class="schedule-toolbar-left">
     <div class="schedule-quick">
       <div class="schedule-quick-title">Быстрая разметка:</div>
-      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work8">8ч</button>
-      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work10">10ч</button>
-      <button class="btn-outline schedule-quick-btn" type="button" data-quick="work12">12ч</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="preset_10_18">10:00–18:00 (8 часов)</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="preset_10_20">10:00–20:00 (10 часов)</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="preset_10_22">10:00–22:00 (12 часов)</button>
+      <button class="btn-outline schedule-quick-btn" type="button" data-quick="custom">Своё время</button>
       <button class="btn-outline schedule-quick-btn" type="button" data-quick="off">Выходной</button>
       <button class="btn-outline schedule-quick-btn" type="button" data-quick="clear">Очистить</button>
       <button class="btn-outline schedule-quick-btn" type="button" data-quick="">Снять режим</button>
+      <span id="schedule-quick-time-wrap" style="display:none">
+        <div class="schedule-quick-title" style="margin-left:12px">Время:</div>
+        <input class="input" type="time" id="schedule-quick-start" value="10:00" style="width:110px" />
+        <div class="muted">—</div>
+        <input class="input" type="time" id="schedule-quick-end" value="18:00" style="width:110px" />
+      </span>
     </div>
   </div>
   <div class="schedule-toolbar-right" id="schedule-user-wrap" style="display:none">
@@ -54,6 +61,8 @@
 <link rel="stylesheet" href="{{ url_for('static', path='schedule.css') }}" />
 <script>
   window.SCHEDULE_USERS = {{ users_json|default('[]')|safe }};
+  window.SCHEDULE_IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
+  window.SCHEDULE_IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
 </script>
 <script defer src="{{ url_for('static', path='schedule.js') }}"></script>
 {% endblock %}

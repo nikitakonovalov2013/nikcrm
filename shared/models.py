@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column, Text
+from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column, Text, Time
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy import UniqueConstraint
@@ -139,6 +139,12 @@ class WorkShiftDay(Base):
     day: Mapped[date] = mapped_column(Date, index=True)
     kind: Mapped[str] = mapped_column(String(20))
     hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    start_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_followup_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_emergency: Mapped[bool] = mapped_column(Boolean, default=False)
     comment: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

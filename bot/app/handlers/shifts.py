@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -17,6 +17,8 @@ from shared.permissions import role_flags
 from shared.utils import MOSCOW_TZ, utc_now
 from shared.models import User, WorkShiftDay, ShiftInstance, ShiftInstanceEvent
 
+from shared.services.shifts_domain import is_shift_active_status, is_shift_final_status
+
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.keyboards.main import main_menu_kb
 from bot.app.utils.telegram import edit_html, send_html, send_new_and_delete_active
@@ -27,6 +29,13 @@ from bot.app.states.shifts import ShiftCloseEditState, ShiftManagerEditState
 
 router = Router()
 _logger = logging.getLogger(__name__)
+
+
+async def _cb_answer_safely(cb: CallbackQuery, text: str | None = None) -> None:
+    try:
+        await cb.answer(text or "")
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "noop")
@@ -40,8 +49,7 @@ async def _noop(cb: CallbackQuery) -> None:
 def _kb_schedule_return() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="sched_menu:refresh")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="sched_menu:back")],
+            [InlineKeyboardButton(text="📅 Меню графика", callback_data="sched_menu:open")],
         ]
     )
 
@@ -57,7 +65,7 @@ def _kb_pending_nav(*, page: int, has_prev: bool, has_next: bool) -> InlineKeybo
     rows: list[list[InlineKeyboardButton]] = []
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="sched_menu:refresh")])
+    rows.append([InlineKeyboardButton(text="📅 Меню графика", callback_data="sched_menu:open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -143,6 +151,15 @@ def _kb_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="shift:cancel")]])
 
 
+def _kb_cancel_skip(*, skip_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Пропустить", callback_data=str(skip_data))],
+            [InlineKeyboardButton(text="Отмена", callback_data="shift:cancel")],
+        ]
+    )
+
+
 async def _log_event(session, *, shift_id: int, actor_user_id: int | None, type: str, payload: dict | None = None) -> None:
     session.add(
         ShiftInstanceEvent(
@@ -190,18 +207,21 @@ async def _get_active_shift(session, *, user_id: int) -> ShiftInstance | None:
 
 @router.callback_query(F.data == "shift:cancel")
 async def shift_cancel(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     await state.clear()
     await edit_html(cb, "Отменено.", reply_markup=_kb_schedule_return())
 
 
 @router.callback_query(F.data.startswith("shift:skip:"))
 async def shift_skip(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     await state.clear()
     await edit_html(cb, "Хорошо. Если планы изменятся — откройте меню графика в любое время.", reply_markup=_kb_schedule_return())
 
 
 @router.callback_query(F.data.startswith("shift:start:"))
 async def shift_start(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
@@ -225,7 +245,17 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
             )
         ).scalar_one_or_none()
 
-        if existing is not None and existing.status == ShiftInstanceStatus.STARTED:
+        if existing is not None:
+            if is_shift_final_status(getattr(existing, "status", None), ended_at=getattr(existing, "ended_at", None)):
+                await state.clear()
+                await edit_html(
+                    cb,
+                    "Смена уже завершена ✅\n\nОбнови меню «График работы».",
+                    reply_markup=_kb_schedule_return(),
+                )
+                return
+
+        if existing is not None and is_shift_active_status(getattr(existing, "status", None), ended_at=getattr(existing, "ended_at", None)):
             await edit_html(cb, "Смена уже открыта.", reply_markup=_kb_close_shift(shift_id=int(existing.id)))
             return
 
@@ -268,16 +298,9 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("shift:close:"))
-async def shift_close_prompt(cb: CallbackQuery, state: FSMContext):
+async def _shift_close_prompt_by_id(cb: CallbackQuery, state: FSMContext, *, shift_id: int) -> None:
     user = await ensure_registered_or_reply(cb)
     if not user:
-        return
-
-    try:
-        shift_id = int(str(cb.data).split(":", 2)[2])
-    except Exception:
-        await edit_html(cb, "Не удалось распознать смену.")
         return
 
     async with get_async_session() as session:
@@ -285,14 +308,36 @@ async def shift_close_prompt(cb: CallbackQuery, state: FSMContext):
             await session.execute(
                 select(ShiftInstance)
                 .where(ShiftInstance.id == int(shift_id))
-                .where(ShiftInstance.user_id == int(user.id))
             )
         ).scalar_one_or_none()
+
         if shift is None:
-            await edit_html(cb, "Смена не найдена.")
+            await state.clear()
+            await edit_html(
+                cb,
+                "Смена не найдена или уже изменена. Обнови меню «График работы».",
+                reply_markup=_kb_schedule_return(),
+            )
             return
+
+        # Permissions: owner or admin/manager
+        r = role_flags(
+            tg_id=int(cb.from_user.id),
+            admin_ids=settings.admin_ids,
+            status=user.status,
+            position=user.position,
+        )
+        if int(getattr(shift, "user_id")) != int(user.id) and not (r.is_admin or r.is_manager):
+            await edit_html(cb, "⛔ Нет доступа.")
+            return
+
         if shift.status != ShiftInstanceStatus.STARTED:
-            await edit_html(cb, "Смена не в статусе 'Открыта'.")
+            await state.clear()
+            await edit_html(
+                cb,
+                "Смена не в статусе 'Открыта'. Обнови меню «График работы».",
+                reply_markup=_kb_schedule_return(),
+            )
             return
 
         base_rate = int(getattr(shift, "base_rate", None) or int(getattr(user, "rate_k", 0) or 0))
@@ -316,12 +361,130 @@ async def shift_close_prompt(cb: CallbackQuery, state: FSMContext):
     await edit_html(
         cb,
         f"Закрываем смену. Сумма по умолчанию: <b>{amount_default} ₽</b>. Подтвердить?",
-        reply_markup=_kb_close_confirm(shift_id=shift_id),
+        reply_markup=_kb_close_confirm(shift_id=int(shift_id)),
     )
+
+
+@router.callback_query(F.data.startswith("shift:close:"))
+async def shift_close_prompt(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+
+    try:
+        shift_id = int(str(cb.data).split(":", 2)[2])
+    except Exception:
+        await state.clear()
+        await edit_html(
+            cb,
+            "Смена не найдена или уже изменена. Обнови меню «График работы».",
+            reply_markup=_kb_schedule_return(),
+        )
+        return
+
+    await _shift_close_prompt_by_id(cb, state, shift_id=int(shift_id))
+
+
+@router.callback_query(F.data.startswith("sch:finish:"))
+async def schedule_finish_by_shift_id(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    try:
+        shift_id = int(str(cb.data).split(":", 2)[2])
+    except Exception:
+        await state.clear()
+        await edit_html(
+            cb,
+            "Смена не найдена или уже изменена. Обнови меню «График работы».",
+            reply_markup=_kb_schedule_return(),
+        )
+        return
+
+    await _shift_close_prompt_by_id(cb, state, shift_id=int(shift_id))
+
+
+@router.callback_query(F.data.startswith("shift:close_by_day:"))
+async def shift_close_by_day(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+        await edit_html(cb, "⛔ Нет доступа.")
+        return
+
+    day_s = str(cb.data or "").split(":", 2)[2]
+    try:
+        d = datetime.strptime(day_s, "%Y-%m-%d").date()
+    except Exception:
+        d = datetime.now(MOSCOW_TZ).date()
+
+    async with get_async_session() as session:
+        shift = (
+            await session.execute(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(user.id))
+                .where(ShiftInstance.day == d)
+                .order_by(ShiftInstance.id.desc())
+            )
+        ).scalar_one_or_none()
+
+        if shift is None:
+            await state.clear()
+            await edit_html(cb, "Смена за этот день не найдена. Если вы ещё не начинали — откройте смену в меню графика.", reply_markup=_kb_schedule_return())
+            return
+        if shift.status != ShiftInstanceStatus.STARTED:
+            await state.clear()
+            await edit_html(cb, "Смена не в статусе 'Открыта'. Откройте меню графика для проверки.", reply_markup=_kb_schedule_return())
+            return
+
+        shift_id = int(getattr(shift, "id"))
+
+    await _shift_close_prompt_by_id(cb, state, shift_id=int(shift_id))
+
+
+@router.callback_query(F.data.startswith("shift:end_snooze:"))
+async def shift_end_snooze(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+        await edit_html(cb, "⛔ Нет доступа.")
+        return
+
+    day_s = str(cb.data or "").split(":", 2)[2]
+    try:
+        d = datetime.strptime(day_s, "%Y-%m-%d").date()
+    except Exception:
+        d = datetime.now(MOSCOW_TZ).date()
+
+    now = utc_now()
+    async with get_async_session() as session:
+        wsd = (
+            await session.execute(
+                select(WorkShiftDay)
+                .where(WorkShiftDay.user_id == int(user.id))
+                .where(WorkShiftDay.day == d)
+                .where(WorkShiftDay.kind == "work")
+            )
+        ).scalar_one_or_none()
+        if wsd is None:
+            await state.clear()
+            await edit_html(cb, "План смены не найден.", reply_markup=_kb_schedule_return())
+            return
+
+        wsd.end_snooze_until = now + timedelta(hours=1)
+        wsd.end_followup_notified_at = None
+        await session.flush()
+
+    await state.clear()
+    await edit_html(cb, "Ок. Напомню через 1 час.", reply_markup=_kb_schedule_return())
 
 
 @router.callback_query(F.data.startswith("shift:close_ok:"))
 async def shift_close_ok(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
@@ -360,6 +523,7 @@ async def shift_close_ok(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("shift:close_edit:"))
 async def shift_close_edit(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
@@ -372,13 +536,37 @@ async def shift_close_edit(cb: CallbackQuery, state: FSMContext):
         active_bot_chat_id=int(cb.message.chat.id) if cb.message else None,
         active_bot_message_id=int(cb.message.message_id) if cb.message else None,
     )
-    await edit_html(cb, "Сколько доп. часов в рамках смены? (0..N)", reply_markup=_kb_cancel())
+    await edit_html(
+        cb,
+        "Сколько доп. часов в рамках смены? (0..N)",
+        reply_markup=_kb_cancel_skip(skip_data="shift:extra_hours_skip"),
+    )
+
+
+@router.callback_query(F.data == "shift:extra_hours_skip")
+async def shift_close_edit_extra_hours_skip(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+
+    await state.update_data(extra_hours=0)
+    await state.set_state(ShiftCloseEditState.overtime_hours)
+    await edit_html(
+        cb,
+        "Сколько часов вне графика? (0..N)",
+        reply_markup=_kb_cancel_skip(skip_data="shift:overtime_hours_skip"),
+    )
 
 
 @router.message(ShiftCloseEditState.extra_hours)
 async def shift_close_edit_extra_hours(message: Message, state: FSMContext):
     try:
-        eh = int(str(message.text or "").strip())
+        raw = str(message.text or "").strip()
+        if raw in {"-", "—"}:
+            eh = 0
+        else:
+            eh = int(raw)
         if eh < 0:
             raise ValueError
     except Exception:
@@ -403,15 +591,31 @@ async def shift_close_edit_extra_hours(message: Message, state: FSMContext):
     await send_new_and_delete_active(
         message=message,
         state=state,
-        text="Сколько часов сверх графика? (0..N)",
-        reply_markup=_kb_cancel(),
+        text="Сколько часов вне графика? (0..N)",
+        reply_markup=_kb_cancel_skip(skip_data="shift:overtime_hours_skip"),
     )
+
+
+@router.callback_query(F.data == "shift:overtime_hours_skip")
+async def shift_close_edit_overtime_skip(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+
+    await state.update_data(overtime_hours=0)
+    await state.set_state(ShiftCloseEditState.amount)
+    await edit_html(cb, "Введите итоговую сумму (₽):", reply_markup=_kb_cancel())
 
 
 @router.message(ShiftCloseEditState.overtime_hours)
 async def shift_close_edit_overtime(message: Message, state: FSMContext):
     try:
-        ov = int(str(message.text or "").strip())
+        raw = str(message.text or "").strip()
+        if raw in {"-", "—"}:
+            ov = 0
+        else:
+            ov = int(raw)
         if ov < 0:
             raise ValueError
     except Exception:
@@ -469,9 +673,93 @@ async def shift_close_edit_amount(message: Message, state: FSMContext):
     await send_new_and_delete_active(
         message=message,
         state=state,
-        text="Комментарий (почему отличается). Можно пропустить — отправьте '-'",
-        reply_markup=_kb_cancel(),
+        text="Комментарий (необязательно). Можно пропустить кнопкой ниже.",
+        reply_markup=_kb_cancel_skip(skip_data="shift:comment_skip"),
     )
+
+
+@router.callback_query(F.data == "shift:comment_skip")
+async def shift_close_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+
+    data = await state.get_data()
+    shift_id = int(data.get("shift_id") or 0)
+    extra_hours = int(data.get("extra_hours") or 0)
+    overtime_hours = int(data.get("overtime_hours") or 0)
+    amount = int(data.get("amount") or 0)
+    comment = None
+
+    async with get_async_session() as session:
+        shift = (
+            await session.execute(
+                select(ShiftInstance)
+                .where(ShiftInstance.id == int(shift_id))
+                .where(ShiftInstance.user_id == int(user.id))
+            )
+        ).scalar_one_or_none()
+        if shift is None:
+            await state.clear()
+            await edit_html(cb, "Смена не найдена.", reply_markup=_kb_schedule_return())
+            return
+
+        base_rate = int(getattr(shift, "base_rate", None) or int(getattr(user, "rate_k", 0) or 0))
+        extra_rate = int(getattr(shift, "extra_hour_rate", 300) or 300)
+        overtime_rate = int(getattr(shift, "overtime_hour_rate", 400) or 400)
+        amount_default = int(
+            getattr(shift, "amount_default", None)
+            or _calc_default_amount(
+                base_rate=base_rate,
+                extra_hours=extra_hours,
+                extra_hour_rate=extra_rate,
+                overtime_hours=overtime_hours,
+                overtime_hour_rate=overtime_rate,
+            )
+        )
+
+        shift.base_rate = base_rate
+        shift.extra_hours = extra_hours
+        shift.overtime_hours = overtime_hours
+        shift.amount_default = amount_default
+        shift.amount_submitted = amount
+        shift.comment = comment
+        shift.ended_at = utc_now()
+
+        if amount != amount_default:
+            shift.approval_required = True
+            shift.status = ShiftInstanceStatus.PENDING_APPROVAL
+        else:
+            shift.approval_required = False
+            shift.status = ShiftInstanceStatus.APPROVED
+            shift.amount_approved = amount
+
+        await session.flush()
+        await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Смена закрыта")
+        if amount != amount_default:
+            await _log_event(
+                session,
+                shift_id=int(shift.id),
+                actor_user_id=int(user.id),
+                type="Сумма изменена сотрудником",
+                payload={
+                    "default": amount_default,
+                    "submitted": amount,
+                    "extra_hours": extra_hours,
+                    "overtime_hours": overtime_hours,
+                },
+            )
+        else:
+            await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Сумма подтверждена руководителем")
+
+    await state.clear()
+    try:
+        await edit_html(cb, "Ок, пропускаю.")
+    except Exception:
+        pass
+    if cb.message:
+        await send_new_and_delete_active(message=cb.message, state=state, text="Готово.", reply_markup=_kb_schedule_return())
 
 
 @router.message(ShiftCloseEditState.comment)
@@ -487,7 +775,7 @@ async def shift_close_edit_comment(message: Message, state: FSMContext):
     overtime_hours = int(data.get("overtime_hours") or 0)
     amount = int(data.get("amount") or 0)
     comment_raw = str(message.text or "").strip()
-    comment = None if comment_raw == "-" else comment_raw
+    comment = None if (not comment_raw or comment_raw == "-") else comment_raw
 
     async with get_async_session() as session:
         shift = (
@@ -632,6 +920,7 @@ async def shift_close_edit_comment(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sched_pending:page:"))
 async def sched_pending_page(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     actor = await ensure_registered_or_reply(cb)
     if not actor:
         return
@@ -657,6 +946,7 @@ async def _manager_can(user: User, tg_id: int) -> bool:
 
 @router.callback_query(F.data.startswith("sched_pending:approve:"))
 async def mgr_approve(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     actor = await ensure_registered_or_reply(cb)
     if not actor:
         return
@@ -703,6 +993,7 @@ async def mgr_approve(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sched_pending:edit:"))
 async def mgr_edit(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     actor = await ensure_registered_or_reply(cb)
     if not actor:
         return
@@ -754,9 +1045,61 @@ async def mgr_edit_amount(message: Message, state: FSMContext):
     await send_new_and_delete_active(
         message=message,
         state=state,
-        text="Комментарий (опционально). Можно пропустить '-'",
-        reply_markup=_kb_cancel(),
+        text="Комментарий (необязательно). Можно пропустить кнопкой ниже.",
+        reply_markup=_kb_cancel_skip(skip_data="mgr:comment_skip"),
     )
+
+
+@router.callback_query(F.data == "mgr:comment_skip")
+async def mgr_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
+    actor = await ensure_registered_or_reply(cb)
+    if not actor:
+        return
+
+    if not await _manager_can(actor, cb.from_user.id):
+        await edit_html(cb, "⛔ Нет доступа.")
+        return
+
+    data = await state.get_data()
+    shift_id = int(data.get("shift_id") or 0)
+    amt = int(data.get("amount") or 0)
+    page = int(data.get("pending_page") or 0)
+    comment = None
+
+    async with get_async_session() as session:
+        shift = (
+            await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+        ).scalar_one_or_none()
+        if shift is None:
+            await state.clear()
+            await edit_html(cb, "Смена не найдена.")
+            return
+
+        shift.amount_approved = amt
+        shift.status = ShiftInstanceStatus.APPROVED
+        shift.approval_required = False
+        shift.approved_by_user_id = int(actor.id)
+        shift.approved_at = utc_now()
+        await session.flush()
+        await _log_event(
+            session,
+            shift_id=int(shift.id),
+            actor_user_id=int(actor.id),
+            type="Сумма изменена руководителем",
+            payload={"amount_approved": amt, "comment": comment},
+        )
+
+    await state.clear()
+    async with get_async_session() as session:
+        text, kb = await _render_pending_page(session=session, page=page)
+    if cb.message:
+        await send_new_and_delete_active(
+            message=cb.message,
+            state=state,
+            text=f"✅ Подтверждено. Итог: <b>{amt} ₽</b>.\n\n" + text,
+            reply_markup=kb,
+        )
 
 
 @router.message(ShiftManagerEditState.comment)
@@ -777,8 +1120,9 @@ async def mgr_edit_comment(message: Message, state: FSMContext):
     data = await state.get_data()
     shift_id = int(data.get("shift_id") or 0)
     amt = int(data.get("amount") or 0)
+    page = int(data.get("pending_page") or 0)
     comment_raw = str(message.text or "").strip()
-    comment = None if comment_raw == "-" else comment_raw
+    comment = None if (not comment_raw or comment_raw == "-") else comment_raw
 
     async with get_async_session() as session:
         shift = (
@@ -831,6 +1175,7 @@ async def mgr_edit_comment(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sched_pending:rework:"))
 async def mgr_rework(cb: CallbackQuery, state: FSMContext):
+    await _cb_answer_safely(cb)
     actor = await ensure_registered_or_reply(cb)
     if not actor:
         return

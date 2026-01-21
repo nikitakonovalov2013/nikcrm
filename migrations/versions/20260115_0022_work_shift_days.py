@@ -25,6 +25,8 @@ def upgrade() -> None:
         sa.Column("day", sa.Date(), nullable=False),
         sa.Column("kind", sa.String(length=20), nullable=False),
         sa.Column("hours", sa.Integer(), nullable=True),
+        sa.Column("start_time", sa.Time(), nullable=True),
+        sa.Column("end_time", sa.Time(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("user_id", "day", name="uq_work_shift_days_user_day"),

@@ -9,13 +9,15 @@ from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, func
 
 from shared.config import settings
 from shared.db import get_async_session
 from shared.enums import Position, UserStatus
-from shared.models import MaterialSupply, MaterialConsumption, User, WorkShiftDay
+from shared.models import MaterialSupply, MaterialConsumption, User, WorkShiftDay, ShiftInstance
 from shared.services.magic_links import create_magic_token
+from shared.services.shifts_domain import format_hours_from_times_int, is_shift_active_status, is_shift_final_status
 from bot.app.utils.urls import get_schedule_url
 from bot.app.repository.reminders_settings import ReminderSettingsRepository
 from bot.app.services.stocks_reports import build_report
@@ -31,6 +33,175 @@ def _tz() -> ZoneInfo:
         return ZoneInfo(getattr(settings, "TIMEZONE", "Europe/Moscow"))
     except Exception:
         return ZoneInfo("Europe/Moscow")
+
+
+def _wsd_effective_times(wsd: WorkShiftDay) -> tuple[time, time]:
+    st = getattr(wsd, "start_time", None) or time(10, 0)
+    et = getattr(wsd, "end_time", None) or time(18, 0)
+    return st, et
+
+
+def _dt_msk_for_day_time(day: date, t: time, tz: ZoneInfo) -> datetime:
+    return datetime(
+        year=day.year,
+        month=day.month,
+        day=day.day,
+        hour=t.hour,
+        minute=t.minute,
+        second=0,
+        microsecond=0,
+        tzinfo=tz,
+    )
+
+
+async def shift_time_notifications_job() -> None:
+    tz = _tz()
+    now = datetime.now(tz)
+    today = now.date()
+
+    _logger.info("shift_time_notifications_job tick", extra={"now": now.isoformat(), "day": str(today)})
+
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    try:
+        async with get_async_session() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(WorkShiftDay, User)
+                        .join(User, User.id == WorkShiftDay.user_id)
+                        .where(WorkShiftDay.day == today)
+                        .where(WorkShiftDay.kind == "work")
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                    )
+                ).all()
+            )
+
+            for wsd, u in rows:
+                chat_id = int(getattr(u, "tg_id", 0) or 0)
+                if not chat_id:
+                    continue
+
+                # Do not send start reminders if there is already a factual shift (started or finished) for today.
+                shift = (
+                    await session.execute(
+                        select(ShiftInstance)
+                        .where(ShiftInstance.user_id == int(getattr(u, "id")))
+                        .where(ShiftInstance.day == today)
+                    )
+                ).scalar_one_or_none()
+                shift_exists_block_start = False
+                if shift is not None:
+                    if is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                        shift_exists_block_start = True
+                    if is_shift_final_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                        shift_exists_block_start = True
+
+                # Do not send end reminders if factual shift is already finished/final.
+                shift_exists_block_end = False
+                if shift is not None:
+                    if is_shift_final_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                        shift_exists_block_end = True
+
+                st, et = _wsd_effective_times(wsd)
+                start_dt = _dt_msk_for_day_time(today, st, tz)
+                end_dt = _dt_msk_for_day_time(today, et, tz)
+
+                # START notification
+                if (not shift_exists_block_start) and getattr(wsd, "start_notified_at", None) is None and now >= start_dt:
+                    hrs = format_hours_from_times_int(start_time=st, end_time=et)
+                    text = (
+                        f"⏰ <b>Начало смены</b>\n\n"
+                        f"Сегодня у тебя смена: <b>{st.strftime('%H:%M')}–{et.strftime('%H:%M')}</b> ({hrs} часов).\n"
+                        f"Начать смену?"
+                    )
+                    kb = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Начать", "callback_data": f"shift:start:{today.isoformat()}"}],
+                            [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
+                        ]
+                    }
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+                        wsd.start_notified_at = now
+                        await session.flush()
+                        _logger.info("shift start notified", extra={"user_id": int(getattr(u, 'id')), "wsd_id": int(getattr(wsd, 'id'))})
+                    except Exception:
+                        _logger.exception("failed to send shift start notification", extra={"chat_id": chat_id})
+
+                # END notification
+                if getattr(wsd, "end_notified_at", None) is None and now >= end_dt:
+                    if shift_exists_block_end:
+                        wsd.end_notified_at = now
+                        wsd.end_snooze_until = None
+                        wsd.end_followup_notified_at = None
+                        await session.flush()
+                        continue
+                    text = (
+                        f"🏁 <b>Смена по графику закончилась</b>\n\n"
+                        f"Конец по графику: <b>{et.strftime('%H:%M')}</b>.\n"
+                        f"Завершить смену?"
+                    )
+                    finish_cb = f"shift:close_by_day:{today.isoformat()}"
+                    if shift is not None and is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                        finish_cb = f"sch:finish:{int(getattr(shift, 'id'))}"
+                    kb = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Завершить", "callback_data": finish_cb}],
+                            [{"text": "⏰ Ещё работаю", "callback_data": f"shift:end_snooze:{today.isoformat()}"}],
+                            [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
+                        ]
+                    }
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+                        wsd.end_notified_at = now
+                        wsd.end_snooze_until = None
+                        wsd.end_followup_notified_at = None
+                        await session.flush()
+                        _logger.info("shift end notified", extra={"user_id": int(getattr(u, 'id')), "wsd_id": int(getattr(wsd, 'id'))})
+                    except Exception:
+                        _logger.exception("failed to send shift end notification", extra={"chat_id": chat_id})
+
+                # END follow-up after snooze (optional)
+                snooze_until = getattr(wsd, "end_snooze_until", None)
+                if (
+                    getattr(wsd, "end_notified_at", None) is not None
+                    and snooze_until is not None
+                    and now >= snooze_until.astimezone(tz)
+                    and getattr(wsd, "end_followup_notified_at", None) is None
+                ):
+                    if shift_exists_block_end:
+                        wsd.end_followup_notified_at = now
+                        wsd.end_snooze_until = None
+                        await session.flush()
+                        continue
+                    text = (
+                        f"⏰ <b>Напоминание</b>\n\n"
+                        f"Смена по графику закончилась в <b>{et.strftime('%H:%M')}</b>.\n"
+                        f"Завершить смену?"
+                    )
+                    finish_cb = f"shift:close_by_day:{today.isoformat()}"
+                    if shift is not None and is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                        finish_cb = f"sch:finish:{int(getattr(shift, 'id'))}"
+                    kb = {
+                        "inline_keyboard": [
+                            [{"text": "✅ Завершить", "callback_data": finish_cb}],
+                            [{"text": "⏰ Ещё работаю", "callback_data": f"shift:end_snooze:{today.isoformat()}"}],
+                            [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
+                        ]
+                    }
+                    try:
+                        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+                        wsd.end_followup_notified_at = now
+                        await session.flush()
+                        _logger.info(
+                            "shift end followup notified",
+                            extra={"user_id": int(getattr(u, 'id')), "wsd_id": int(getattr(wsd, 'id'))},
+                        )
+                    except Exception:
+                        _logger.exception("failed to send shift end followup notification", extra={"chat_id": chat_id})
+    finally:
+        await bot.session.close()
 
 
 def _is_weekend(d: date) -> bool:
@@ -268,6 +439,14 @@ def schedule_jobs() -> None:
         replace_existing=True,
     )
 
+    # Shift start/end notifications by planned time (polling)
+    sched.add_job(
+        shift_time_notifications_job,
+        IntervalTrigger(minutes=1, timezone=tz),
+        id="shift_time_notifications",
+        replace_existing=True,
+    )
+
     _logger.info(
         "scheduler default jobs scheduled",
         extra={
@@ -308,6 +487,13 @@ async def reschedule_from_db() -> None:
         shifts_morning_job,
         CronTrigger(hour=8, minute=0, timezone=tz),
         id="shifts_morning",
+        replace_existing=True,
+    )
+
+    sched.add_job(
+        shift_time_notifications_job,
+        IntervalTrigger(minutes=1, timezone=tz),
+        id="shift_time_notifications",
         replace_existing=True,
     )
 

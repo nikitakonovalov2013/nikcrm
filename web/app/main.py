@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jose import jwt, JWTError
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
 from typing import Optional, List
 import json
 import logging
@@ -15,12 +15,13 @@ import calendar
 from shared.config import settings
 from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType
+from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
 from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
 from shared.models import WorkShiftDay
 from shared.models import ShiftInstance
+from shared.models import ShiftInstanceEvent
 from shared.models import ShiftSwapRequest
 from sqlalchemy import select, delete
 from sqlalchemy import case
@@ -68,6 +69,156 @@ from shared.permissions import role_flags
 from shared.services.task_permissions import task_permissions, validate_status_transition
 from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
+
+from shared.services.shifts_domain import (
+    calc_int_hours_from_times,
+    emergency_preset_times,
+    normalize_shift_times as shared_normalize_shift_times,
+)
+
+
+DEFAULT_SHIFT_START = time(10, 0)
+DEFAULT_SHIFT_END = time(18, 0)
+
+MAX_TASK_PHOTO_MB = 20
+MAX_TASK_PHOTO_BYTES = MAX_TASK_PHOTO_MB * 1024 * 1024
+
+
+def _format_hours_from_times(st: time, et: time) -> str:
+    minutes = (et.hour * 60 + et.minute) - (st.hour * 60 + st.minute)
+    if minutes <= 0:
+        return "—"
+    h = minutes / 60.0
+    if abs(h - round(h)) < 1e-9:
+        return f"{int(round(h))}"
+    s = f"{h:.2f}".rstrip("0").rstrip(".")
+    return s
+
+
+def _dt_msk_for_day_time(day, t: time) -> datetime:
+    return datetime(
+        year=day.year,
+        month=day.month,
+        day=day.day,
+        hour=t.hour,
+        minute=t.minute,
+        second=0,
+        microsecond=0,
+        tzinfo=MOSCOW_TZ,
+    )
+
+
+async def _notify_shift_if_due_after_commit(*, user_id: int, day, start_time: time, end_time: time) -> None:
+    try:
+        now_msk = datetime.now(MOSCOW_TZ)
+        if day != now_msk.date():
+            return
+
+        start_dt = _dt_msk_for_day_time(day, start_time)
+        end_dt = _dt_msk_for_day_time(day, end_time)
+
+        async with get_async_session() as s2:
+            u = (
+                await s2.execute(select(User).where(User.id == int(user_id)).where(User.is_deleted == False))
+            ).scalar_one_or_none()
+            if u is None:
+                return
+            chat_id = int(getattr(u, "tg_id", 0) or 0)
+            if not chat_id:
+                return
+
+            wsd = (
+                await s2.execute(
+                    select(WorkShiftDay)
+                    .where(WorkShiftDay.user_id == int(user_id))
+                    .where(WorkShiftDay.day == day)
+                    .where(WorkShiftDay.kind == "work")
+                )
+            ).scalar_one_or_none()
+            if wsd is None:
+                return
+
+            messenger = Messenger(settings.BOT_TOKEN)
+            iso_day = str(day)
+            hrs = _format_hours_from_times(start_time, end_time)
+
+            if now_msk >= end_dt:
+                if getattr(wsd, "end_notified_at", None) is not None:
+                    return
+                text = (
+                    f"🏁 <b>Смена по графику закончилась</b>\n\n"
+                    f"Конец по графику: <b>{end_time.strftime('%H:%M')}</b>.\n"
+                    f"Завершить смену?"
+                )
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "✅ Завершить", "callback_data": f"shift:close_by_day:{iso_day}"}],
+                        [{"text": "⏰ Ещё работаю", "callback_data": f"shift:end_snooze:{iso_day}"}],
+                        [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
+                    ]
+                }
+                ok = await messenger.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
+                if ok:
+                    wsd.end_notified_at = utc_now()
+                    wsd.end_snooze_until = None
+                    wsd.end_followup_notified_at = None
+                    await s2.flush()
+                return
+
+            if now_msk >= start_dt:
+                if getattr(wsd, "start_notified_at", None) is not None:
+                    return
+                text = (
+                    f"⏰ <b>Начало смены</b>\n\n"
+                    f"Сегодня у тебя смена: <b>{start_time.strftime('%H:%M')}–{end_time.strftime('%H:%M')}</b> ({hrs} часов).\n"
+                    f"Начать смену?"
+                )
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "✅ Начать", "callback_data": f"shift:start:{iso_day}"}],
+                        [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
+                    ]
+                }
+                ok = await messenger.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
+                if ok:
+                    wsd.start_notified_at = utc_now()
+                    await s2.flush()
+    except Exception:
+        logger.exception("failed to send immediate shift notification")
+
+
+def _parse_hhmm_time(raw: object, *, field_name: str) -> time:
+    if raw is None:
+        raise HTTPException(status_code=422, detail=f"Не задано время: {field_name}")
+    s = str(raw).strip()
+    if not s:
+        raise HTTPException(status_code=422, detail=f"Не задано время: {field_name}")
+    try:
+        return datetime.strptime(s, "%H:%M").time()
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"Неверный формат времени: {field_name}")
+
+
+def _time_to_hhmm(t: time | None) -> str | None:
+    if t is None:
+        return None
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+def _normalize_shift_times(*, kind: str, start_time: time | None, end_time: time | None) -> tuple[time | None, time | None]:
+    if kind != "work":
+        return None, None
+    st = start_time or DEFAULT_SHIFT_START
+    et = end_time or DEFAULT_SHIFT_END
+    try:
+        return shared_normalize_shift_times(kind=kind, start_time=st, end_time=et)
+    except ValueError as e:
+        code = str(e)
+        if code == "start_equals_end":
+            raise HTTPException(status_code=422, detail="Начало и конец смены не должны совпадать")
+        if code == "end_before_start":
+            raise HTTPException(status_code=422, detail="Конец смены должен быть позже начала")
+        raise
 
 
 logger = logging.getLogger(__name__)
@@ -121,9 +272,14 @@ async def _save_task_photo(*, photo: UploadFile) -> tuple[str, str]:
     fs_path = _task_photo_fs_path_from_key(photo_key)
     fs_path.parent.mkdir(parents=True, exist_ok=True)
 
-    data = await photo.read()
+    data = await photo.read(MAX_TASK_PHOTO_BYTES + 1)
     if not data:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой файл")
+    if len(data) > MAX_TASK_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Файл слишком большой. Максимум: {MAX_TASK_PHOTO_MB} MB.",
+        )
     fs_path.write_bytes(data)
 
     photo_path = _task_photo_path_from_key(photo_key)
@@ -227,9 +383,14 @@ async def _save_uploads(files: list[UploadFile] | None) -> list[str]:
             ext = ".jpg"
         name = f"{uuid4().hex}{ext}"
         path = UPLOADS_DIR / name
-        data = await f.read()
+        data = await f.read(MAX_TASK_PHOTO_BYTES + 1)
         if not data:
             continue
+        if len(data) > MAX_TASK_PHOTO_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Файл слишком большой. Максимум: {MAX_TASK_PHOTO_MB} MB.",
+            )
         path.write_bytes(data)
         urls.append(f"/crm/static/uploads/tasks/{name}")
     return urls
@@ -775,6 +936,7 @@ async def schedule_page(request: Request, admin_id: int = Depends(require_admin_
                     "name": (" ".join([str(getattr(u, "first_name", "") or "").strip(), str(getattr(u, "last_name", "") or "").strip()]).strip())
                     or str(getattr(u, "username", "") or "")
                     or f"User #{int(getattr(u, 'id'))}",
+                    "color": str(getattr(u, "color", "") or ""),
                 }
                 for u in users
             ]
@@ -801,6 +963,26 @@ async def schedule_page_public(
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+
+    # For regular users: selector defaults to self (no "All").
+    users_json = json.dumps(
+        [
+            {
+                "id": int(getattr(actor, "id")),
+                "name": (
+                    " ".join(
+                        [
+                            str(getattr(actor, "first_name", "") or "").strip(),
+                            str(getattr(actor, "last_name", "") or "").strip(),
+                        ]
+                    ).strip()
+                    or str(getattr(actor, "username", "") or "")
+                    or f"User #{int(getattr(actor, 'id'))}"
+                ),
+                "color": str(getattr(actor, "color", "") or ""),
+            }
+        ]
+    )
     return templates.TemplateResponse(
         "schedule/calendar.html",
         {
@@ -808,6 +990,7 @@ async def schedule_page_public(
             "base_template": "base_public.html",
             "is_admin": is_admin,
             "is_manager": is_manager,
+            "users_json": users_json,
         },
     )
 
@@ -818,19 +1001,30 @@ async def schedule_api_month(
     year: int,
     month: int,
     user_id: int | None = None,
+    all: bool | None = None,
     admin_id: int = Depends(require_authenticated_user),
     session: AsyncSession = Depends(get_db),
 ):
-    await ensure_manager_allowed(request, admin_id, session)
     actor = await load_staff_user(session, admin_id)
 
     rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
-    target_user_id = int(actor.id)
-    if user_id is not None:
-        if not is_admin_or_manager:
-            raise HTTPException(status_code=403, detail="Недостаточно прав")
-        target_user_id = int(user_id)
+
+    target_user_id: int | None = int(actor.id)
+    want_all = bool(all)
+    if want_all:
+        target_user_id = None
+    elif user_id is not None:
+        req_uid = int(user_id)
+        if is_admin_or_manager:
+            target_user_id = req_uid
+        else:
+            if req_uid != int(actor.id):
+                raise HTTPException(status_code=403, detail="Недостаточно прав")
+            target_user_id = int(actor.id)
+    else:
+        # Regular users (and admins/managers without explicit filter) default to self.
+        target_user_id = int(actor.id)
 
     y = int(year)
     m = int(month)
@@ -849,7 +1043,6 @@ async def schedule_api_month(
                 .join(User, User.id == WorkShiftDay.user_id)
                 .where(WorkShiftDay.day >= start)
                 .where(WorkShiftDay.day <= end)
-                .where(WorkShiftDay.kind == "work")
                 .where(User.is_deleted == False)
                 .where(User.status == UserStatus.APPROVED)
                 .order_by(User.first_name, User.last_name, User.id)
@@ -883,6 +1076,12 @@ async def schedule_api_month(
         if not d:
             continue
         day_key = str(d)
+        kind = str(getattr(wsd, "kind", "") or "")
+        st0, et0 = _normalize_shift_times(
+            kind=kind,
+            start_time=getattr(wsd, "start_time", None),
+            end_time=getattr(wsd, "end_time", None),
+        )
         uid = int(getattr(u, "id"))
         name = (
             " ".join(
@@ -900,133 +1099,171 @@ async def schedule_api_month(
                 "user_id": uid,
                 "name": name,
                 "color": str(getattr(u, "color", "#94a3b8") or "#94a3b8"),
+                "kind": kind,
                 "hours": getattr(wsd, "hours", None),
+                "start_time": _time_to_hhmm(st0),
+                "end_time": _time_to_hhmm(et0),
                 "is_emergency": bool(getattr(wsd, "is_emergency", False)),
                 "shift_status": str(getattr(fact, "status", "") or "") if fact is not None else "",
                 "shift_approval_required": bool(getattr(fact, "approval_required", False)) if fact is not None else False,
             }
         )
 
-    # Plan/fact for selected user (editing)
-    fact_rows = list(
-        (
-            await session.scalars(
-                select(ShiftInstance)
-                .where(ShiftInstance.user_id == int(target_user_id))
-                .where(ShiftInstance.day >= start)
-                .where(ShiftInstance.day <= end)
-            )
-        ).all()
-    )
-    fact_by_day: dict[str, ShiftInstance] = {}
-    for fr in fact_rows:
-        d = getattr(fr, "day", None)
-        if d is None:
-            continue
-        fact_by_day[str(d)] = fr
-
-    plan_rows = list(
-        (
-            await session.scalars(
-                select(WorkShiftDay)
-                .where(WorkShiftDay.user_id == int(target_user_id))
-                .where(WorkShiftDay.day >= start)
-                .where(WorkShiftDay.day <= end)
-            )
-        ).all()
-    )
-
     out: dict[str, dict] = {}
-    for r in plan_rows:
-        d = getattr(r, "day", None)
-        if not d:
-            continue
-        day_key = str(d)
-        fact = fact_by_day.get(day_key)
-        amount: int | None = None
-        status: str | None = None
-        approval_required: bool | None = None
-        if fact is not None:
-            status = str(getattr(fact, "status", None) or "") or None
-            approval_required = bool(getattr(fact, "approval_required", False))
-            amount = (
-                getattr(fact, "amount_approved", None)
-                if getattr(fact, "amount_approved", None) is not None
-                else (
-                    getattr(fact, "amount_submitted", None)
-                    if getattr(fact, "amount_submitted", None) is not None
-                    else getattr(fact, "amount_default", None)
+
+    if target_user_id is None:
+        # "All staff" mode: only staff preview for each day; no per-user plan/fact fields.
+        for day_key, day_staff in staff_by_day.items():
+            any_work = any(str(x.get("kind") or "") == "work" for x in (day_staff or []))
+            any_off = any(str(x.get("kind") or "") == "off" for x in (day_staff or []))
+            agg_kind = "work" if any_work else ("off" if (day_staff and (not any_work) and any_off and all(str(x.get("kind") or "") == "off" for x in (day_staff or []))) else "")
+            work_staff = [x for x in (day_staff or []) if str(x.get("kind") or "") == "work"]
+            out[day_key] = {
+                "kind": agg_kind,
+                "hours": None,
+                "start_time": None,
+                "end_time": None,
+                "is_emergency": any(bool(x.get("is_emergency")) for x in (day_staff or [])) and any_work,
+                "shift_status": None,
+                "shift_amount": None,
+                "shift_approval_required": None,
+                "staff_total": len(work_staff),
+                "staff_preview": work_staff[:3],
+                "all_mode": True,
+            }
+    else:
+        # Plan/fact for selected user (editing)
+        fact_rows = list(
+            (
+                await session.scalars(
+                    select(ShiftInstance)
+                    .where(ShiftInstance.user_id == int(target_user_id))
+                    .where(ShiftInstance.day >= start)
+                    .where(ShiftInstance.day <= end)
                 )
-            )
-
-        day_staff = staff_by_day.get(day_key, [])
-        out[day_key] = {
-            "kind": str(getattr(r, "kind", "") or ""),
-            "hours": getattr(r, "hours", None),
-            "is_emergency": bool(getattr(r, "is_emergency", False)),
-            "shift_status": status,
-            "shift_amount": amount,
-            "shift_approval_required": approval_required,
-            "staff_total": len(day_staff),
-            "staff_preview": day_staff[:3],
-        }
-
-    # Include days where the selected user has no plan record, but we still want staff preview and/or fact
-    for day_key, day_staff in staff_by_day.items():
-        if day_key in out:
-            continue
-        fact = fact_by_day.get(day_key)
-        status: str | None = None
-        approval_required: bool | None = None
-        amount: int | None = None
-        if fact is not None:
-            status = str(getattr(fact, "status", None) or "") or None
-            approval_required = bool(getattr(fact, "approval_required", False))
-            amount = (
-                getattr(fact, "amount_approved", None)
-                if getattr(fact, "amount_approved", None) is not None
-                else (
-                    getattr(fact, "amount_submitted", None)
-                    if getattr(fact, "amount_submitted", None) is not None
-                    else getattr(fact, "amount_default", None)
-                )
-            )
-        out[day_key] = {
-            "kind": "",
-            "hours": None,
-            "is_emergency": bool(getattr(fact, "is_emergency", False)) if fact is not None else False,
-            "shift_status": status,
-            "shift_amount": amount,
-            "shift_approval_required": approval_required,
-            "staff_total": len(day_staff),
-            "staff_preview": day_staff[:3],
-        }
-
-    # Include pure-fact days (if fact exists but plan is empty and there are no staff rows)
-    for day_key, fact in fact_by_day.items():
-        if day_key in out:
-            continue
-        status = str(getattr(fact, "status", None) or "") or None
-        approval_required = bool(getattr(fact, "approval_required", False))
-        amount = (
-            getattr(fact, "amount_approved", None)
-            if getattr(fact, "amount_approved", None) is not None
-            else (
-                getattr(fact, "amount_submitted", None)
-                if getattr(fact, "amount_submitted", None) is not None
-                else getattr(fact, "amount_default", None)
-            )
+            ).all()
         )
-        out[day_key] = {
-            "kind": "",
-            "hours": None,
-            "is_emergency": bool(getattr(fact, "is_emergency", False)),
-            "shift_status": status,
-            "shift_amount": amount,
-            "shift_approval_required": approval_required,
-            "staff_total": 0,
-            "staff_preview": [],
-        }
+        fact_by_day: dict[str, ShiftInstance] = {}
+        for fr in fact_rows:
+            d = getattr(fr, "day", None)
+            if d is None:
+                continue
+            fact_by_day[str(d)] = fr
+
+        plan_rows = list(
+            (
+                await session.scalars(
+                    select(WorkShiftDay)
+                    .where(WorkShiftDay.user_id == int(target_user_id))
+                    .where(WorkShiftDay.day >= start)
+                    .where(WorkShiftDay.day <= end)
+                )
+            ).all()
+        )
+
+        for r in plan_rows:
+            d = getattr(r, "day", None)
+            if not d:
+                continue
+            day_key = str(d)
+            fact = fact_by_day.get(day_key)
+            amount: int | None = None
+            status: str | None = None
+            approval_required: bool | None = None
+            if fact is not None:
+                status = str(getattr(fact, "status", None) or "") or None
+                approval_required = bool(getattr(fact, "approval_required", False))
+                amount = (
+                    getattr(fact, "amount_approved", None)
+                    if getattr(fact, "amount_approved", None) is not None
+                    else (
+                        getattr(fact, "amount_submitted", None)
+                        if getattr(fact, "amount_submitted", None) is not None
+                        else getattr(fact, "amount_default", None)
+                    )
+                )
+
+            day_staff = staff_by_day.get(day_key, [])
+            st, et = _normalize_shift_times(
+                kind=str(getattr(r, "kind", "") or ""),
+                start_time=getattr(r, "start_time", None),
+                end_time=getattr(r, "end_time", None),
+            )
+
+            out[day_key] = {
+                "kind": str(getattr(r, "kind", "") or ""),
+                "hours": getattr(r, "hours", None),
+                "start_time": _time_to_hhmm(st),
+                "end_time": _time_to_hhmm(et),
+                "is_emergency": bool(getattr(r, "is_emergency", False)),
+                "shift_status": status,
+                "shift_amount": amount,
+                "shift_approval_required": approval_required,
+                "staff_total": len(day_staff),
+                "staff_preview": day_staff[:3],
+                "all_mode": False,
+            }
+
+        # Include days where the selected user has no plan record, but we still want staff preview and/or fact
+        for day_key, day_staff in staff_by_day.items():
+            if day_key in out:
+                continue
+            fact = fact_by_day.get(day_key)
+            status = str(getattr(fact, "status", None) or "") or None if fact is not None else None
+            approval_required = bool(getattr(fact, "approval_required", False)) if fact is not None else False
+            amount: int | None = None
+            if fact is not None:
+                amount = (
+                    getattr(fact, "amount_approved", None)
+                    if getattr(fact, "amount_approved", None) is not None
+                    else (
+                        getattr(fact, "amount_submitted", None)
+                        if getattr(fact, "amount_submitted", None) is not None
+                        else getattr(fact, "amount_default", None)
+                    )
+                )
+            out[day_key] = {
+                "kind": "",
+                "hours": None,
+                "start_time": None,
+                "end_time": None,
+                "is_emergency": bool(getattr(fact, "is_emergency", False)) if fact is not None else False,
+                "shift_status": status,
+                "shift_amount": amount,
+                "shift_approval_required": approval_required,
+                "staff_total": len(day_staff),
+                "staff_preview": day_staff[:3],
+                "all_mode": False,
+            }
+
+        # Include pure-fact days (if fact exists but plan is empty and there are no staff rows)
+        for day_key, fact in fact_by_day.items():
+            if day_key in out:
+                continue
+            status = str(getattr(fact, "status", None) or "") or None
+            approval_required = bool(getattr(fact, "approval_required", False))
+            amount = (
+                getattr(fact, "amount_approved", None)
+                if getattr(fact, "amount_approved", None) is not None
+                else (
+                    getattr(fact, "amount_submitted", None)
+                    if getattr(fact, "amount_submitted", None) is not None
+                    else getattr(fact, "amount_default", None)
+                )
+            )
+            out[day_key] = {
+                "kind": "",
+                "hours": None,
+                "start_time": None,
+                "end_time": None,
+                "is_emergency": bool(getattr(fact, "is_emergency", False)),
+                "shift_status": status,
+                "shift_amount": amount,
+                "shift_approval_required": approval_required,
+                "staff_total": 0,
+                "staff_preview": [],
+                "all_mode": False,
+            }
 
     return {"year": y, "month": m, "days": out}
 
@@ -1050,6 +1287,8 @@ async def schedule_api_day(
     day_raw = str(body.get("day") or "").strip()
     kind = str(body.get("kind") or "").strip()
     hours_raw = body.get("hours")
+    start_time_raw = body.get("start_time")
+    end_time_raw = body.get("end_time")
     target_user_id = body.get("user_id")
 
     if not day_raw:
@@ -1078,6 +1317,25 @@ async def schedule_api_day(
     ).scalar_one_or_none()
 
     if not kind:
+        fact = (
+            await session.execute(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(uid))
+                .where(ShiftInstance.day == day)
+            )
+        ).scalar_one_or_none()
+        if (
+            fact is not None
+            and getattr(fact, "ended_at", None) is None
+            and getattr(fact, "status", None) == ShiftInstanceStatus.STARTED
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Нельзя очистить день: у сотрудника уже открыта активная смена. "
+                    "Сначала завершите смену или отмените её через отдельное действие."
+                ),
+            )
         if existing is not None:
             await session.delete(existing)
             await session.flush()
@@ -1088,24 +1346,136 @@ async def schedule_api_day(
 
     hours: int | None = None
     if kind == "work":
+        # Legacy: keep storing integer hours when it is a whole number.
+        # Primary source of truth is start_time/end_time.
         try:
-            hours = int(hours_raw) if hours_raw is not None else 8
+            hours = int(hours_raw) if hours_raw is not None else None
+            if hours is not None and hours <= 0:
+                hours = None
         except Exception:
-            hours = 8
-        if hours not in {8, 10, 12}:
-            raise HTTPException(status_code=422, detail="Неверные часы")
+            hours = None
     else:
         hours = None
 
+    # Defaults: if not provided, treat as default 10:00–18:00
+    start_time: time | None = None
+    end_time: time | None = None
+    if kind == "work":
+        if "start_time" in body or "end_time" in body:
+            start_time = _parse_hhmm_time(start_time_raw, field_name="Начало")
+            end_time = _parse_hhmm_time(end_time_raw, field_name="Конец")
+        else:
+            start_time = DEFAULT_SHIFT_START
+            end_time = DEFAULT_SHIFT_END
+
+    start_time, end_time = _normalize_shift_times(kind=kind, start_time=start_time, end_time=end_time)
+
+    if kind == "work" and start_time is not None and end_time is not None:
+        h_int = calc_int_hours_from_times(start_time=start_time, end_time=end_time)
+        if h_int is None:
+            raise HTTPException(status_code=422, detail="Часы должны быть целыми (например 10:00–18:00)")
+        hours = int(h_int)
+
     if existing is None:
-        existing = WorkShiftDay(user_id=int(uid), day=day, kind=kind, hours=hours, is_emergency=False)
+        existing = WorkShiftDay(
+            user_id=int(uid),
+            day=day,
+            kind=kind,
+            hours=hours,
+            start_time=start_time,
+            end_time=end_time,
+            is_emergency=False,
+        )
         session.add(existing)
     else:
         existing.kind = kind
         existing.hours = hours
+        existing.start_time = start_time
+        existing.end_time = end_time
         existing.is_emergency = bool(getattr(existing, "is_emergency", False))
 
     await session.flush()
+
+    if kind == "work" and start_time is not None and end_time is not None:
+        add_after_commit_callback(
+            session,
+            lambda: _notify_shift_if_due_after_commit(user_id=int(uid), day=day, start_time=start_time, end_time=end_time),
+        )
+    return {"ok": True}
+
+
+@app.post("/api/schedule/delete")
+async def schedule_api_delete(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+    if not is_admin_or_manager:
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Неверный формат")
+
+    day_raw = str(body.get("day") or "").strip()
+    target_user_id = body.get("user_id")
+    if not day_raw:
+        raise HTTPException(status_code=422, detail="Не задан день")
+    try:
+        day = datetime.strptime(day_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная дата")
+
+    uid = int(actor.id)
+    if target_user_id is not None:
+        try:
+            uid = int(target_user_id)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверный user_id")
+
+    plan = (
+        await session.execute(
+            select(WorkShiftDay)
+            .where(WorkShiftDay.user_id == int(uid))
+            .where(WorkShiftDay.day == day)
+        )
+    ).scalar_one_or_none()
+
+    fact = (
+        await session.execute(
+            select(ShiftInstance)
+            .where(ShiftInstance.user_id == int(uid))
+            .where(ShiftInstance.day == day)
+        )
+    ).scalar_one_or_none()
+
+    if fact is not None and getattr(fact, "ended_at", None) is None and getattr(fact, "status", None) == ShiftInstanceStatus.STARTED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Нельзя удалить смену: у сотрудника сейчас активная смена. "
+                "Сначала завершите смену."
+            ),
+        )
+
+    if plan is not None:
+        await session.delete(plan)
+        await session.flush()
+
+    if fact is not None:
+        ev = ShiftInstanceEvent(
+            shift_id=int(getattr(fact, "id")),
+            actor_user_id=int(getattr(actor, "id")),
+            type="system.shift_deleted",
+            payload={"day": str(day), "user_id": int(uid)},
+        )
+        session.add(ev)
+        await session.flush()
+
     return {"ok": True}
 
 
@@ -1165,6 +1535,11 @@ async def schedule_api_day_staff(
             name = str(getattr(u, "username", "") or "") or f"User #{int(getattr(u, 'id'))}"
         uid = int(getattr(u, "id"))
         fact = facts_by_user.get(uid)
+        st, et = _normalize_shift_times(
+            kind=str(getattr(shift, "kind", "") or ""),
+            start_time=getattr(shift, "start_time", None),
+            end_time=getattr(shift, "end_time", None),
+        )
         out.append(
             {
                 "user_id": uid,
@@ -1172,6 +1547,8 @@ async def schedule_api_day_staff(
                 "color": str(getattr(u, "color", "#94a3b8") or "#94a3b8"),
                 "kind": str(getattr(shift, "kind", "") or ""),
                 "hours": getattr(shift, "hours", None),
+                "start_time": _time_to_hhmm(st),
+                "end_time": _time_to_hhmm(et),
                 "is_emergency": bool(getattr(shift, "is_emergency", False)),
                 "shift_status": str(getattr(fact, "status", "") or "") if fact is not None else "",
                 "shift_approval_required": bool(getattr(fact, "approval_required", False)) if fact is not None else False,
@@ -1217,8 +1594,9 @@ async def schedule_api_emergency(
         raise HTTPException(status_code=422, detail="Неверный формат")
 
     day_raw = str(body.get("day") or "").strip()
-    hours_raw = body.get("hours")
     comment = str(body.get("comment") or "").strip() or None
+    start_time_raw = body.get("start_time")
+    end_time_raw = body.get("end_time")
     replace = bool(body.get("replace") or False)
     target_user_id = body.get("user_id")
 
@@ -1229,12 +1607,22 @@ async def schedule_api_emergency(
     except Exception:
         raise HTTPException(status_code=422, detail="Неверная дата")
 
-    try:
-        hours = int(hours_raw)
-    except Exception:
-        raise HTTPException(status_code=422, detail="Неверные часы")
-    if hours not in {8, 10, 12}:
-        raise HTTPException(status_code=422, detail="Неверные часы")
+    start_time: time | None = None
+    end_time: time | None = None
+    if "start_time" in body or "end_time" in body:
+        start_time = _parse_hhmm_time(start_time_raw, field_name="Начало")
+        end_time = _parse_hhmm_time(end_time_raw, field_name="Конец")
+    else:
+        start_time = DEFAULT_SHIFT_START
+        end_time = DEFAULT_SHIFT_END
+
+    start_time, end_time = _normalize_shift_times(kind="work", start_time=start_time, end_time=end_time)
+    if start_time is None or end_time is None:
+        raise HTTPException(status_code=422, detail="Не задано время смены")
+    h_int = calc_int_hours_from_times(start_time=start_time, end_time=end_time)
+    if h_int is None:
+        raise HTTPException(status_code=422, detail="Можно только целые часы. Выберите другое время.")
+    hours = int(h_int)
 
     uid = int(actor.id)
     if target_user_id is not None:
@@ -1259,7 +1647,14 @@ async def schedule_api_emergency(
             existing.kind = "work"
             existing.hours = hours
             existing.comment = comment
+            existing.start_time = start_time
+            existing.end_time = end_time
             await session.flush()
+            if start_time is not None and end_time is not None:
+                add_after_commit_callback(
+                    session,
+                    lambda: _notify_shift_if_due_after_commit(user_id=int(uid), day=d, start_time=start_time, end_time=end_time),
+                )
             return {"ok": True, "updated": True}
 
         # Existing planned shift: require explicit replace
@@ -1270,12 +1665,33 @@ async def schedule_api_emergency(
         existing.hours = hours
         existing.is_emergency = True
         existing.comment = comment
+        existing.start_time = start_time
+        existing.end_time = end_time
         await session.flush()
+        if start_time is not None and end_time is not None:
+            add_after_commit_callback(
+                session,
+                lambda: _notify_shift_if_due_after_commit(user_id=int(uid), day=d, start_time=start_time, end_time=end_time),
+            )
         return {"ok": True, "replaced": True}
 
-    row = WorkShiftDay(user_id=int(uid), day=d, kind="work", hours=hours, is_emergency=True, comment=comment)
+    row = WorkShiftDay(
+        user_id=int(uid),
+        day=d,
+        kind="work",
+        hours=hours,
+        start_time=start_time,
+        end_time=end_time,
+        is_emergency=True,
+        comment=comment,
+    )
     session.add(row)
     await session.flush()
+    if start_time is not None and end_time is not None:
+        add_after_commit_callback(
+            session,
+            lambda: _notify_shift_if_due_after_commit(user_id=int(uid), day=d, start_time=start_time, end_time=end_time),
+        )
     return {"ok": True, "created": True}
 
 
