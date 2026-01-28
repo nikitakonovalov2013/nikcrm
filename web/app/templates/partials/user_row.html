@@ -1,12 +1,12 @@
 {% set is_oob = is_oob if is_oob is defined else False %}
 <tr id="row-{{ u.id }}"{% if is_oob %} hx-swap-oob="outerHTML"{% endif %} class="row-hover">
   <td data-label="TG ID" class="crm-field"><span class="crm-value crm-breakable">{{ u.tg_id }}</span></td>
-  <td data-label="Цвет" class="crm-field"><span class="crm-value"><span class="user-color-dot" style="background: {{ u.color }}"></span> <span class="muted">{{ u.color }}</span></span></td>
+  <td data-label="Цвет" class="crm-field"><span class="crm-value"><span class="user-color-dot" style="background: {{ u.color or '#94a3b8' }}"></span> <span class="muted">{{ u.color or '' }}</span></span></td>
   <td data-label="Имя" class="crm-field"><span class="crm-value">{{ u.first_name or '' }}</span></td>
   <td data-label="Фамилия" class="crm-field"><span class="crm-value">{{ u.last_name or '' }}</span></td>
-  <td data-label="Дата рождения" class="crm-field crm-wide"><span class="crm-value">{{ format_date(u.birth_date) }}</span></td>
-  <td data-label="Ставка, ₽" class="crm-field"><span class="crm-value">{{ (u.rate_k ~ ' ₽') if u.rate_k is not none else '' }}</span></td>
-  <td data-label="График" class="crm-field"><span class="crm-value">{{ u.schedule or '' }}</span></td>
+  <td data-label="Дата рождения" class="crm-field crm-wide"><span class="crm-value crm-nowrap">{{ format_date(u.birth_date) }}</span></td>
+  <td data-label="Ставка, ₽" class="crm-field"><span class="crm-value crm-nowrap">{{ (u.rate_k ~ ' ₽') if u.rate_k is not none else '' }}</span></td>
+  <td data-label="График" class="crm-field"><span class="crm-value crm-nowrap">{{ u.schedule or '' }}</span></td>
   <td data-label="Должность" class="crm-field crm-wide"><span class="crm-value">{{ u.position or '' }}</span></td>
   {% set status_map = {
     'PENDING': 'На рассмотрении',

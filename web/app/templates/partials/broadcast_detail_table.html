@@ -1,0 +1,41 @@
+<div style="margin-bottom:10px;">
+  <div class="muted" style="margin-bottom:6px;">Текст</div>
+  <div style="white-space:pre-wrap;">{{ text }}</div>
+</div>
+
+<table class="table crm-table">
+  <thead>
+    <tr>
+      <th>Сотрудник</th>
+      <th>Доставка</th>
+      <th>Оценка</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in deliveries %}
+      <tr>
+        <td>
+          <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:{{ d.color or '#94a3b8' }}; margin-right:6px; vertical-align:middle;"></span>
+          <b>{{ d.name }}</b>
+          <div class="muted" style="margin-top:2px;">{{ d.position }}</div>
+        </td>
+        <td>
+          {{ d.delivery_status }}
+          {% if d.error_text %}
+            <div class="muted" style="margin-top:2px;">{{ d.error_text }}</div>
+          {% endif %}
+        </td>
+        <td>
+          {% if d.rating %}
+            ⭐{{ d.rating }}
+          {% else %}
+            —
+          {% endif %}
+          {% if d.rated_at %}
+            <div class="muted" style="margin-top:2px;">{{ d.rated_at }}</div>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>

@@ -1,8 +1,10 @@
 import builtins
 
+import asyncio
+
 from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form, UploadFile, File, Header
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jose import jwt, JWTError
@@ -25,8 +27,10 @@ from shared.models import WorkShiftDay
 from shared.models import ShiftInstance
 from shared.models import ShiftInstanceEvent
 from shared.models import ShiftSwapRequest
+from shared.models import Broadcast, BroadcastDelivery, BroadcastRating
 from sqlalchemy import select, delete
 from sqlalchemy import case
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from decimal import Decimal
@@ -41,6 +45,7 @@ from shared.services.stock_events_notify import notify_reports_chat_about_stock_
 
 from .services.stocks_dashboard import (
     build_chart_rows,
+    build_cast_by_masters,
     build_history_rows,
     build_pie_data,
     build_stock_rows,
@@ -84,6 +89,8 @@ DEFAULT_SHIFT_END = time(18, 0)
 
 MAX_TASK_PHOTO_MB = 20
 MAX_TASK_PHOTO_BYTES = MAX_TASK_PHOTO_MB * 1024 * 1024
+
+MAX_TG_TEXT = 4096
 
 
 def _format_hours_from_times(st: time, et: time) -> str:
@@ -228,6 +235,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 TEMPLATES_DIR = BASE_DIR / "templates" 
+FAVICON_DIR = STATIC_DIR / "favicon" / "icons"
 
 print("STATIC_DIR:", STATIC_DIR)
 print("TEMPLATES_DIR:", TEMPLATES_DIR)
@@ -244,8 +252,44 @@ from shared.utils import format_date  # noqa: E402
 templates.env.globals["format_date"] = format_date
 
 
+def _favicon_path(filename: str) -> Path:
+    name = str(filename).lstrip("/")
+    p = (FAVICON_DIR / name).resolve()
+    try:
+        p.relative_to(FAVICON_DIR.resolve())
+    except Exception:
+        raise HTTPException(status_code=404)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404)
+    return p
+
+
+@app.get("/favicon.ico")
+async def crm_favicon_ico() -> FileResponse:
+    return FileResponse(str(_favicon_path("favicon.ico")))
+
+
+@app.get("/manifest.json")
+async def crm_manifest_json() -> FileResponse:
+    return FileResponse(str(_favicon_path("manifest.json")), media_type="application/manifest+json")
+
+
+@app.get("/browserconfig.xml")
+async def crm_browserconfig_xml() -> FileResponse:
+    return FileResponse(str(_favicon_path("browserconfig.xml")), media_type="application/xml")
+
+
+@app.get("/favicon-{size}.png")
+async def crm_favicon_png(size: str) -> FileResponse:
+    filename = f"favicon-{str(size)}.png"
+    return FileResponse(str(_favicon_path(filename)))
+
+
 UPLOADS_DIR = STATIC_DIR / "uploads" / "tasks"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+BROADCAST_UPLOADS_DIR = STATIC_DIR / "uploads" / "broadcasts"
+BROADCAST_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _task_photo_path_from_key(photo_key: str | None) -> str | None:
@@ -290,6 +334,39 @@ async def _save_task_photo(*, photo: UploadFile) -> tuple[str, str]:
     return str(photo_key), str(photo_path)
 
 
+def _broadcast_media_fs_path_from_key(media_key: str) -> Path:
+    key = str(media_key).lstrip("/")
+    return STATIC_DIR / "uploads" / key
+
+
+def _broadcast_media_path_from_key(media_key: str | None) -> str | None:
+    if not media_key:
+        return None
+    key = str(media_key).lstrip("/")
+    return f"/crm/static/uploads/{key}"
+
+
+async def _save_broadcast_media(*, media: UploadFile) -> tuple[str, str, str]:
+    ext = Path(getattr(media, "filename", "") or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".mov", ".mkv", ".webm"}:
+        ext = ".bin"
+    name = f"{uuid4().hex}{ext}"
+    media_key = f"broadcasts/{name}"
+    fs_path = _broadcast_media_fs_path_from_key(media_key)
+    fs_path.parent.mkdir(parents=True, exist_ok=True)
+    data = await media.read(50 * 1024 * 1024 + 1)
+    if not data:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой файл")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Файл слишком большой")
+    fs_path.write_bytes(data)
+
+    media_path = _broadcast_media_path_from_key(media_key)
+    if not media_path:
+        raise HTTPException(status_code=500, detail="Не удалось сформировать путь файла")
+    return str(media_key), str(media_path), str(_to_public_url(media_path) or media_path)
+
+
 def _public_base_url() -> str:
     raw = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
     if not raw:
@@ -322,6 +399,642 @@ def _to_public_url(path: str | None) -> str | None:
 async def get_db() -> AsyncSession:
     async with get_async_session() as session:
         yield session
+
+
+def _broadcast_rating_kb(*, broadcast_id: int) -> dict:
+    rows: list[list[dict]] = []
+    rows.append([{ "text": "⭐ Оценить новость", "callback_data": f"broadcast_rate:{int(broadcast_id)}" }])
+    return {"inline_keyboard": rows}
+
+
+def _rating_pick_kb(*, broadcast_id: int) -> dict:
+    row = []
+    for n in range(1, 6):
+        row.append({"text": f"⭐{n}", "callback_data": f"broadcast_rate_set:{int(broadcast_id)}:{int(n)}"})
+    return {"inline_keyboard": [row]}
+
+
+@app.get("/api/broadcast/targets")
+@app.get("/crm/api/broadcast/targets")
+async def api_broadcast_targets(
+    request: Request,
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+
+    pos_res = await session.execute(
+        select(User.position, func.count(User.id))
+        .where(User.is_deleted == False)
+        .group_by(User.position)
+        .order_by(User.position)
+    )
+    positions = []
+    for pos, cnt in pos_res.all():
+        name = pos.value if hasattr(pos, "value") else (str(pos) if pos is not None else "")
+        positions.append({"name": str(name), "count": int(cnt)})
+
+    users_res = await session.execute(
+        select(User)
+        .where(User.is_deleted == False)
+        .order_by(User.first_name, User.last_name, User.id)
+    )
+    users = []
+    for u in users_res.scalars().all():
+        full_name = (f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip() or str(getattr(u, "username", "") or "") or f"#{int(u.id)}")
+        users.append(
+            {
+                "id": int(u.id),
+                "full_name": full_name,
+                "position": (u.position.value if hasattr(u.position, "value") else (str(u.position) if u.position is not None else "")),
+                "color": str(getattr(u, "color", "") or ""),
+                "tg_chat_id": int(getattr(u, "tg_id", 0) or 0) or None,
+                "approved": bool(u.status == UserStatus.APPROVED),
+            }
+        )
+    return {"positions": positions, "users": users}
+
+
+@app.post("/api/broadcasts/upload")
+@app.post("/crm/api/broadcasts/upload")
+async def api_broadcasts_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    filename = str(getattr(file, "filename", "") or "")
+    ct = str(getattr(file, "content_type", "") or "")
+    media_type: str | None = None
+    if ct.startswith("image/"):
+        media_type = "photo"
+    elif ct.startswith("video/"):
+        media_type = "video"
+    else:
+        # Fallback by extension
+        ext = Path(filename).suffix.lower()
+        if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            media_type = "photo"
+        elif ext in {".mp4", ".mov", ".mkv", ".webm"}:
+            media_type = "video"
+    if media_type not in {"photo", "video"}:
+        raise HTTPException(status_code=422, detail="Разрешены только фото или видео")
+
+    media_key, media_path, media_url = await _save_broadcast_media(media=file)
+    return {
+        "media_type": media_type,
+        "media_key": media_key,
+        "media_path": media_path,
+        "media_url": media_url,
+        "filename": filename,
+    }
+
+
+async def _run_broadcast_send(*, broadcast_id: int) -> None:
+    # Runs after commit. Uses its own DB session.
+    try:
+        async with get_async_session() as session:
+            b = (
+                (await session.execute(select(Broadcast).where(Broadcast.id == int(broadcast_id))))
+            ).scalar_one_or_none()
+            if b is None:
+                return
+
+            # Load deliveries + users
+            rows = (
+                await session.execute(
+                    select(BroadcastDelivery)
+                    .where(BroadcastDelivery.broadcast_id == int(broadcast_id))
+                    .options(selectinload(BroadcastDelivery.user))
+                    .order_by(BroadcastDelivery.id.asc())
+                )
+            ).scalars().all()
+
+            messenger = Messenger(settings.BOT_TOKEN)
+            kb = _broadcast_rating_kb(broadcast_id=int(broadcast_id))
+
+            delivered = int(getattr(b, "delivered_count", 0) or 0)
+            failed = int(getattr(b, "failed_count", 0) or 0)
+            no_tg = int(getattr(b, "no_tg_count", 0) or 0)
+
+            media_type = str(getattr(b, "media_type", "") or "") or None
+            media_key = str(getattr(b, "media_path", "") or "") or None
+            # We stored media_path as URL-like (/crm/static/uploads/...), derive key if possible
+            if media_key and media_key.startswith("/crm/static/uploads/"):
+                media_key = media_key[len("/crm/static/uploads/") :]
+            if media_key and media_key.startswith("static/uploads/"):
+                media_key = media_key[len("static/uploads/") :]
+
+            media_bytes: bytes | None = None
+            media_filename: str | None = None
+            if media_type in {"photo", "video"} and media_key:
+                try:
+                    fs_path = _broadcast_media_fs_path_from_key(str(media_key))
+                    if fs_path.exists():
+                        media_bytes = fs_path.read_bytes()
+                        media_filename = fs_path.name
+                except Exception:
+                    media_bytes = None
+                    media_filename = None
+
+            for d in rows:
+                u = getattr(d, "user", None)
+                chat_id = int(getattr(u, "tg_id", 0) or 0) if u is not None else 0
+                if not chat_id:
+                    if str(getattr(d, "delivery_status", "") or "") != "no_tg":
+                        d.delivery_status = "no_tg"
+                    no_tg += 1
+                    b.no_tg_count = int(no_tg)
+                    await session.flush()
+                    continue
+
+                # default: mark pending before sending
+                d.delivery_status = "pending"
+                await session.flush()
+
+                try:
+                    msg_text = str(getattr(b, "text", "") or "")
+                    msg_id: int | None = None
+
+                    if media_type in {"photo", "video"} and media_bytes is not None and media_filename is not None:
+                        # Telegram caption is limited; if too long -> send media without caption, then text+kb
+                        if len(msg_text) > 1024:
+                            if media_type == "photo":
+                                ok1, _, err1 = await messenger.send_photo_ex(
+                                    chat_id=chat_id,
+                                    file_bytes=media_bytes,
+                                    filename=media_filename,
+                                    caption=None,
+                                    reply_markup=None,
+                                    parse_mode="HTML",
+                                )
+                            else:
+                                ok1, _, err1 = await messenger.send_video_ex(
+                                    chat_id=chat_id,
+                                    file_bytes=media_bytes,
+                                    filename=media_filename,
+                                    caption=None,
+                                    reply_markup=None,
+                                    parse_mode="HTML",
+                                )
+                            if not ok1:
+                                raise Exception(err1 or "media send failed")
+
+                            ok2, msg_id2, err2 = await messenger.send_message_ex(
+                                chat_id=chat_id,
+                                text=msg_text,
+                                reply_markup=kb,
+                                parse_mode="HTML",
+                            )
+                            if not ok2:
+                                raise Exception(err2 or "text send failed")
+                            msg_id = msg_id2
+                        else:
+                            if media_type == "photo":
+                                okm, msg_idm, errm = await messenger.send_photo_ex(
+                                    chat_id=chat_id,
+                                    file_bytes=media_bytes,
+                                    filename=media_filename,
+                                    caption=msg_text,
+                                    reply_markup=kb,
+                                    parse_mode="HTML",
+                                )
+                            else:
+                                okm, msg_idm, errm = await messenger.send_video_ex(
+                                    chat_id=chat_id,
+                                    file_bytes=media_bytes,
+                                    filename=media_filename,
+                                    caption=msg_text,
+                                    reply_markup=kb,
+                                    parse_mode="HTML",
+                                )
+                            if not okm:
+                                raise Exception(errm or "media send failed")
+                            msg_id = msg_idm
+                    else:
+                        ok, mid, err = await messenger.send_message_ex(
+                            chat_id=chat_id,
+                            text=msg_text,
+                            reply_markup=kb,
+                            parse_mode="HTML",
+                        )
+                        if not ok:
+                            raise Exception(err or "send failed")
+                        msg_id = mid
+
+                    d.tg_chat_id = int(chat_id)
+                    d.tg_message_id = int(msg_id) if msg_id is not None else None
+                    d.delivered_at = utc_now()
+                    d.delivery_status = "success"
+                    d.error_text = None
+                    delivered += 1
+                    b.delivered_count = int(delivered)
+                except Exception as e:
+                    d.tg_chat_id = int(chat_id)
+                    d.tg_message_id = None
+                    d.delivered_at = None
+                    d.delivery_status = "failed"
+                    d.error_text = str(e)
+                    failed += 1
+                    b.failed_count = int(failed)
+
+                await session.flush()
+
+            b.status = "sent"
+            b.sent_at = utc_now()
+            await session.flush()
+    except Exception:
+        try:
+            async with get_async_session() as session2:
+                b2 = (
+                    (await session2.execute(select(Broadcast).where(Broadcast.id == int(broadcast_id))))
+                ).scalar_one_or_none()
+                if b2 is not None:
+                    b2.status = "failed"
+                    await session2.flush()
+        except Exception:
+            pass
+
+
+@app.get("/api/users/positions")
+@app.get("/crm/api/users/positions")
+async def api_users_positions(
+    request: Request,
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    res = await session.execute(
+        select(User.position, func.count(User.id))
+        .where(User.is_deleted == False)
+        .group_by(User.position)
+        .order_by(User.position)
+    )
+    items = []
+    for pos, cnt in res.all():
+        label = pos.value if hasattr(pos, "value") else (str(pos) if pos is not None else "")
+        items.append({"value": label, "count": int(cnt)})
+    return {"items": items}
+
+
+@app.post("/api/broadcasts/send")
+@app.post("/crm/api/broadcasts/send")
+async def api_broadcasts_send(
+    request: Request,
+    text: str = Form(...),
+    target_mode: str = Form("all"),
+    positions: str | None = Form(None),
+    user_ids: str | None = Form(None),
+    media_type: str | None = Form(None),
+    media_key: str | None = Form(None),
+    cta_label: str | None = Form(None),
+    cta_url: str | None = Form(None),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+
+    actor = (await session.execute(select(User).where(User.tg_id == int(admin_id)).where(User.is_deleted == False))).scalar_one_or_none()
+
+    msg_text = (text or "").strip()
+    if not msg_text:
+        raise HTTPException(status_code=422, detail="Пустой текст")
+    if len(msg_text) > MAX_TG_TEXT:
+        raise HTTPException(status_code=422, detail=f"Слишком длинный текст (>{MAX_TG_TEXT})")
+
+    tm = str(target_mode or "all").strip()
+    if tm not in {"all", "approved_only"}:
+        raise HTTPException(status_code=422, detail="Некорректный режим")
+
+    _ = (cta_label or "")
+    _ = (cta_url or "")
+
+    pos_list: list[str] = []
+    if positions:
+        pos_list = [p.strip() for p in str(positions).split(",") if p.strip()]
+
+    uids_list: list[int] = []
+    if user_ids:
+        for part in str(user_ids).split(","):
+            s = part.strip()
+            if not s:
+                continue
+            try:
+                v = int(s)
+            except Exception:
+                continue
+            if v > 0:
+                uids_list.append(int(v))
+    uids_list = list(sorted(set(uids_list)))
+
+    # must choose recipients
+    if not pos_list and not uids_list:
+        raise HTTPException(status_code=422, detail="Выберите получателей")
+
+    mt = (str(media_type or "").strip() or None)
+    mk = (str(media_key or "").strip() or None)
+    if (mt and not mk) or (mk and not mt):
+        raise HTTPException(status_code=422, detail="Некорректные данные медиа")
+    if mt is not None and mt not in {"photo", "video"}:
+        raise HTTPException(status_code=422, detail="media_type должен быть photo или video")
+
+    # OR logic: users explicitly selected OR users in selected positions
+    base_q = select(User).where(User.is_deleted == False)
+    if tm == "approved_only":
+        base_q = base_q.where(User.status == UserStatus.APPROVED)
+    clauses = []
+    if pos_list:
+        clauses.append(User.position.in_([p for p in pos_list]))
+    if uids_list:
+        clauses.append(User.id.in_(uids_list))
+    if clauses:
+        from sqlalchemy import or_ as _or
+        base_q = base_q.where(_or(*clauses))
+    res_u = await session.execute(base_q.order_by(User.first_name, User.last_name, User.id))
+    users = list(res_u.scalars().all())
+
+    b = Broadcast(
+        text=msg_text,
+        sent_by_user_id=(int(actor.id) if actor is not None else None),
+        target_mode=tm,
+        filter_positions=pos_list or None,
+        filter_user_ids=uids_list or None,
+        cta_label=None,
+        cta_url=None,
+        status="sending",
+        total_recipients=0,
+        delivered_count=0,
+        failed_count=0,
+        no_tg_count=0,
+        media_type=mt,
+        media_path=(_broadcast_media_path_from_key(mk) if mk else None),
+        media_url=(_to_public_url(_broadcast_media_path_from_key(mk)) if mk else None),
+    )
+    session.add(b)
+    await session.flush()
+
+    # Create delivery placeholders so UI can show progress while sending.
+    seen_user_ids: set[int] = set()
+    total = 0
+    no_tg = 0
+    for u in users:
+        uid = int(getattr(u, "id"))
+        if uid in seen_user_ids:
+            continue
+        seen_user_ids.add(uid)
+        total += 1
+        chat_id = int(getattr(u, "tg_id", 0) or 0)
+        if not chat_id:
+            no_tg += 1
+            session.add(
+                BroadcastDelivery(
+                    broadcast_id=int(b.id),
+                    user_id=int(uid),
+                    tg_chat_id=None,
+                    tg_message_id=None,
+                    delivered_at=None,
+                    delivery_status="no_tg",
+                    error_text=None,
+                )
+            )
+        else:
+            session.add(
+                BroadcastDelivery(
+                    broadcast_id=int(b.id),
+                    user_id=int(uid),
+                    tg_chat_id=int(chat_id),
+                    tg_message_id=None,
+                    delivered_at=None,
+                    delivery_status="pending",
+                    error_text=None,
+                )
+            )
+
+    b.total_recipients = int(total)
+    b.no_tg_count = int(no_tg)
+    await session.flush()
+
+    add_after_commit_callback(session, lambda: asyncio.create_task(_run_broadcast_send(broadcast_id=int(b.id))))
+
+    return {
+        "id": int(b.id),
+        "status": str(getattr(b, "status", "") or ""),
+        "total": int(getattr(b, "total_recipients", 0) or 0),
+        "success": int(getattr(b, "delivered_count", 0) or 0),
+        "failed": int(getattr(b, "failed_count", 0) or 0),
+        "no_tg": int(getattr(b, "no_tg_count", 0) or 0),
+    }
+
+
+@app.get("/api/broadcasts")
+@app.get("/crm/api/broadcasts")
+async def api_broadcasts_list(
+    request: Request,
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+
+    res = await session.execute(select(Broadcast).order_by(Broadcast.id.desc()).limit(200))
+    items = list(res.scalars().all())
+    out = []
+    for b in items:
+        bid = int(b.id)
+        # Prefer persisted counters if present (for sending progress), fallback to aggregation.
+        total = getattr(b, "total_recipients", None)
+        succ = getattr(b, "delivered_count", None)
+        fail = getattr(b, "failed_count", None)
+        no_tg = getattr(b, "no_tg_count", None)
+        if total is None or succ is None or fail is None or no_tg is None:
+            agg = await session.execute(
+                select(
+                    func.count(BroadcastDelivery.id),
+                    func.sum(case((BroadcastDelivery.delivery_status == "success", 1), else_=0)),
+                    func.sum(case((BroadcastDelivery.delivery_status == "failed", 1), else_=0)),
+                    func.sum(case((BroadcastDelivery.delivery_status == "no_tg", 1), else_=0)),
+                ).where(BroadcastDelivery.broadcast_id == bid)
+            )
+            total, succ, fail, no_tg = agg.first() or (0, 0, 0, 0)
+
+        ragg = await session.execute(
+            select(func.count(BroadcastRating.id), func.avg(BroadcastRating.rating)).where(BroadcastRating.broadcast_id == bid)
+        )
+        ratings_count, ratings_avg = ragg.first() or (0, None)
+
+        fail_reason = None
+        if str(getattr(b, "status", "") or "") == "failed":
+            fr = await session.execute(
+                select(BroadcastDelivery.error_text)
+                .where(BroadcastDelivery.broadcast_id == bid)
+                .where(BroadcastDelivery.delivery_status == "failed")
+                .where(BroadcastDelivery.error_text.is_not(None))
+                .limit(1)
+            )
+            fail_reason = fr.scalar_one_or_none()
+        out.append(
+            {
+                "id": bid,
+                "created_at": (b.created_at.isoformat() if b.created_at else None),
+                "sent_at": (b.sent_at.isoformat() if b.sent_at else None),
+                "target_mode": str(getattr(b, "target_mode", "") or ""),
+                "status": str(getattr(b, "status", "") or ""),
+                "total": int(total or 0),
+                "success": int(succ or 0),
+                "failed": int(fail or 0),
+                "no_tg": int(no_tg or 0),
+                "fail_reason": (str(fail_reason)[:180] if fail_reason else None),
+                "ratings_count": int(ratings_count or 0),
+                "ratings_avg": (float(ratings_avg) if ratings_avg is not None else None),
+            }
+        )
+    return {"items": out}
+
+
+@app.get("/api/broadcasts/{broadcast_id}")
+@app.get("/crm/api/broadcasts/{broadcast_id}")
+async def api_broadcasts_detail(
+    broadcast_id: int,
+    request: Request,
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+
+    b = (await session.execute(select(Broadcast).where(Broadcast.id == int(broadcast_id)))).scalar_one_or_none()
+    if not b:
+        raise HTTPException(404)
+
+    dels = (
+        await session.execute(
+            select(BroadcastDelivery)
+            .where(BroadcastDelivery.broadcast_id == int(broadcast_id))
+            .options(selectinload(BroadcastDelivery.user))
+            .order_by(BroadcastDelivery.id.asc())
+        )
+    ).scalars().all()
+
+    ratings = (
+        await session.execute(
+            select(BroadcastRating)
+            .where(BroadcastRating.broadcast_id == int(broadcast_id))
+            .options(selectinload(BroadcastRating.user))
+        )
+    ).scalars().all()
+    r_by_uid = {int(r.user_id): r for r in ratings}
+
+    items = []
+    for d in dels:
+        u = getattr(d, "user", None)
+        uid = int(getattr(d, "user_id", 0) or 0)
+        rr = r_by_uid.get(uid)
+        items.append(
+            {
+                "user_id": uid,
+                "name": ((str(getattr(u, "first_name", "") or "").strip() + " " + str(getattr(u, "last_name", "") or "").strip()).strip() if u else ""),
+                "color": (str(getattr(u, "color", "") or "") if u else ""),
+                "position": ((getattr(u, "position", None).value if hasattr(getattr(u, "position", None), "value") else str(getattr(u, "position", "") or "")) if u else ""),
+                "delivery_status": str(getattr(d, "delivery_status", "") or ""),
+                "delivered_at": (getattr(d, "delivered_at", None).isoformat() if getattr(d, "delivered_at", None) else None),
+                "error_text": (str(getattr(d, "error_text", "") or "") or None),
+                "rating": (int(getattr(rr, "rating", 0) or 0) if rr else None),
+                "rated_at": (getattr(rr, "rated_at", None).isoformat() if rr and getattr(rr, "rated_at", None) else None),
+            }
+        )
+
+    # sort: not rated first
+    items.sort(key=lambda x: (x.get("rating") is not None, x.get("name") or ""))
+
+    ragg = await session.execute(
+        select(func.count(BroadcastRating.id), func.avg(BroadcastRating.rating)).where(BroadcastRating.broadcast_id == int(broadcast_id))
+    )
+    ratings_count, ratings_avg = ragg.first() or (0, None)
+
+    fail_reason = None
+    if str(getattr(b, "status", "") or "") == "failed":
+        fr = await session.execute(
+            select(BroadcastDelivery.error_text)
+            .where(BroadcastDelivery.broadcast_id == int(broadcast_id))
+            .where(BroadcastDelivery.delivery_status == "failed")
+            .where(BroadcastDelivery.error_text.is_not(None))
+            .limit(1)
+        )
+        fail_reason = fr.scalar_one_or_none()
+
+    total = getattr(b, "total_recipients", None)
+    succ = getattr(b, "delivered_count", None)
+    fail = getattr(b, "failed_count", None)
+    no_tg = getattr(b, "no_tg_count", None)
+    if total is None or succ is None or fail is None or no_tg is None:
+        agg = await session.execute(
+            select(
+                func.count(BroadcastDelivery.id),
+                func.sum(case((BroadcastDelivery.delivery_status == "success", 1), else_=0)),
+                func.sum(case((BroadcastDelivery.delivery_status == "failed", 1), else_=0)),
+                func.sum(case((BroadcastDelivery.delivery_status == "no_tg", 1), else_=0)),
+            ).where(BroadcastDelivery.broadcast_id == int(broadcast_id))
+        )
+        total, succ, fail, no_tg = agg.first() or (0, 0, 0, 0)
+
+    return {
+        "id": int(b.id),
+        "text": str(getattr(b, "text", "") or ""),
+        "created_at": (b.created_at.isoformat() if b.created_at else None),
+        "sent_at": (b.sent_at.isoformat() if b.sent_at else None),
+        "target_mode": str(getattr(b, "target_mode", "") or ""),
+        "filter_positions": list(getattr(b, "filter_positions", None) or []),
+        "filter_user_ids": list(getattr(b, "filter_user_ids", None) or []),
+        "status": str(getattr(b, "status", "") or ""),
+        "total": int(total or 0),
+        "success": int(succ or 0),
+        "failed": int(fail or 0),
+        "no_tg": int(no_tg or 0),
+        "media_type": (str(getattr(b, "media_type", "") or "") or None),
+        "media_url": (str(getattr(b, "media_url", "") or "") or None),
+        "fail_reason": (str(fail_reason)[:180] if fail_reason else None),
+        "ratings_count": int(ratings_count or 0),
+        "ratings_avg": (float(ratings_avg) if ratings_avg is not None else None),
+        "deliveries": items,
+    }
+
+
+@app.post("/api/broadcasts/{broadcast_id}/rate")
+@app.post("/crm/api/broadcasts/{broadcast_id}/rate")
+async def api_broadcasts_rate(
+    broadcast_id: int,
+    rating: int = Form(...),
+    tg_id: int | None = Form(None),
+    session: AsyncSession = Depends(get_db),
+):
+    # Called by bot: identify user by tg_id.
+    tg = int(tg_id or 0)
+    if not tg:
+        raise HTTPException(status_code=401, detail="tg_id required")
+    if int(rating) < 1 or int(rating) > 5:
+        raise HTTPException(status_code=422, detail="rating must be 1..5")
+
+    u = (await session.execute(select(User).where(User.tg_id == int(tg)).where(User.is_deleted == False))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404)
+    b = (await session.execute(select(Broadcast).where(Broadcast.id == int(broadcast_id)))).scalar_one_or_none()
+    if not b:
+        raise HTTPException(404)
+
+    r = (
+        await session.execute(
+            select(BroadcastRating)
+            .where(BroadcastRating.broadcast_id == int(broadcast_id))
+            .where(BroadcastRating.user_id == int(u.id))
+        )
+    ).scalar_one_or_none()
+    if r is None:
+        r = BroadcastRating(broadcast_id=int(broadcast_id), user_id=int(u.id), rating=int(rating), rated_at=utc_now())
+        session.add(r)
+    else:
+        r.rating = int(rating)
+        r.rated_at = utc_now()
+    await session.flush()
+    return {"ok": True}
 
 async def load_user(session: AsyncSession, user_id: int) -> User:
     res = await session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
@@ -476,6 +1189,33 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
         is_assigned_to_me = any(int(u.id) == int(actor_id) for u in assignees)
     due_at_utc = getattr(t, "due_at", None)
     due_at_str = format_moscow(due_at_utc, "%d.%m.%Y %H:%M") if due_at_utc else ""
+    due_at_ts: int | None = None
+    if due_at_utc is not None:
+        try:
+            due_at_ts = int(due_at_utc.timestamp())
+        except Exception:
+            due_at_ts = None
+    created_at_utc = getattr(t, "created_at", None)
+    created_at_ts: int | None = None
+    if created_at_utc is not None:
+        try:
+            created_at_ts = int(created_at_utc.timestamp())
+        except Exception:
+            created_at_ts = None
+
+    created_by = getattr(t, "created_by_user", None)
+    created_by_str = ""
+    created_by_view: dict | None = None
+    if created_by is not None:
+        created_by_str = (
+            f"{(created_by.first_name or '').strip()} {(created_by.last_name or '').strip()}".strip()
+            or f"#{created_by.id}"
+        )
+        created_by_view = {
+            "id": int(getattr(created_by, "id", 0) or 0),
+            "name": created_by_str,
+            "color": (getattr(created_by, "color", None) or None),
+        }
     is_overdue = bool(due_at_utc and due_at_utc < utc_now())
     return {
         "id": int(t.id),
@@ -483,7 +1223,11 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
         "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
         "status": t.status.value if hasattr(t.status, "value") else str(t.status),
         "due_at_str": due_at_str,
-        "created_at_str": format_moscow(getattr(t, "created_at", None), "%d.%m.%Y %H:%M"),
+        "due_at_ts": due_at_ts,
+        "created_at_str": format_moscow(created_at_utc, "%d.%m.%Y %H:%M"),
+        "created_at_ts": created_at_ts,
+        "created_by_str": created_by_str,
+        "created_by": created_by_view,
         "assignees": assignees_view,
         "assignees_str": assignees_str,
         "is_assigned_to_me": is_assigned_to_me,
@@ -1045,6 +1789,7 @@ async def schedule_api_month(
                 .join(User, User.id == WorkShiftDay.user_id)
                 .where(WorkShiftDay.day >= start)
                 .where(WorkShiftDay.day <= end)
+                .where(WorkShiftDay.kind == "work")
                 .where(User.is_deleted == False)
                 .where(User.status == UserStatus.APPROVED)
                 .order_by(User.first_name, User.last_name, User.id)
@@ -1893,7 +2638,23 @@ async def user_message(user_id: int, text: str = Form(...), admin_id: int = Depe
     return Response(status_code=204, headers={"HX-Trigger": "close-modal"})
 
 
-@app.get("/broadcast", response_class=HTMLResponse)
+@app.get("/broadcast", response_class=HTMLResponse, name="broadcast_page")
+async def broadcast_page(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    # positions list for checkboxes
+    res = await session.execute(
+        select(User.position)
+        .where(User.is_deleted == False)
+        .group_by(User.position)
+        .order_by(User.position)
+    )
+    positions = []
+    for (pos,) in res.all():
+        positions.append(pos.value if hasattr(pos, "value") else str(pos or ""))
+    return templates.TemplateResponse("broadcast.html", {"request": request, "positions": positions})
+
+
+@app.get("/broadcast_modal", response_class=HTMLResponse)
 async def broadcast_modal(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
     res = await session.execute(select(User).where(User.status == UserStatus.APPROVED).where(User.is_deleted == False))
     users = res.scalars().all()
@@ -1952,12 +2713,13 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     from sqlalchemy import exists, and_
 
     urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
+    free_time_last = case((Task.priority == TaskPriority.FREE_TIME, 1), else_=0)
 
     query = (
         select(Task)
         .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
         .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
-        .order_by(urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+        .order_by(free_time_last.asc(), urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
     )
     if q:
         from sqlalchemy import or_
@@ -1966,6 +2728,8 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
         query = query.where(or_(Task.title.ilike(like), Task.description.ilike(like)))
     if priority == TaskPriority.URGENT.value:
         query = query.where(Task.priority == TaskPriority.URGENT)
+    elif priority == TaskPriority.FREE_TIME.value:
+        query = query.where(Task.priority == TaskPriority.FREE_TIME)
     elif priority == TaskPriority.NORMAL.value:
         query = query.where(Task.priority == TaskPriority.NORMAL)
 
@@ -2075,17 +2839,20 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     from sqlalchemy import or_ as _or, exists, and_
 
     urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
+    free_time_last = case((Task.priority == TaskPriority.FREE_TIME, 1), else_=0)
     query = (
         select(Task)
         .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
         .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
-        .order_by(urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+        .order_by(free_time_last.asc(), urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
     )
     if q:
         like = f"%{q}%"
         query = query.where(_or(Task.title.ilike(like), Task.description.ilike(like)))
     if priority == TaskPriority.URGENT.value:
         query = query.where(Task.priority == TaskPriority.URGENT)
+    elif priority == TaskPriority.FREE_TIME.value:
+        query = query.where(Task.priority == TaskPriority.FREE_TIME)
     elif priority == TaskPriority.NORMAL.value:
         query = query.where(Task.priority == TaskPriority.NORMAL)
 
@@ -2441,7 +3208,12 @@ async def tasks_api_create(
     await ensure_manager_allowed(request, admin_id, session)
     actor = await load_staff_user(session, admin_id)
 
-    pr = TaskPriority.URGENT if priority == TaskPriority.URGENT.value else TaskPriority.NORMAL
+    if priority == TaskPriority.URGENT.value:
+        pr = TaskPriority.URGENT
+    elif priority == TaskPriority.FREE_TIME.value:
+        pr = TaskPriority.FREE_TIME
+    else:
+        pr = TaskPriority.NORMAL
     due_dt = _parse_due_at_msk(due_at)
 
     users: list[User] = []
@@ -2552,8 +3324,22 @@ async def tasks_api_detail(task_id: int, request: Request, admin_id: int = Depen
 
     created_by = getattr(t, "created_by_user", None)
     created_by_str = ""
+    created_by_view: dict | None = None
     if created_by is not None:
         created_by_str = (f"{(created_by.first_name or '').strip()} {(created_by.last_name or '').strip()}".strip() or f"#{created_by.id}")
+        created_by_view = {
+            "id": int(getattr(created_by, "id", 0) or 0),
+            "name": created_by_str,
+            "color": (getattr(created_by, "color", None) or None),
+        }
+
+    created_at_utc = getattr(t, "created_at", None)
+    created_at_ts: int | None = None
+    if created_at_utc is not None:
+        try:
+            created_at_ts = int(created_at_utc.timestamp())
+        except Exception:
+            created_at_ts = None
 
     return {
         "id": int(t.id),
@@ -2566,7 +3352,10 @@ async def tasks_api_detail(task_id: int, request: Request, admin_id: int = Depen
         "priority": t.priority.value,
         "status": t.status.value,
         "due_at_str": format_moscow(getattr(t, "due_at", None), "%d.%m.%Y %H:%M") if getattr(t, "due_at", None) else "",
+        "created_at_str": format_moscow(created_at_utc, "%d.%m.%Y %H:%M"),
+        "created_at_ts": created_at_ts,
         "created_by_str": created_by_str,
+        "created_by": created_by_view,
         "assignees": [_user_short(u) for u in assignees],
         "comments": [_comment_view(c) for c in sorted(comments, key=lambda x: x.created_at)],
         "permissions": _task_permissions(t=t, actor=actor, is_admin=is_admin, is_manager=is_manager),
@@ -3120,6 +3909,7 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_sta
         {
             "ts_str": format_dt_ru(r.ts),
             "actor_name": r.actor_name,
+            "actor_color": (str(getattr(r, "actor_color", "") or "") or None),
             "actor_tg_id": r.actor_tg_id,
             "kind": r.kind,
             "amount": format_number(r.amount, max_decimals=3, decimal_sep=".", thousands_sep=" "),
@@ -3152,6 +3942,88 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_sta
             "stock_rows": stock_rows_view,
         },
     )
+
+
+@app.get("/api/stocks/cast-by-masters")
+@app.get("/crm/api/stocks/cast-by-masters")
+async def crm_api_stocks_cast_by_masters(
+    request: Request,
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    from datetime import date as _date, timedelta as _timedelta
+
+    def _parse_date(val: str | None) -> _date | None:
+        if not val:
+            return None
+        try:
+            return datetime.strptime(val, "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    today = _date.today()
+    date_to = _parse_date(request.query_params.get("date_to")) or today
+    date_from = _parse_date(request.query_params.get("date_from")) or (date_to - _timedelta(days=29))
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    try:
+        _logger.info(
+            "[stocks-dashboard] cast-by-masters date_from=%s date_to=%s",
+            str(date_from),
+            str(date_to),
+        )
+        # Diagnostic: how many consumptions exist in this period by created_at (UTC).
+        from datetime import time as _time, timezone as _timezone
+
+        dt_from = datetime.combine(date_from, _time.min).replace(tzinfo=MOSCOW_TZ).astimezone(_timezone.utc)
+        dt_to = datetime.combine(date_to, _time.max).replace(tzinfo=MOSCOW_TZ).astimezone(_timezone.utc)
+        _logger.info(
+            "[stocks-dashboard] cast-by-masters dt_from_utc=%s dt_to_utc=%s",
+            str(dt_from),
+            str(dt_to),
+        )
+        cnt = (
+            await session.execute(
+                select(func.count())
+                .select_from(MaterialConsumption)
+                .where(MaterialConsumption.created_at >= dt_from)
+                .where(MaterialConsumption.created_at <= dt_to)
+            )
+        ).scalar_one()
+        _logger.info("[stocks-dashboard] cast-by-masters consumptions_in_period=%s", str(cnt))
+
+        cnt_users = (
+            await session.execute(
+                select(func.count(func.distinct(MaterialConsumption.employee_id)))
+                .select_from(MaterialConsumption)
+                .where(MaterialConsumption.created_at >= dt_from)
+                .where(MaterialConsumption.created_at <= dt_to)
+            )
+        ).scalar_one()
+        _logger.info("[stocks-dashboard] cast-by-masters distinct_employees_in_period=%s", str(cnt_users))
+    except Exception:
+        pass
+
+    rows = await build_cast_by_masters(session, date_from=date_from, date_to=date_to)
+    try:
+        _logger.info("[stocks-dashboard] cast-by-masters rows=%s", str(len(rows)))
+        for r in rows[:2]:
+            _logger.info(
+                "[stocks-dashboard] cast-by-masters sample user_id=%s name=%s total=%s",
+                str(getattr(r, "user_id", "")),
+                str(getattr(r, "name", "")),
+                str(getattr(r, "total", "")),
+            )
+    except Exception:
+        pass
+    return {
+        "items": [
+            {"user_id": int(r.user_id), "name": str(r.name), "color": str(r.color), "total": str(r.total)}
+            for r in rows
+        ]
+    }
 
 
 # Modal endpoints for Materials CRUD

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import datetime, date, timedelta
 
 from aiogram import Router, F
@@ -11,7 +12,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from sqlalchemy import select
 
 from shared.config import settings
-from shared.db import get_async_session
+from shared.db import get_async_session, add_after_commit_callback
 from shared.enums import UserStatus, ShiftInstanceStatus, Position
 from shared.permissions import role_flags
 from shared.utils import MOSCOW_TZ, utc_now
@@ -29,6 +30,73 @@ from bot.app.states.shifts import ShiftCloseEditState, ShiftManagerEditState
 
 router = Router()
 _logger = logging.getLogger(__name__)
+
+
+def _user_name(u: User | None) -> str:
+    if not u:
+        return "—"
+    first = str(getattr(u, "first_name", "") or "").strip()
+    last = str(getattr(u, "last_name", "") or "").strip()
+    full = (first + " " + last).strip()
+    return full or f"User #{int(getattr(u, 'id', 0) or 0)}"
+
+
+def _fmt_day(d: date | None) -> str:
+    if not d:
+        return "—"
+    try:
+        return d.strftime("%d.%m.%Y")
+    except Exception:
+        return str(d)
+
+
+def _fmt_plan_interval(*, day: date | None, start_time, end_time, is_emergency: bool) -> str:
+    ds = _fmt_day(day)
+    if start_time and end_time:
+        try:
+            return f"{ds} • {start_time.strftime('%H:%M')}–{end_time.strftime('%H:%M')}"
+        except Exception:
+            return f"{ds}"
+    if is_emergency:
+        return f"{ds} • ⚡ экстренная смена"
+    return f"{ds} • вне расписания"
+
+
+async def _notify_admins_and_managers_about_shift_event(
+    *,
+    bot,
+    actor_user_id: int,
+    text: str,
+) -> None:
+    try:
+        async with get_async_session() as session:
+            q = (
+                select(User)
+                .where(User.is_deleted == False)  # noqa: E712
+                .where(
+                    (User.tg_id.in_([int(x) for x in (settings.admin_ids or [])]))
+                    | ((User.status == UserStatus.APPROVED) & (User.position == Position.MANAGER))
+                )
+                .where(User.id != int(actor_user_id))
+            )
+            users = list((await session.execute(q)).scalars().all())
+
+        chat_ids: list[int] = []
+        for u in users:
+            tg_id = getattr(u, "tg_id", None)
+            if not tg_id:
+                continue
+            chat_ids.append(int(tg_id))
+
+        async def _send_one(cid: int):
+            try:
+                await bot.send_message(chat_id=int(cid), text=str(text))
+            except Exception:
+                _logger.warning("failed to send shift notify", extra={"chat_id": int(cid)}, exc_info=True)
+
+        await asyncio.gather(*[_send_one(cid) for cid in chat_ids], return_exceptions=True)
+    except Exception:
+        _logger.exception("shift notify failed")
 
 
 async def _cb_answer_safely(cb: CallbackQuery, text: str | None = None) -> None:
@@ -265,6 +333,9 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
         if plan is None or str(getattr(plan, "kind", "")) != "work":
             is_emergency = True
 
+        start_time = getattr(plan, "start_time", None) if plan is not None else None
+        end_time = getattr(plan, "end_time", None) if plan is not None else None
+
         now = utc_now()
 
         if existing is None:
@@ -289,6 +360,19 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
             await session.flush()
             await _log_event(session, shift_id=int(existing.id), actor_user_id=int(user.id), type="Смена открыта")
             shift = existing
+
+        interval = _fmt_plan_interval(day=d, start_time=start_time, end_time=end_time, is_emergency=bool(is_emergency))
+        staff_name = _user_name(user)
+        notify_text = f"✅ Смена открыта: {esc(staff_name)} • {esc(interval)}"
+
+        async def _after_commit() -> None:
+            await _notify_admins_and_managers_about_shift_event(
+                bot=cb.bot,
+                actor_user_id=int(user.id),
+                text=str(notify_text),
+            )
+
+        add_after_commit_callback(session, _after_commit)
 
     await state.clear()
     await edit_html(
@@ -503,6 +587,11 @@ async def shift_close_ok(cb: CallbackQuery, state: FSMContext):
             await edit_html(cb, "Смена не найдена.")
             return
 
+        plan = await _get_today_plan(session, user_id=int(user.id), day=getattr(shift, "day", None))
+        start_time = getattr(plan, "start_time", None) if plan is not None else None
+        end_time = getattr(plan, "end_time", None) if plan is not None else None
+        is_emergency = bool(getattr(shift, "is_emergency", False) or (plan is None) or (str(getattr(plan, "kind", "")) != "work"))
+
         now = utc_now()
         shift.ended_at = now
         shift.status = ShiftInstanceStatus.APPROVED
@@ -512,6 +601,32 @@ async def shift_close_ok(cb: CallbackQuery, state: FSMContext):
         await session.flush()
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Смена закрыта")
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Сумма подтверждена руководителем")
+
+        interval = _fmt_plan_interval(day=getattr(shift, "day", None), start_time=start_time, end_time=end_time, is_emergency=is_emergency)
+        staff_name = _user_name(user)
+        planned_hours = int(getattr(shift, "planned_hours", 0) or 0)
+        extra_hours = int(getattr(shift, "extra_hours", 0) or 0)
+        overtime_hours = int(getattr(shift, "overtime_hours", 0) or 0)
+        fact_hours = planned_hours + extra_hours + overtime_hours
+        parts: list[str] = []
+        parts.append(f"🛑 Смена закрыта: {esc(staff_name)} • {esc(interval)}")
+        if fact_hours > 0:
+            tail = f"факт: {int(fact_hours)} ч"
+            if extra_hours:
+                tail += f" (+{int(extra_hours)} ч доп)"
+            if overtime_hours:
+                tail += f" (+{int(overtime_hours)} ч вне графика)"
+            parts.append(tail)
+        notify_text = " • ".join(parts) if len(parts) == 1 else (parts[0] + " • " + parts[1])
+
+        async def _after_commit() -> None:
+            await _notify_admins_and_managers_about_shift_event(
+                bot=cb.bot,
+                actor_user_id=int(user.id),
+                text=str(notify_text),
+            )
+
+        add_after_commit_callback(session, _after_commit)
 
     await state.clear()
     await edit_html(
@@ -705,6 +820,11 @@ async def shift_close_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
             await edit_html(cb, "Смена не найдена.", reply_markup=_kb_schedule_return())
             return
 
+        plan = await _get_today_plan(session, user_id=int(user.id), day=getattr(shift, "day", None))
+        start_time = getattr(plan, "start_time", None) if plan is not None else None
+        end_time = getattr(plan, "end_time", None) if plan is not None else None
+        is_emergency = bool(getattr(shift, "is_emergency", False) or (plan is None) or (str(getattr(plan, "kind", "")) != "work"))
+
         base_rate = int(getattr(shift, "base_rate", None) or int(getattr(user, "rate_k", 0) or 0))
         extra_rate = int(getattr(shift, "extra_hour_rate", 300) or 300)
         overtime_rate = int(getattr(shift, "overtime_hour_rate", 400) or 400)
@@ -752,6 +872,32 @@ async def shift_close_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
             )
         else:
             await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Сумма подтверждена руководителем")
+
+        interval = _fmt_plan_interval(day=getattr(shift, "day", None), start_time=start_time, end_time=end_time, is_emergency=is_emergency)
+        staff_name = _user_name(user)
+        planned_hours = int(getattr(shift, "planned_hours", 0) or 0)
+        eh0 = int(extra_hours or 0)
+        ov0 = int(overtime_hours or 0)
+        fact_hours = planned_hours + eh0 + ov0
+        parts: list[str] = []
+        parts.append(f"🛑 Смена закрыта: {esc(staff_name)} • {esc(interval)}")
+        if fact_hours > 0:
+            tail = f"факт: {int(fact_hours)} ч"
+            if eh0:
+                tail += f" (+{int(eh0)} ч доп)"
+            if ov0:
+                tail += f" (+{int(ov0)} ч вне графика)"
+            parts.append(tail)
+        notify_text = " • ".join(parts) if len(parts) == 1 else (parts[0] + " • " + parts[1])
+
+        async def _after_commit() -> None:
+            await _notify_admins_and_managers_about_shift_event(
+                bot=cb.bot,
+                actor_user_id=int(user.id),
+                text=str(notify_text),
+            )
+
+        add_after_commit_callback(session, _after_commit)
 
     await state.clear()
     try:

@@ -2,9 +2,29 @@
 {% block title %}Сотрудники{% endblock %}
 {% block content %}
 <h2 class="subtitle">Сотрудники</h2>
-<div class="actions">
-  <button class="btn" hx-get="broadcast" hx-include=".user-select" hx-target="#modal-body" hx-swap="innerHTML">Массовая рассылка</button>
+
+<div class="users-filters" style="margin:0 0 12px 0;">
+  <div class="users-filters-row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+    <label class="flex-1" style="display:flex; flex-direction:column; gap:6px; font-size:14px; color:#334155; min-width:220px;">
+      Поиск
+      <input id="users-search" type="text" placeholder="TG ID, имя, фамилия, должность" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px; outline:none; background:#fff; box-shadow:0 1px 0 rgba(2,6,23,.03);" />
+    </label>
+    <label style="display:flex; flex-direction:column; gap:6px; font-size:14px; color:#334155; min-width:200px;">
+      Статус
+      <select id="users-status" style="border:1px solid #cbd5e1; border-radius:10px; padding:10px; outline:none; background:#fff; box-shadow:0 1px 0 rgba(2,6,23,.03);">
+        <option value="">Все</option>
+        <option value="PENDING">На рассмотрении</option>
+        <option value="APPROVED">Одобрен</option>
+        <option value="REJECTED">Отклонён</option>
+        <option value="BLACKLISTED">В чёрном списке</option>
+      </select>
+    </label>
+    <div class="users-filters-actions" style="display:flex; gap:8px;">
+      <button class="btn-outline" type="button" id="users-clear">Очистить</button>
+    </div>
+  </div>
 </div>
+
 <div class="table-wrap">
   <table class="table crm-table">
     <thead>
@@ -29,4 +49,111 @@
     </tbody>
   </table>
 </div>
+
+<script>
+(function(){
+  const input = document.getElementById('users-search');
+  const statusSel = document.getElementById('users-status');
+  const clearBtn = document.getElementById('users-clear');
+
+  function isMobile(){
+    try { return !!(window.matchMedia && window.matchMedia('(max-width: 768px)').matches); } catch (e) { return false; }
+  }
+
+  function bindRowTapToOpen(){
+    try{
+      if(!isMobile()) return;
+      const rows = document.querySelectorAll('#users-tbody tr[id^="row-"]');
+      rows.forEach((tr)=>{
+        if(tr.dataset.tapBound === '1') return;
+        tr.dataset.tapBound = '1';
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', (ev)=>{
+          try{
+            if(ev && ev.target && ev.target.closest && ev.target.closest('button, a, input, select, textarea, label')){
+              return;
+            }
+          }catch(_){ }
+          const rid = String(tr.id || '').trim();
+          const m = rid.match(/^row-(\d+)$/);
+          if(!m) return;
+          const userId = Number(m[1]);
+          if(!userId) return;
+          const b = document.getElementById('modal-body');
+          if(b){
+            b.innerHTML = '<div class="modal-loading">Загрузка…</div>';
+          }
+          if(window.htmx && typeof window.htmx.ajax === 'function'){
+            window.htmx.ajax('GET', 'users/' + String(userId), { target: '#modal-body', swap: 'innerHTML' });
+          } else {
+            fetch('users/' + String(userId), { credentials:'include' })
+              .then(r=>r.text())
+              .then(html=>{ const mb=document.getElementById('modal-body'); if(mb) mb.innerHTML = html; try{ window.dispatchEvent(new CustomEvent('open-modal')); }catch(e){} })
+              .catch(()=>{});
+          }
+        });
+      });
+    }catch(e){}
+  }
+
+  function norm(s){
+    return String(s||'').toLowerCase().trim();
+  }
+
+  function rowText(tr){
+    try{
+      return norm(tr.textContent || '');
+    }catch(e){
+      return '';
+    }
+  }
+
+  function rowStatus(tr){
+    try{
+      const b = tr.querySelector('.badge');
+      if(!b) return '';
+      const cls = (b.getAttribute('class') || '').split(/\s+/).filter(Boolean);
+      const known = ['PENDING','APPROVED','REJECTED','BLACKLISTED'];
+      for(const k of known){
+        if(cls.includes(k)) return k;
+      }
+      return '';
+    }catch(e){
+      return '';
+    }
+  }
+
+  function apply(){
+    const q = norm(input ? input.value : '');
+    const st = String(statusSel ? statusSel.value : '');
+    const rows = document.querySelectorAll('#users-tbody tr');
+    rows.forEach((tr)=>{
+      const okQ = !q || rowText(tr).includes(q);
+      const okS = !st || rowStatus(tr) === st;
+      tr.style.display = (okQ && okS) ? '' : 'none';
+    });
+  }
+
+  if(input){ input.addEventListener('input', apply); }
+  if(statusSel){ statusSel.addEventListener('change', apply); }
+  if(clearBtn){
+    clearBtn.addEventListener('click', ()=>{
+      if(input) input.value = '';
+      if(statusSel) statusSel.value = '';
+      apply();
+    });
+  }
+
+  document.addEventListener('htmx:afterSwap', (e)=>{
+    const t = e && e.detail ? e.detail.target : null;
+    if(t && t.id === 'users-tbody'){
+      apply();
+      bindRowTapToOpen();
+    }
+  });
+
+  try{ window.addEventListener('resize', ()=>{ try{ bindRowTapToOpen(); }catch(e){} }); }catch(e){}
+  bindRowTapToOpen();
+})();
+</script>
 {% endblock %}

@@ -78,7 +78,7 @@
       </div>
       <div class="kanban-col-body" id="col-{{ col["status"] }}">
         {% for t in col.get("items", []) %}
-          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}" data-task-id="{{ t.id }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
+          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" data-task-id="{{ t.id }}" data-priority="{{ t.priority or 'normal' }}" data-due-at-ts="{{ t.due_at_ts or '' }}" data-created-at-ts="{{ t.created_at_ts or '' }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
             <div class="task-card-top">
               <div class="task-title">{{ t.title }}</div>
               {% if t.priority == 'urgent' %}
@@ -103,10 +103,36 @@
                       <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
                     {% endif %}
                   </span>
-                  <span class="task-assignees-text">{{ t.assignees_str }}</span>
+                  <span class="task-assignees-text">
+                    {% for a in t.assignees %}
+                      {% set nm = ((a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '')).strip() %}
+                      <span{% if a.get('color') %} style="color: {{ a.get('color') }}"{% endif %}>{{ nm or ('#' ~ a.get('id')) }}</span>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  </span>
                 {% else %}
                   <span class="muted">Общая</span>
                 {% endif %}
+              </div>
+
+              <div class="task-card-meta">
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Создано:</span>
+                  <span class="task-card-meta-value">{{ t.created_at_str or '—' }}</span>
+                </div>
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Создал:</span>
+                  {% set cb = t.get('created_by') %}
+                  {% set cb_name = (cb.get('name') if cb else '') or (t.created_by_str or '—') %}
+                  {% set cb_color = (cb.get('color') if cb else '') or '#9CA3AF' %}
+                  <span class="task-created-by">
+                    <span class="task-created-by-dot" style="background: {{ cb_color }}"></span>
+                    <span class="task-created-by-name" style="color: {{ cb_color }}" title="{{ cb_name }}">{{ cb_name }}</span>
+                  </span>
+                </div>
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Прошло:</span>
+                  <span class="task-card-meta-value" data-role="task-elapsed" data-created-at-ts="{{ t.created_at_ts or '' }}">—</span>
+                </div>
               </div>
             </div>
           </div>
@@ -200,6 +226,45 @@
     window.dispatchEvent(new CustomEvent('open-modal'));
   }
 
+  function pad2(n){ return String(n).padStart(2,'0'); }
+
+  function formatElapsed(createdAtTs, nowTs){
+    const ts = Number(createdAtTs);
+    if (!ts || !Number.isFinite(ts) || ts <= 0) return '—';
+    const now = (nowTs !== undefined && nowTs !== null) ? Number(nowTs) : Math.floor(Date.now() / 1000);
+    if (!now || !Number.isFinite(now) || now <= 0) return '—';
+    const diffSec = Math.max(0, now - ts);
+    const totalMin = Math.floor(diffSec / 60);
+    if (!Number.isFinite(totalMin) || totalMin < 0) return '—';
+
+    if (totalMin < 60) {
+      return String(totalMin) + ' мин';
+    }
+
+    if (totalMin < (24 * 60)) {
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      return String(h) + ' ч ' + String(m) + ' мин';
+    }
+
+    const d = Math.floor(totalMin / (24 * 60));
+    const rem = totalMin % (24 * 60);
+    const h = Math.floor(rem / 60);
+    const m = rem % 60;
+    const mm = m < 10 ? pad2(m) : String(m);
+    return String(d) + ' д ' + String(h) + ' ч ' + mm + ' мин';
+  }
+
+  function refreshElapsedNodes(){
+    try {
+      const nowTs = Math.floor(Date.now() / 1000);
+      document.querySelectorAll('[data-role="task-elapsed"]').forEach(el => {
+        const ts = el.getAttribute('data-created-at-ts') || '';
+        el.textContent = formatElapsed(ts, nowTs);
+      });
+    } catch (_){ }
+  }
+
   function renderEvents(items){
     if (!items || items.length === 0) {
       return '<div class="muted">Истории пока нет</div>';
@@ -268,7 +333,8 @@
       const name = escapeHtml(((u.first_name || '') + ' ' + (u.last_name || '')).trim() || ('#' + u.id));
       const c = (u && u.color) ? String(u.color) : '';
       const dot = c ? ('<span class="task-assignee-dot" style="background:' + escapeHtml(c) + '"></span>') : '';
-      return '<span style="display:inline-flex; align-items:center; gap:6px; margin-right:8px;">' + dot + name + '</span>';
+      const style = c ? (' style="color:' + escapeHtml(c) + '"') : '';
+      return '<span style="display:inline-flex; align-items:center; gap:6px;">' + dot + '<span' + style + '>' + name + '</span>' + '</span>';
     }).join('');
   }
 
@@ -300,7 +366,9 @@
 
   function renderDetailModal(task){
     const due = task.due_at_str ? ('<div>Дедлайн: <b>' + escapeHtml(task.due_at_str) + '</b></div>') : '<div class="muted">Дедлайн: —</div>';
-    const priority = task.priority === 'urgent' ? '<span class="task-pill urgent">Срочно</span>' : '<span class="task-pill">Обычно</span>';
+    const priority = (String(task.priority || 'normal') === 'free_time')
+      ? '<span class="task-pill free-time">В свободное время</span>'
+      : (task.priority === 'urgent' ? '<span class="task-pill urgent">Срочно</span>' : '<span class="task-pill">Обычно</span>');
     const statusMap = { new: 'Новые', in_progress: 'В работе', review: 'На проверке', done: 'Выполнено', archived: 'Архив' };
     const status = '<span class="task-pill">' + escapeHtml(statusMap[task.status] || task.status) + '</span>';
 
@@ -328,6 +396,12 @@
         )
       : '';
 
+    const createdAtStr = escapeHtml(task.created_at_str || '') || '—';
+    const createdAtTs = (task && task.created_at_ts !== null && task.created_at_ts !== undefined) ? String(task.created_at_ts) : '';
+    const elapsed = formatElapsed(createdAtTs);
+    const createdByName = escapeHtml(((task.created_by && task.created_by.name) ? task.created_by.name : (task.created_by_str || '')) || '—');
+    const createdByColor = escapeHtml(((task.created_by && task.created_by.color) ? task.created_by.color : '') || '#9CA3AF');
+
     const html = (
       '<div class="modal-header">Задача #' + task.id + '</div>' +
       '<div class="modal-body tasks-modal">' +
@@ -335,13 +409,23 @@
           '<div class="task-detail-title">' + escapeHtml(task.title) + '</div>' +
           '<div class="task-detail-badges">' + priority + status + '</div>' +
         '</div>' +
+        '<div class="task-detail-meta task-meta-created" style="margin-top:10px">' +
+          '<div class="task-meta-item"><b>Информация</b></div>' +
+          '<div class="task-meta-item"><span class="task-card-meta-label">Создано:</span> <span>' + createdAtStr + '</span></div>' +
+          '<div class="task-meta-item"><span class="task-card-meta-label">Создал:</span> ' +
+            '<span class="task-created-by">' +
+              '<span class="task-created-by-dot" style="background:' + createdByColor + '"></span>' +
+              '<span class="task-created-by-name" style="color:' + createdByColor + '">' + createdByName + '</span>' +
+            '</span>' +
+          '</div>' +
+          '<div class="task-meta-item"><span class="task-card-meta-label">Прошло:</span> <span data-role="task-elapsed" data-created-at-ts="' + escapeHtml(createdAtTs) + '">' + escapeHtml(elapsed) + '</span></div>' +
+        '</div>' +
         taskPhoto +
         (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
         '<div class="divider"></div>' +
         '<div class="task-detail-meta">' +
           '<div class="task-meta-item">' + due + '</div>' +
           '<div class="task-meta-item">Исполнители: <b>' + renderAssignees(task.assignees) + '</b></div>' +
-          '<div class="task-meta-item muted">Создал: ' + escapeHtml(task.created_by_str || '') + '</div>' +
         '</div>' +
         '<div class="divider"></div>' +
         '<div class="task-detail-actions">' + actionBtns + '</div>' +
@@ -375,6 +459,12 @@
     );
     return html;
   }
+
+  refreshElapsedNodes();
+  try {
+    document.querySelectorAll('.kanban-col-body').forEach(sortColumnCards);
+  } catch (_){ }
+  setInterval(refreshElapsedNodes, 60 * 1000);
 
   async function apiJson(url, opts){
     const o = Object.assign({ credentials: 'include' }, (opts || {}));
@@ -415,7 +505,7 @@
           '<div class="task-form-grid">' +
             '<div class="task-form-row">' +
               '<div class="form-label">Приоритет</div>' +
-              '<select class="form-control" name="priority"><option value="normal">Обычная</option><option value="urgent">Срочная</option></select>' +
+              '<select class="form-control" name="priority"><option value="normal">Обычная</option><option value="urgent">Срочная</option><option value="free_time">В свободное время</option></select>' +
             '</div>' +
             '<div class="task-form-row">' +
               '<div class="form-label">Выполнить до (МСК)</div>' +
@@ -521,6 +611,7 @@
                 '<select class="form-control" name="priority">' +
                   '<option value="normal" ' + (task.priority === 'normal' ? 'selected' : '') + '>Обычный</option>' +
                   '<option value="urgent" ' + (task.priority === 'urgent' ? 'selected' : '') + '>Срочно</option>' +
+                  '<option value="free_time" ' + (task.priority === 'free_time' ? 'selected' : '') + '>В свободное время</option>' +
                 '</select>' +
               '</div>' +
               '<div class="task-form-row">' +
@@ -673,6 +764,42 @@
     return 'col-' + String(status || '');
   }
 
+  function sortColumnCards(body){
+    try {
+      if (!body) return;
+      const cards = Array.from(body.querySelectorAll('.task-card'));
+      const emptyEl = body.querySelector('.kanban-empty');
+      const key = (el) => {
+        const pr = String(el.getAttribute('data-priority') || 'normal');
+        const freeTimeRank = (pr === 'free_time') ? 1 : 0;
+        const prRank = (pr === 'urgent') ? 0 : 1;
+        const dueRaw = el.getAttribute('data-due-at-ts') || '';
+        const dueTs = Number(dueRaw);
+        const dueKey = (Number.isFinite(dueTs) && dueTs > 0) ? dueTs : Number.POSITIVE_INFINITY;
+        const createdRaw = el.getAttribute('data-created-at-ts') || '';
+        const createdTs = Number(createdRaw);
+        const createdKey = (Number.isFinite(createdTs) && createdTs > 0) ? (-createdTs) : 0;
+        const idRaw = el.getAttribute('data-task-id') || '';
+        const id = Number(idRaw);
+        const idKey = Number.isFinite(id) ? (-id) : 0;
+        return [freeTimeRank, prRank, dueKey, createdKey, idKey];
+      };
+      cards.sort((a, b) => {
+        const ka = key(a);
+        const kb = key(b);
+        for (let i = 0; i < ka.length; i++) {
+          if (ka[i] < kb[i]) return -1;
+          if (ka[i] > kb[i]) return 1;
+        }
+        return 0;
+      });
+      cards.forEach(el => body.appendChild(el));
+      if (emptyEl) {
+        emptyEl.style.display = cards.length ? 'none' : 'block';
+      }
+    } catch (_){ }
+  }
+
   function updateColumnCounts(){
     try {
       const cols = document.querySelectorAll('.kanban-col');
@@ -714,7 +841,8 @@
     // remove existing empty placeholder in target
     const empty = target.querySelector('.kanban-empty');
     if (empty) empty.style.display = 'none';
-    target.prepend(el);
+    target.appendChild(el);
+    sortColumnCards(target);
     updateColumnCounts();
   };
 

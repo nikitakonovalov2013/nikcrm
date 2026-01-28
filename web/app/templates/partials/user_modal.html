@@ -169,7 +169,7 @@
       } catch(e){}
     })();
     </script>
-    <div class="form-row" style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px;">
+    <div class="form-row user-modal-actions" style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px;">
       <button class="btn" type="submit">Сохранить</button>
       <button
         class="btn-warn"
@@ -188,7 +188,7 @@
     </div>
   </form>
   <div class="divider"></div>
-  <form hx-post="users/{{ user.id }}/message" hx-target="#modal-body" hx-swap="none" class="form-row" style="display:flex; gap:8px; align-items:center;">
+  <form hx-post="users/{{ user.id }}/message" hx-target="#modal-body" hx-swap="none" class="form-row user-modal-message" style="display:flex; gap:8px; align-items:center;">
     <input type="text" name="text" placeholder="Текст сообщения" class="flex-1" />
     <button class="btn-outline" type="submit">Отправить</button>
   </form>
@@ -197,7 +197,7 @@
       <div style="background:#fff; border-radius:12px; padding:16px; width:min(480px, 95%); box-shadow:0 10px 30px rgba(2,6,23,.2);">
         <div style="font-weight:600; margin-bottom:8px;">Подтверждение</div>
         <div style="margin-bottom:12px;">Вы уверены, что хотите удалить пользователя?</div>
-        <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <div class="user-modal-confirm-actions" style="display:flex; gap:8px; justify-content:flex-end;">
           <button class="btn-outline" type="button" @click="confirm=false">Отмена</button>
           <button
             class="btn-danger"

@@ -10,6 +10,7 @@ from shared.utils import format_moscow
 PRIORITY_RU = {
     TaskPriority.URGENT.value: "Срочно",
     TaskPriority.NORMAL.value: "Обычный",
+    TaskPriority.FREE_TIME.value: "В свободное время",
 }
 
 STATUS_RU = {
@@ -19,7 +20,6 @@ STATUS_RU = {
     TaskStatus.DONE.value: "Выполнено",
     TaskStatus.ARCHIVED.value: "Архив",
 }
-
 
 @dataclass(frozen=True)
 class FieldChange:

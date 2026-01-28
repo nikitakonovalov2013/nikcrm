@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time, timezone
 from decimal import Decimal
 from math import ceil
 from typing import Iterable
@@ -10,7 +10,7 @@ from sqlalchemy import Select, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import Material, MaterialConsumption, MaterialSupply, User
-from shared.utils import format_moscow
+from shared.utils import MOSCOW_TZ, format_moscow
 
 
 FORECAST_DAYS_WINDOW = 4
@@ -29,6 +29,7 @@ class ChartRow:
 class HistoryRow:
     ts: datetime
     actor_name: str
+    actor_color: str | None
     actor_tg_id: int | None
     kind: str  # 'in' | 'out'
     amount: Decimal
@@ -42,6 +43,14 @@ class StockRow:
     avg_daily_out: Decimal | None
     forecast_days: int | None
     is_low: bool
+
+
+@dataclass(frozen=True)
+class CastByMasterRow:
+    user_id: int
+    name: str
+    color: str
+    total: Decimal
 
 
 def format_dt_ru(dt: datetime) -> str:
@@ -134,6 +143,7 @@ async def build_history_rows(
             MaterialSupply.employee_id.label("employee_id"),
             User.first_name.label("first_name"),
             User.last_name.label("last_name"),
+            User.color.label("color"),
             User.tg_id.label("tg_id"),
         )
         .join(Material, Material.id == MaterialSupply.material_id)
@@ -149,6 +159,7 @@ async def build_history_rows(
             MaterialConsumption.employee_id.label("employee_id"),
             User.first_name.label("first_name"),
             User.last_name.label("last_name"),
+            User.color.label("color"),
             User.tg_id.label("tg_id"),
         )
         .join(Material, Material.id == MaterialConsumption.material_id)
@@ -166,6 +177,7 @@ async def build_history_rows(
             union_q.c.employee_id,
             union_q.c.first_name,
             union_q.c.last_name,
+            union_q.c.color,
             union_q.c.tg_id,
         )
         .order_by(union_q.c.ts.desc())
@@ -174,7 +186,7 @@ async def build_history_rows(
 
     res = (await session.execute(q)).all()
     out: list[HistoryRow] = []
-    for ts, kind, amount, material_name, employee_id, first_name, last_name, tg_id in res:
+    for ts, kind, amount, material_name, employee_id, first_name, last_name, color, tg_id in res:
         fio = f"{first_name or ''} {last_name or ''}".strip()
         if fio:
             actor_name = fio
@@ -184,6 +196,7 @@ async def build_history_rows(
             HistoryRow(
                 ts=ts,
                 actor_name=actor_name if actor_name else "—",
+                actor_color=(str(color) if color else None),
                 actor_tg_id=int(tg_id) if tg_id is not None else None,
                 kind=str(kind),
                 amount=Decimal(amount),
@@ -273,3 +286,54 @@ async def build_pie_data(session: AsyncSession) -> list[dict[str, str]]:
     for name, stock in mats:
         out.append({"label": str(name), "value": str(Decimal(stock))})
     return out
+
+
+async def build_cast_by_masters(
+    session: AsyncSession,
+    *,
+    date_from: date,
+    date_to: date,
+    limit: int = 10,
+) -> list[CastByMasterRow]:
+    # Match "История" semantics: it is built from created_at, so we aggregate by created_at too.
+    dt_from = datetime.combine(date_from, time.min).replace(tzinfo=MOSCOW_TZ).astimezone(timezone.utc)
+    dt_to = datetime.combine(date_to, time.max).replace(tzinfo=MOSCOW_TZ).astimezone(timezone.utc)
+
+    q = (
+        select(
+            MaterialConsumption.employee_id.label("user_id"),
+            User.first_name.label("first_name"),
+            User.last_name.label("last_name"),
+            User.color.label("color"),
+            func.coalesce(func.sum(MaterialConsumption.amount), 0).label("total"),
+        )
+        .outerjoin(User, User.id == MaterialConsumption.employee_id)
+        .where(MaterialConsumption.created_at >= dt_from)
+        .where(MaterialConsumption.created_at <= dt_to)
+        .group_by(MaterialConsumption.employee_id, User.first_name, User.last_name, User.color)
+        .order_by(func.coalesce(func.sum(MaterialConsumption.amount), 0).desc())
+    )
+
+    rows = (await session.execute(q)).all()
+    out_rows: list[CastByMasterRow] = []
+    for user_id, first_name, last_name, color, total in rows:
+        fio = f"{first_name or ''} {last_name or ''}".strip()
+        name = fio or f"Удалённый сотрудник (id={int(user_id)})"
+        c = str(color or "#64748b")
+        out_rows.append(
+            CastByMasterRow(
+                user_id=int(user_id),
+                name=name,
+                color=c,
+                total=Decimal(total),
+            )
+        )
+
+    if len(out_rows) <= limit:
+        return out_rows
+
+    top = out_rows[:limit]
+    rest_total = sum((r.total for r in out_rows[limit:]), Decimal("0"))
+    if rest_total != 0:
+        top.append(CastByMasterRow(user_id=0, name="Прочие", color="#64748b", total=rest_total))
+    return top

@@ -232,7 +232,13 @@ class TaskRepository:
         assignee_user_ids: list[int],
         photo_file_id: str | None,
     ) -> Task:
-        pr = TaskPriority.URGENT if str(priority) == TaskPriority.URGENT.value else TaskPriority.NORMAL
+        p = str(priority)
+        if p == TaskPriority.URGENT.value:
+            pr = TaskPriority.URGENT
+        elif p == TaskPriority.FREE_TIME.value:
+            pr = TaskPriority.FREE_TIME
+        else:
+            pr = TaskPriority.NORMAL
 
         users: list[User] = []
         if assignee_user_ids:

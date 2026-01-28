@@ -49,7 +49,10 @@
               <span class="history-amount">{{ h.amount }}</span>
             </div>
             <div class="muted">
-              {{ h.actor_name if h.actor_name else '—' }}
+              {% if h.actor_color %}
+                <span class="user-dot" style="background: {{ h.actor_color }}"></span>
+              {% endif %}
+              <span style="color: {{ h.actor_color if h.actor_color else '#334155' }}">{{ h.actor_name if h.actor_name else '—' }}</span>
               {% if h.actor_tg_id %}
                 (TG: #{{ h.actor_tg_id }})
               {% endif %}
@@ -66,13 +69,26 @@
 </div>
 
 <div class="dashboard-grid bottom">
-  <div class="panel">
-    <div class="panel-header">
-      <div class="panel-title">Остатки на складе</div>
-      <div class="muted">распределение</div>
+  <div class="panel-stack">
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Остатки на складе</div>
+        <div class="muted">распределение</div>
+      </div>
+      <div class="panel-body">
+        <canvas id="pieChart" height="220"></canvas>
+      </div>
     </div>
-    <div class="panel-body">
-      <canvas id="pieChart" height="220"></canvas>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Кто сколько расходовал материала</div>
+        <div class="muted">за период</div>
+      </div>
+      <div class="panel-body chart-body" style="min-height:260px">
+        <div id="mastersEmpty" class="muted" style="display:none">Нет данных за выбранный период.</div>
+        <canvas id="mastersChart" height="220"></canvas>
+      </div>
     </div>
   </div>
 
@@ -140,6 +156,8 @@
 
     const barEl = document.getElementById('barChart');
     const pieEl = document.getElementById('pieChart');
+    const mastersEl = document.getElementById('mastersChart');
+    const mastersEmptyEl = document.getElementById('mastersEmpty');
     if (!barEl || !pieEl || !window.Chart) return;
 
     const barChart = new Chart(barEl, {
@@ -193,6 +211,97 @@
       } catch (_) {}
       try { window.dispatchEvent(new Event('resize')); } catch (_) {}
     });
+
+    async function loadMastersChart() {
+      if (!mastersEl) return;
+      try {
+        const df = (document.querySelector('input[name="date_from"]') || {}).value || '';
+        const dt = (document.querySelector('input[name="date_to"]') || {}).value || '';
+        const path = (window.location && window.location.pathname) ? String(window.location.pathname) : '';
+        const basePrefix = path.startsWith('/crm/') ? '/crm' : '';
+        const url = basePrefix + '/api/stocks/cast-by-masters?date_from=' + encodeURIComponent(df) + '&date_to=' + encodeURIComponent(dt);
+        const resp = await fetch(url, { credentials: 'same-origin' });
+        const ct = (resp.headers && resp.headers.get) ? (resp.headers.get('content-type') || '') : '';
+        if (!resp.ok) {
+          const txt = await resp.text();
+          console.error('[stocks-dashboard] masters api failed', resp.status, ct, (txt || '').slice(0, 200));
+          throw new Error('HTTP ' + resp.status);
+        }
+        let data;
+        try {
+          data = await resp.json();
+        } catch (e) {
+          const txt = await resp.text();
+          console.error('[stocks-dashboard] masters api bad json', resp.status, ct, (txt || '').slice(0, 200));
+          throw e;
+        }
+        const rows = (data && Array.isArray(data.items)) ? data.items : [];
+
+        if (!rows.length) {
+          if (mastersEmptyEl) mastersEmptyEl.style.display = '';
+          try { mastersEl.style.display = 'none'; } catch (_) {}
+          return;
+        }
+        if (mastersEmptyEl) mastersEmptyEl.style.display = 'none';
+        try { mastersEl.style.display = ''; } catch (_) {}
+
+        const fullNames = rows.map(r => String(r.name || '—'));
+        const labels = fullNames.map(s => (s.length > 14 ? (s.slice(0, 13) + '…') : s));
+        const values = rows.map(r => Number(r.total || 0));
+        const colors = rows.map(r => String(r.color || '#64748b'));
+
+        const mastersChart = new Chart(mastersEl, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [
+              { label: 'Расход', data: values, backgroundColor: colors }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  title: (items) => {
+                    const idx = (items && items[0] && items[0].dataIndex) || 0;
+                    return fullNames[idx] || '—';
+                  },
+                  label: (item) => {
+                    const v = (item && typeof item.raw === 'number') ? item.raw : Number(item.raw || 0);
+                    return String(v);
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                ticks: {
+                  callback: (_v, idx) => labels[idx] || '',
+                  color: (ctx) => colors[ctx.index] || '#64748b'
+                }
+              },
+              y: { beginAtZero: true }
+            }
+          }
+        });
+
+        requestAnimationFrame(() => {
+          try { mastersChart.resize(); mastersChart.update(); } catch (_) {}
+        });
+      } catch (e) {
+        if (mastersEmptyEl) {
+          mastersEmptyEl.textContent = 'Ошибка загрузки данных.';
+          mastersEmptyEl.style.display = '';
+        }
+        try { mastersEl.style.display = 'none'; } catch (_) {}
+        console.error('[stocks-dashboard] masters chart failed', e);
+      }
+    }
+
+    loadMastersChart();
   }
 
   if (document.readyState === 'loading') {

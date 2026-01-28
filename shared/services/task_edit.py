@@ -114,7 +114,12 @@ async def update_task_with_audit(
 
     if "priority" in patch and patch.get("priority") is not None:
         p = str(patch.get("priority") or "").strip()
-        t.priority = TaskPriority.URGENT if p == TaskPriority.URGENT.value else TaskPriority.NORMAL
+        if p == TaskPriority.URGENT.value:
+            t.priority = TaskPriority.URGENT
+        elif p == TaskPriority.FREE_TIME.value:
+            t.priority = TaskPriority.FREE_TIME
+        else:
+            t.priority = TaskPriority.NORMAL
 
     if "due_at" in patch:
         due_raw = patch.get("due_at")

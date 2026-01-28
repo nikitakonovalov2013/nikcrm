@@ -48,6 +48,8 @@ class TaskPriority(StrEnum):
     NORMAL = "normal"
     URGENT = "urgent"
 
+    FREE_TIME = "free_time"
+
 
 class TaskEventType(StrEnum):
     CREATED = "created"

@@ -223,6 +223,7 @@ async def advance_step_with_new_bot_message(
         reply_markup=reply_markup,
         parse_mode=parse_mode,
     )
+
     await state.update_data(active_bot_chat_id=int(chat_id), active_bot_message_id=int(sent.message_id))
     if sync_to_tasks_screen:
         await state.update_data(
@@ -264,6 +265,8 @@ def render_task_draft(state_data: dict, *, full: bool = False) -> str:
     pr = state_data.get("draft_priority")
     if pr == TaskPriority.URGENT.value:
         pr_s = "🔥 Срочная"
+    elif pr == TaskPriority.FREE_TIME.value:
+        pr_s = "В свободное время"
     elif pr == TaskPriority.NORMAL.value:
         pr_s = "Обычная"
     else:
@@ -2027,6 +2030,147 @@ async def st_comment_text(message: Message, state: FSMContext):
         reply_markup=kb,
         sync_to_tasks_screen=True,
     )
+
+
+@router.message(TasksState.comment_photos, F.photo)
+async def st_comment_photos_add_photo(message: Message, state: FSMContext):
+    try:
+        fid = message.photo[-1].file_id
+    except Exception:
+        fid = None
+
+    data = await state.get_data()
+    photos = list(data.get("photos") or [])
+    if fid:
+        photos.append(str(fid))
+    await state.update_data(photos=photos)
+
+    kb = tasks_skip_photos_kb(allow_done=True)
+    await send_new_and_delete_active(
+        message=message,
+        state=state,
+        text=f"📎 Фото добавлено ({len(photos)}). Отправьте ещё или нажмите <b>Готово</b>.",
+        reply_markup=kb,
+        sync_to_tasks_screen=True,
+    )
+
+
+async def _finalize_task_comment(*, tg_id: int, bot, chat_id: int, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = int(data.get("task_id") or 0)
+    comment_text = str(data.get("comment_text") or "").strip()
+    photos = list(data.get("photos") or [])
+
+    if not task_id:
+        await _preserve_tasks_ui_and_clear_state(state)
+        await bot.send_message(chat_id=int(chat_id), text="⚠️ Не удалось определить задачу.")
+        return
+
+    if not comment_text and not photos:
+        kb = tasks_skip_photos_kb(allow_done=True)
+        await bot.send_message(
+            chat_id=int(chat_id),
+            text="⚠️ Комментарий должен содержать текст или хотя бы одно фото.",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        return
+
+    _logger.info(
+        "tasks add_comment",
+        extra={
+            "task_id": int(task_id),
+            "tg_id": int(tg_id),
+            "has_text": bool(comment_text),
+            "photos_count": int(len(photos)),
+        },
+    )
+
+    async with get_async_session() as session:
+        repo = TaskRepository(session)
+        svc = TasksService(repo)
+        ok = await svc.add_comment(
+            tg_id=int(tg_id),
+            task_id=int(task_id),
+            text=(comment_text or None),
+            photo_file_ids=[str(x) for x in photos if str(x).strip()],
+        )
+
+    if not ok:
+        await _preserve_tasks_ui_and_clear_state(state)
+        await bot.send_message(chat_id=int(chat_id), text="⚠️ Не удалось добавить комментарий.")
+        return
+
+    async with get_async_session() as session2:
+        repo2 = TaskRepository(session2)
+        svc2 = TasksService(repo2)
+        _, task2, perms2 = await svc2.get_detail(tg_id=int(tg_id), task_id=int(task_id))
+        if task2 and perms2:
+            llc = dict(data.get("tasks_last_list_context") or {})
+            scope = str(llc.get("scope") or data.get("tasks_scope") or "mine")
+            status = str(llc.get("status") or data.get("tasks_status") or TaskStatus.NEW.value)
+            page = int(llc.get("page") or data.get("tasks_page") or 0)
+            html = svc2.render_task_detail_html(task2, perms=perms2) + "\n\n✅ Комментарий добавлен."
+            photo = getattr(task2, "photo_file_id", None) or None
+            kb = task_detail_kb(
+                task_id=int(task2.id),
+                can_take=bool(perms2.take_in_progress),
+                can_to_review=bool(perms2.finish_to_review),
+                can_accept_done=bool(perms2.accept_done),
+                can_send_back=bool(perms2.send_back),
+                back_cb=f"tasks:list:{scope}:{status}:{page}",
+            )
+            await _preserve_tasks_ui_and_clear_state(state)
+            await state.update_data(tasks_chat_id=int(chat_id))
+            await render_tasks_screen(
+                bot=bot,
+                chat_id=int(chat_id),
+                text=html,
+                reply_markup=kb,
+                state=state,
+                photo=photo,
+            )
+            return
+
+    await _preserve_tasks_ui_and_clear_state(state)
+    await render_tasks_screen(
+        bot=bot,
+        chat_id=int(chat_id),
+        text=f"✅ Комментарий добавлен: задача #{int(task_id)}.",
+        reply_markup=None,
+        state=state,
+        photo=None,
+    )
+
+
+@router.callback_query(TasksState.comment_photos, F.data == "tasks:comment_done")
+async def cb_tasks_comment_done(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    chat_id = cb.message.chat.id if cb.message else None
+    if not chat_id:
+        await _preserve_tasks_ui_and_clear_state(state)
+        return
+    await _finalize_task_comment(tg_id=cb.from_user.id, bot=cb.bot, chat_id=int(chat_id), state=state)
+
+
+@router.callback_query(TasksState.comment_photos, F.data == "tasks:comment_skip")
+async def cb_tasks_comment_skip(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    chat_id = cb.message.chat.id if cb.message else None
+    if not chat_id:
+        await _preserve_tasks_ui_and_clear_state(state)
+        return
+    await _finalize_task_comment(tg_id=cb.from_user.id, bot=cb.bot, chat_id=int(chat_id), state=state)
+
+
+@router.callback_query(TasksState.comment_photos, F.data == "tasks:comment_cancel")
+async def cb_tasks_comment_cancel(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    data = await state.get_data()
+    task_id = int(data.get("task_id") or 0)
+    await _preserve_tasks_ui_and_clear_state(state)
+    if task_id:
+        await _show_task_detail(cb, state, task_id=int(task_id))
 
 
 @router.callback_query(F.data.startswith("tasks:rework:"))

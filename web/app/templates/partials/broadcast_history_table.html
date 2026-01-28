@@ -1,0 +1,20 @@
+<table class="table crm-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Отправлено</th>
+      <th>Доставки</th>
+      <th>Рейтинг</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for it in items %}
+      <tr style="cursor:pointer;" data-bid="{{ it.id }}">
+        <td>#{{ it.id }}</td>
+        <td>{{ it.sent_at or '—' }}</td>
+        <td>{{ it.success }}/{{ it.total }} (ошибок {{ it.failed }})</td>
+        <td>{{ it.ratings_avg or '—' }} ({{ it.ratings_count }})</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>

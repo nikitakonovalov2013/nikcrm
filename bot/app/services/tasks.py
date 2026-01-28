@@ -37,7 +37,11 @@ def _status_human(st: str) -> str:
 
 
 def _priority_human(p: str) -> str:
-    return "🔥 Срочная" if p == TaskPriority.URGENT.value else "Обычная"
+    if p == TaskPriority.URGENT.value:
+        return "🔥 Срочная"
+    if p == TaskPriority.FREE_TIME.value:
+        return "В свободное время"
+    return "Обычная"
 
 
 def _user_name(u) -> str:
@@ -45,6 +49,24 @@ def _user_name(u) -> str:
         return "—"
     fio = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip()
     return fio or f"#{int(u.id)}"
+
+
+def _elapsed_hm(created_at) -> str:
+    if not created_at:
+        return "—"
+    try:
+        now = utc_now()
+        dt = created_at
+        if getattr(dt, "tzinfo", None) is None:
+            dt = dt.replace(tzinfo=now.tzinfo)
+        sec = int((now - dt).total_seconds())
+        if sec < 0:
+            sec = 0
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        return f"{int(h)} ч {int(m):02d} мин"
+    except Exception:
+        return "—"
 
 
 class TasksService:
@@ -328,12 +350,28 @@ class TasksService:
         created_by = getattr(task, "created_by_user", None)
         started_by = getattr(task, "started_by_user", None)
 
+        created_at = getattr(task, "created_at", None)
+        created_at_str = format_moscow(created_at, "%d.%m.%Y %H:%M") if created_at else ""
+        elapsed_str = _elapsed_hm(created_at)
+
         lines: list[str] = []
         lines.append(f"<b>{title}</b>")
         lines.append("")
         lines.append(f"<b>ID:</b> {int(task.id)}")
         lines.append(f"<b>Статус:</b> {_status_human(st)}")
         lines.append(f"<b>Приоритет:</b> {_priority_human(pr)}")
+
+        if created_at_str:
+            lines.append(f"🕒 <b>Создано:</b> {esc(created_at_str)}")
+        else:
+            lines.append("🕒 <b>Создано:</b> —")
+
+        lines.append(f"⏱ <b>Прошло:</b> {esc(elapsed_str)}")
+
+        if created_by:
+            lines.append(f"👤 <b>Поставил:</b> {esc(_user_name(created_by))}")
+        else:
+            lines.append("👤 <b>Поставил:</b> —")
         if due_str:
             lines.append(f"<b>Дедлайн (МСК):</b> {esc(due_str)}")
 

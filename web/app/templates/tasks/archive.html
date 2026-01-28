@@ -83,7 +83,12 @@
                 <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
               {% endif %}
             </span>
-            <span class="task-assignees-text">{{ t.assignees_str }}</span>
+            <span class="task-assignees-text">
+              {% for a in t.assignees %}
+                {% set nm = ((a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '')).strip() %}
+                <span{% if a.get('color') %} style="color: {{ a.get('color') }}"{% endif %}>{{ nm or ('#' ~ a.get('id')) }}</span>{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </span>
           {% else %}
             <span class="muted">Общая</span>
           {% endif %}
@@ -157,9 +162,53 @@
       .replaceAll('"','&quot;')
       .replaceAll("'",'&#039;');
   }
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+
+  function formatElapsed(createdAtTs, nowTs){
+    const ts = Number(createdAtTs);
+    if (!ts || !Number.isFinite(ts) || ts <= 0) return '—';
+    const now = (nowTs !== undefined && nowTs !== null) ? Number(nowTs) : Math.floor(Date.now() / 1000);
+    if (!now || !Number.isFinite(now) || now <= 0) return '—';
+    const diffSec = Math.max(0, now - ts);
+    const totalMin = Math.floor(diffSec / 60);
+    if (!Number.isFinite(totalMin) || totalMin < 0) return '—';
+
+    if (totalMin < 60) {
+      return String(totalMin) + ' мин';
+    }
+
+    if (totalMin < (24 * 60)) {
+      const h = Math.floor(totalMin / 60);
+      const m = totalMin % 60;
+      return String(h) + ' ч ' + String(m) + ' мин';
+    }
+
+    const d = Math.floor(totalMin / (24 * 60));
+    const rem = totalMin % (24 * 60);
+    const h = Math.floor(rem / 60);
+    const m = rem % 60;
+    const mm = m < 10 ? pad2(m) : String(m);
+    return String(d) + ' д ' + String(h) + ' ч ' + mm + ' мин';
+  }
+
+  function refreshElapsedNodes(){
+    try {
+      const nowTs = Math.floor(Date.now() / 1000);
+      document.querySelectorAll('[data-role="task-elapsed"]').forEach(el => {
+        const ts = el.getAttribute('data-created-at-ts') || '';
+        el.textContent = formatElapsed(ts, nowTs);
+      });
+    } catch (_){ }
+  }
   function renderAssignees(users){
     if (!users || users.length === 0) return '<span class="muted">Общая</span>';
-    return users.map(u => escapeHtml((u.first_name || '') + ' ' + (u.last_name || '')).trim() || ('#' + u.id)).join(', ');
+    return users.map(u => {
+      const name = escapeHtml((((u.first_name || '') + ' ' + (u.last_name || '')).trim()) || ('#' + u.id));
+      const c = (u && u.color) ? String(u.color) : '';
+      const style = c ? (' style="color:' + escapeHtml(c) + '"') : '';
+      return '<span' + style + '>' + name + '</span>';
+    }).join(', ');
   }
   function renderComments(items){
     if (!items || items.length === 0) {
@@ -210,6 +259,11 @@
         )
       : '';
 
+    const createdAtStr = escapeHtml(task.created_at_str || '') || '—';
+    const createdAtTs = (task && task.created_at_ts !== null && task.created_at_ts !== undefined) ? String(task.created_at_ts) : '';
+    const elapsed = formatElapsed(createdAtTs);
+    const createdByStr = escapeHtml(task.created_by_str || '') || '—';
+
     const html = (
       '<div class="modal-header">Задача #' + task.id + '</div>' +
       '<div class="modal-body">' +
@@ -217,13 +271,19 @@
           '<div class="task-detail-title">' + escapeHtml(task.title) + '</div>' +
           '<div class="task-detail-badges">' + priority + status + '</div>' +
         '</div>' +
+        '<div class="task-detail-grid" style="margin-top:10px">' +
+          '<div><b>Информация</b></div>' +
+          '<div>Создано: <span>' + createdAtStr + '</span></div>' +
+          '<div>Поставил: <span>' + createdByStr + '</span></div>' +
+          '<div>Прошло: <span data-role="task-elapsed" data-created-at-ts="' + escapeHtml(createdAtTs) + '">' + escapeHtml(elapsed) + '</span></div>' +
+        '</div>' +
         taskPhoto +
         (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
         '<div class="divider"></div>' +
         '<div class="task-detail-grid">' +
           due +
           '<div>Исполнители: <b>' + renderAssignees(task.assignees) + '</b></div>' +
-          '<div class="muted">Создал: ' + escapeHtml(task.created_by_str || '') + '</div>' +
+          '<div class="muted">Создал: ' + createdByStr + '</div>' +
         '</div>' +
         (actionBtns ? ('<div class="divider"></div><div class="task-detail-actions">' + actionBtns + '</div>') : '') +
         '<div class="divider"></div>' +
@@ -240,6 +300,9 @@
     );
     return html;
   }
+
+  refreshElapsedNodes();
+  setInterval(refreshElapsedNodes, 60 * 1000);
   async function apiJson(url, opts){
     const r = await fetch(url, opts || {});
     const data = await r.json().catch(() => ({}));

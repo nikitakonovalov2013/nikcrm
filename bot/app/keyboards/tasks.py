@@ -44,6 +44,7 @@ def tasks_edit_priority_kb(*, task_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Обычный", callback_data=f"tasks:edit_priority:{int(task_id)}:normal")],
             [InlineKeyboardButton(text="🔥 Срочно", callback_data=f"tasks:edit_priority:{int(task_id)}:urgent")],
+            [InlineKeyboardButton(text="В свободное время", callback_data=f"tasks:edit_priority:{int(task_id)}:free_time")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"tasks:edit:{int(task_id)}")],
             [InlineKeyboardButton(text="❌ Отменить", callback_data=f"tasks:edit_cancel:{int(task_id)}")],
         ]
@@ -252,6 +253,7 @@ def tasks_create_priority_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Обычная", callback_data="tasks:create_priority:normal"),
                 InlineKeyboardButton(text="🔥 Срочная", callback_data="tasks:create_priority:urgent"),
             ],
+            [InlineKeyboardButton(text="В свободное время", callback_data="tasks:create_priority:free_time")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="tasks:create_cancel")],
         ]
     )

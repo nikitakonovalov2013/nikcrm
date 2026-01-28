@@ -34,14 +34,19 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, include_schemas=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_schemas=True,
+        transaction_per_migration=True,
+    )
 
     with context.begin_transaction():
         context.run_migrations()
 
 
 async def run_migrations_online() -> None:
-    async with engine.begin() as connection:
+    async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)
 
 

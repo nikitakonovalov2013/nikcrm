@@ -82,6 +82,31 @@ def _format_task_short(task) -> str:
     due_at = getattr(task, "due_at", None)
     due_str = format_moscow(due_at, "%d.%m.%Y %H:%M") if due_at else ""
 
+    created_at = getattr(task, "created_at", None)
+    created_str = format_moscow(created_at, "%d.%m.%Y %H:%M") if created_at else ""
+    created_by = getattr(task, "created_by_user", None)
+    created_by_str = "—"
+    if created_by is not None:
+        fio = f"{(getattr(created_by, 'first_name', '') or '').strip()} {(getattr(created_by, 'last_name', '') or '').strip()}".strip()
+        created_by_str = fio or f"#{int(getattr(created_by, 'id', 0) or 0)}"
+
+    def _elapsed_hm_local(dt) -> str:
+        if not dt:
+            return "—"
+        try:
+            now = utc_now()
+            _dt = dt
+            if getattr(_dt, "tzinfo", None) is None:
+                _dt = _dt.replace(tzinfo=now.tzinfo)
+            sec = int((now - _dt).total_seconds())
+            if sec < 0:
+                sec = 0
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            return f"{int(h)} ч {int(m):02d} мин"
+        except Exception:
+            return "—"
+
     def _status_human_local(v: str) -> str:
         return {
             TaskStatus.NEW.value: "Новая",
@@ -92,12 +117,19 @@ def _format_task_short(task) -> str:
         }.get(v, v)
 
     def _priority_human_local(v: str) -> str:
-        return "🔥 Срочная" if v == TaskPriority.URGENT.value else "Обычная"
+        if v == TaskPriority.URGENT.value:
+            return "🔥 Срочная"
+        if v == TaskPriority.FREE_TIME.value:
+            return "В свободное время"
+        return "Обычная"
 
     lines: list[str] = []
     lines.append(f"<b>{esc(title)}</b>")
     lines.append(f"<b>Статус:</b> {_status_human_local(str(st_val))}")
     lines.append(f"<b>Приоритет:</b> {_priority_human_local(str(pr_val))}")
+    lines.append(f"🕒 <b>Создано:</b> {esc(created_str) if created_str else '—'}")
+    lines.append(f"👤 <b>Поставил:</b> {esc(created_by_str)}")
+    lines.append(f"⏱ <b>Прошло:</b> {esc(_elapsed_hm_local(created_at))}")
     if due_str:
         lines.append(f"<b>Дедлайн (МСК):</b> {esc(due_str)}")
     return "\n".join(lines)
@@ -158,6 +190,31 @@ def _format_status_changed_compact(*, task, payload: dict, board_url: str) -> st
     to = _status_human_local(str(payload.get("to") or ""))
     due_at = getattr(task, "due_at", None)
     due_str = format_moscow(due_at, "%d.%m.%Y %H:%M") if due_at else ""
+
+    created_at = getattr(task, "created_at", None)
+    created_str = format_moscow(created_at, "%d.%m.%Y %H:%M") if created_at else ""
+    created_by = getattr(task, "created_by_user", None)
+    created_by_str = "—"
+    if created_by is not None:
+        fio = f"{(getattr(created_by, 'first_name', '') or '').strip()} {(getattr(created_by, 'last_name', '') or '').strip()}".strip()
+        created_by_str = fio or f"#{int(getattr(created_by, 'id', 0) or 0)}"
+
+    def _elapsed_hm_local(dt) -> str:
+        if not dt:
+            return "—"
+        try:
+            now = utc_now()
+            _dt = dt
+            if getattr(_dt, "tzinfo", None) is None:
+                _dt = _dt.replace(tzinfo=now.tzinfo)
+            sec = int((now - _dt).total_seconds())
+            if sec < 0:
+                sec = 0
+            h = sec // 3600
+            m = (sec % 3600) // 60
+            return f"{int(h)} ч {int(m):02d} мин"
+        except Exception:
+            return "—"
     assignees = list(getattr(task, "assignees", None) or [])
     assignees_str = ""
     if assignees:
@@ -168,6 +225,9 @@ def _format_status_changed_compact(*, task, payload: dict, board_url: str) -> st
     lines.append(f"🔔 <b>{title}</b>")
     lines.append("")
     lines.append(f"<b>Статус:</b> {esc(fr)} → {esc(to)}")
+    lines.append(f"🕒 <b>Создано:</b> {esc(created_str) if created_str else '—'}")
+    lines.append(f"👤 <b>Поставил:</b> {esc(created_by_str)}")
+    lines.append(f"⏱ <b>Прошло:</b> {esc(_elapsed_hm_local(created_at))}")
     if due_str:
         lines.append(f"<b>Дедлайн (МСК):</b> {esc(due_str)}")
     if assignees_str:

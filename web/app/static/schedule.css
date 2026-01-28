@@ -27,7 +27,7 @@
 .schedule-staff-name-row{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0}
 .schedule-staff-name-row.line{flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
 .schedule-staff-name-left{display:flex;align-items:center;gap:8px;min-width:0}
-.schedule-staff-name-text{font-size:12px;font-weight:700;color:#334155;line-height:1.2;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.schedule-staff-name-text{font-size:12px;font-weight:700;color:#334155;line-height:1.2;white-space:normal;overflow-wrap:normal;word-break:normal}
 .schedule-staff-hours{font-size:12px;font-weight:800;color:#64748b;line-height:1.1;white-space:nowrap}
 .schedule-staff-status{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .schedule-staff-more-row{font-size:11px;font-weight:900;color:#64748b}
@@ -64,8 +64,49 @@
   .schedule-modal-actions{grid-template-columns:1fr 1fr}
 }
 
+@media (max-width: 768px){
+  .schedule-cal-grid{grid-template-columns:repeat(7,minmax(0,1fr))}
+
+  .schedule-day{overflow:hidden;min-width:0}
+  .schedule-day-top{min-width:0}
+  .schedule-day-num{min-width:0}
+  .schedule-day-label{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .schedule-day-staff-names{min-width:0;overflow:hidden}
+  .schedule-staff-name-row{min-width:0}
+  .schedule-staff-name-left{min-width:0}
+  .schedule-staff-name-text{min-width:0;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .schedule-staff-status{min-width:0;flex-wrap:nowrap;overflow:hidden}
+  .schedule-shift-badge{max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;padding:2px 6px}
+}
+
+@media (max-width: 420px){
+  .schedule-day-staff-names .schedule-staff-name-row:nth-of-type(n+2){display:none}
+}
+
 @media (max-width: 600px){
+  .schedule-toolbar{flex-direction:column;align-items:stretch}
+  .schedule-toolbar-left{min-width:0}
+  .schedule-toolbar-right{width:100%;justify-content:stretch}
+  .schedule-toolbar-right .input{width:100%}
+  .schedule-quick{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:6px}
+  .schedule-quick-btn{white-space:nowrap;flex:0 0 auto}
+  .schedule-quick-title{white-space:nowrap}
+
+  .schedule-cal{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .schedule-cal-weekdays,.schedule-cal-grid{min-width:720px}
+
   .schedule-cal-weekdays{gap:6px}
   .schedule-cal-grid{gap:6px}
   .schedule-day{min-height:72px;padding:10px}
+
+  .schedule-modal-head{flex-direction:column;align-items:flex-start}
+  .schedule-modal-footer{justify-content:stretch}
+  .schedule-modal-footer .btn-outline{width:100%;justify-content:center}
+  .schedule-staff-list{max-height:240px}
+  .schedule-staff-item{flex-direction:column;align-items:stretch}
+  .schedule-staff-item .input[type=time]{width:100%!important}
+  #day-start,#day-end,#em-start,#em-end{width:100%!important}
+  .schedule-staff-item button.btn{width:100%;justify-content:center}
 }

@@ -1,4 +1,34 @@
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;color:#0f172a;background:#f8fafc}.container{width:100%;margin:0;padding:0}.py{padding-top:20px;padding-bottom:20px}.title{font-size:24px;margin:0 0 12px;font-weight:700;color:#0f172a}.card{background:#fff;border-radius:16px;box-shadow:0 8px 30px rgba(2,6,23,.08);padding:20px}
+
+@media (max-width: 480px){
+  .modal{align-items:flex-end;justify-content:center}
+  .modal-content{width:100vw;max-width:100vw;height:92vh;max-height:92vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;overflow:hidden}
+  .modal-header{padding:16px 16px}
+  .modal-body{padding:14px 16px;max-height:none;overflow:auto}
+  .modal-actions{padding:12px 16px;gap:10px}
+  .modal-actions .btn,.modal-actions .btn-outline,.modal-actions .btn-warn,.modal-actions .btn-danger{width:100%;justify-content:center}
+
+  .crm-ui-dialog{align-items:flex-end;justify-content:center}
+  .crm-ui-dialog-panel{width:100vw;max-width:100vw;max-height:92vh;border-radius:16px 16px 0 0;padding:16px;overflow:auto}
+  .crm-ui-dialog-footer{justify-content:stretch}
+  .crm-ui-dialog-footer .btn,.crm-ui-dialog-footer .btn-outline,.crm-ui-dialog-footer .btn-danger{width:100%;min-width:0}
+}
+
+.crm-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.crm-tabs .crm-tab{flex:1 1 120px;justify-content:center}
+.crm-tabs .crm-tab.active{background:#2563eb;color:#fff}
+
+@media (max-width: 768px){
+  .broadcast-layout{grid-template-columns:1fr!important}
+  .broadcast-send-row{flex-direction:column;align-items:stretch}
+  .broadcast-send-row .btn,.broadcast-send-row .btn-outline{width:100%;justify-content:center}
+  #attach-photo,#attach-video,#attach-clear{width:100%;justify-content:center}
+}
+
+@media (max-width: 480px){
+  .broadcast-preview-actions{flex-direction:column;align-items:stretch}
+  .broadcast-preview-actions .btn,.broadcast-preview-actions .btn-outline{width:100%;justify-content:center}
+}
 [x-cloak]{display:none!important}
 .actions{display:flex;justify-content:flex-end;margin-bottom:12px}
 .table-wrap{overflow:auto;border-radius:12px;border:1px solid #e2e8f0}
@@ -6,7 +36,7 @@
 .table thead th{position:sticky;top:0;background:#F6FAFF;text-align:left;padding:12px;color:#334155;font-weight:600;border-bottom:1px solid #e2e8f0}
 .table tbody td{padding:12px;border-bottom:1px solid #f1f5f9;color:#0f172a}
 .row-hover:hover{background:#f8fafc}
-.btn,.btn-outline,.btn-warn,.btn-danger{border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer;transition:.2s;display:inline-flex;align-items:center;gap:8px}
+.btn,.btn-outline,.btn-warn,.btn-danger{border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer;transition:.2s;display:inline-flex;align-items:center;gap:8px;min-height:44px}
 .btn{background:#2563eb;color:#fff}.btn:hover{background:#1d4ed8}
 .btn-outline{background:#eef2ff;color:#1e3a8a}.btn-outline:hover{background:#e0e7ff}
 .btn-warn{background:#f59e0b;color:#1f2937}.btn-warn:hover{background:#d97706}
@@ -61,36 +91,63 @@
 .field-error{color:#b91c1c;font-size:13px;line-height:1.25;margin-top:-4px}
 .checkbox-field{grid-column:1 / -1;display:flex;align-items:center;min-height:44px}
 .checkbox-row{display:inline-flex;align-items:center;gap:10px;font-size:14px;color:#0f172a;user-select:none;cursor:pointer}
+.checkbox-row{min-height:44px}
 .checkbox-row input[type=checkbox]{width:16px;height:16px;accent-color:#2563eb}
 .divider{height:1px;background:#e5e7eb;margin:12px 0}
 .muted{color:#64748b;font-size:13px}
+.task-card-meta{margin-top:6px;font-size:12px;line-height:1.2;color:#64748b;display:flex;flex-direction:column;gap:4px;min-width:0}
+.task-card-meta-row{display:flex;gap:6px;min-width:0;flex-wrap:wrap}
+.task-card-meta-label{color:#94a3b8;white-space:nowrap}
+.task-card-meta-value{color:#64748b;min-width:0}
+.task-created-by{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
+.task-created-by-dot{width:8px;height:8px;border-radius:999px;flex:0 0 auto;background:#9CA3AF}
+.task-created-by-name{display:inline-block;min-width:0;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width: 480px){.task-created-by-name{max-width:100%}}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .chip{display:inline-flex;align-items:center;gap:6px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:999px;padding:6px 10px}
 .flex-1{flex:1}
 /* Lightweight grid helpers used in templates */
 .col-span-2{grid-column:1 / -1}
 
+.no-letter-wrap{word-break:normal;overflow-wrap:normal;hyphens:none}
+.break-word{word-break:normal;overflow-wrap:break-word;hyphens:none}
+.break-anywhere{word-break:break-word;overflow-wrap:anywhere;hyphens:none}
+.truncate{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stack{display:flex;flex-direction:column}
+.stack-gap-6{gap:6px}
+.stack-gap-8{gap:8px}
+.stack-gap-10{gap:10px}
+.card-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0}
+.card-row-label{color:#64748b;font-size:12px;font-weight:800;white-space:nowrap}
+.card-row-value{min-width:0}
+
 /* Global: avoid horizontal scroll in admin */
 html, body{max-width:100%;overflow-x:hidden}
 body.no-scroll{overflow:hidden}
 img, canvas, svg{max-width:100%}
 
+*{hyphens:none}
+
 /* Ensure table content wraps and horizontal scroll is avoided */
-.table-wrap{width:100%;overflow-x:hidden;overflow-y:auto}
-.table{width:100%;table-layout:fixed}
-/* Allow wrapping for both headers and cells to prevent broken letters */
-.table thead th,.table tbody td{white-space:normal;overflow-wrap:break-word;word-break:break-word;text-align:center;vertical-align:middle}
-/* Column widths for 9-column layout: TG ID, Имя, Фамилия, Дата рождения, Ставка, График, Должность, Статус, Действия */
-.table thead th:nth-child(1),.table tbody td:nth-child(1){width:12%} /* TG ID */
-.table thead th:nth-child(2),.table tbody td:nth-child(2){width:8%}
-.table thead th:nth-child(3),.table tbody td:nth-child(3){width:13%}
-.table thead th:nth-child(4),.table tbody td:nth-child(4){width:13%}
-.table thead th:nth-child(5),.table tbody td:nth-child(5){width:12%}
-.table thead th:nth-child(6),.table tbody td:nth-child(6){width:11%}
-.table thead th:nth-child(7),.table tbody td:nth-child(7){width:10%}
-.table thead th:nth-child(8),.table tbody td:nth-child(8){width:11%}
-.table thead th:nth-child(9),.table tbody td:nth-child(9){width:12%}
-.table thead th:nth-child(10),.table tbody td:nth-child(10){width:10%}
+.table-wrap{width:100%;overflow-x:auto;overflow-y:auto}
+.table{width:100%;table-layout:auto}
+.table thead th,.table tbody td{white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:none;text-align:center;vertical-align:middle}
+
+@media (min-width: 1024px){
+  .table-wrap{overflow-x:hidden}
+  .table{table-layout:fixed}
+  /* Column widths for 9-column layout: TG ID, Имя, Фамилия, Дата рождения, Ставка, График, Должность, Статус, Действия */
+  .table thead th:nth-child(1),.table tbody td:nth-child(1){width:12%} /* TG ID */
+  .table thead th:nth-child(2),.table tbody td:nth-child(2){width:8%}
+  .table thead th:nth-child(3),.table tbody td:nth-child(3){width:13%}
+  .table thead th:nth-child(4),.table tbody td:nth-child(4){width:13%}
+  .table thead th:nth-child(5),.table tbody td:nth-child(5){width:12%}
+  .table thead th:nth-child(6),.table tbody td:nth-child(6){width:11%}
+  .table thead th:nth-child(7),.table tbody td:nth-child(7){width:10%}
+  .table thead th:nth-child(8),.table tbody td:nth-child(8){width:11%}
+  .table thead th:nth-child(9),.table tbody td:nth-child(9){width:10%}
+  .table thead th:nth-child(10),.table tbody td:nth-child(10){width:10%}
+}
 
 /* Actions cell: horizontal icon buttons, fully centered (data rows only) */
 .table tbody td.actions-cell{display:flex;gap:8px;align-items:center;justify-content:center;width:100%}
@@ -183,11 +240,11 @@ img, canvas, svg{max-width:100%}
   table.crm-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;margin:10px 0;padding:12px}
 
   /* Fields */
-  table.crm-table tbody td.crm-field{min-width:0;padding:0;border:0;text-align:left;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
-  table.crm-table tbody td.crm-field::before{content:attr(data-label);display:block;font-weight:600;color:#334155;opacity:.75;margin-bottom:4px;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
+  table.crm-table tbody td.crm-field{min-width:0;padding:0;border:0;text-align:left;white-space:normal;word-break:normal;overflow-wrap:normal;hyphens:none}
+  table.crm-table tbody td.crm-field::before{content:attr(data-label);display:block;font-weight:600;color:#334155;opacity:.75;margin-bottom:4px;white-space:normal;word-break:normal;overflow-wrap:normal;hyphens:none}
 
   /* Value wrapper for predictable wrapping/ellipsis */
-  table.crm-table tbody td.crm-field .crm-value{display:block;min-width:0;max-width:100%;white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none;overflow:visible;text-overflow:clip}
+  table.crm-table tbody td.crm-field .crm-value{display:block;min-width:0;max-width:100%;white-space:normal;word-break:normal;overflow-wrap:normal;hyphens:none;overflow:visible;text-overflow:clip}
 
   /* No-wrap helper (no ellipsis by default) */
   table.crm-table tbody td.crm-field .crm-value.crm-nowrap{white-space:nowrap}
@@ -208,6 +265,12 @@ img, canvas, svg{max-width:100%}
   table.crm-table tbody td.crm-actions{grid-column:1 / -1;display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;margin-top:10px;border-top:1px solid #f1f5f9}
   table.crm-table tbody td.crm-actions::before{content:"";display:none}
   table.crm-table tbody td.crm-actions .icon-btn, table.crm-table tbody td.crm-actions .btn, table.crm-table tbody td.crm-actions .btn-outline, table.crm-table tbody td.crm-actions .btn-warn, table.crm-table tbody td.crm-actions .btn-danger{flex:1 1 120px;justify-content:center;min-height:44px}
+
+  .users-filters-row{flex-direction:column;align-items:stretch}
+  .users-filters-row label{min-width:0!important;width:100%}
+  .users-filters-row input,.users-filters-row select{width:100%}
+  .users-filters-actions{justify-content:stretch;width:100%}
+  .users-filters-actions .btn-outline{width:100%;justify-content:center}
 }
 
 @media (min-width: 641px) and (max-width: 768px){
@@ -248,6 +311,13 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
   .modal-header,.modal-body{padding:16px}
   .modal-actions{padding:12px 16px}
   .form-grid{grid-template-columns:1fr}
+
+  .user-modal-actions{flex-direction:column;align-items:stretch;justify-content:stretch}
+  .user-modal-actions .btn,.user-modal-actions .btn-outline,.user-modal-actions .btn-warn,.user-modal-actions .btn-danger{width:100%;justify-content:center}
+  .user-modal-message{flex-direction:column;align-items:stretch}
+  .user-modal-message .btn-outline{width:100%;justify-content:center}
+  .user-modal-confirm-actions{flex-direction:column;align-items:stretch}
+  .user-modal-confirm-actions .btn,.user-modal-confirm-actions .btn-outline,.user-modal-confirm-actions .btn-warn,.user-modal-confirm-actions .btn-danger{width:100%;justify-content:center}
 }
 
 /* Stocks dashboard */
@@ -259,6 +329,7 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 
 .dashboard-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px}
 .dashboard-grid.bottom{grid-template-columns:1fr 2fr}
+.panel-stack{display:flex;flex-direction:column;gap:14px}
 .panel{border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;background:#fff}
 .panel-header{padding:14px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .panel-title{font-weight:700;color:#0f172a}
@@ -280,6 +351,8 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .history-ts{font-size:12px;color:#64748b}
 .history-main{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .history-material{font-weight:600;color:#0f172a}
+
+.user-dot{display:inline-block;width:10px;height:10px;border-radius:999px;margin-right:6px;vertical-align:middle;box-shadow:0 0 0 1px rgba(2,6,23,.08)}
 .history-amount{font-weight:700}
 
 /* Tasks (Kanban) */
@@ -318,6 +391,8 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .task-card{border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff;box-shadow:0 6px 18px rgba(2,6,23,.05);cursor:pointer;transition:transform .06s ease, box-shadow .2s ease}
 .task-card:hover{box-shadow:0 10px 26px rgba(2,6,23,.08)}
 .task-card.urgent{border-color:#fecaca}
+.task-card.free-time{background:#f8fafc;border-color:#e5e7eb;box-shadow:none}
+.task-card.free-time:hover{box-shadow:0 6px 18px rgba(2,6,23,.05)}
 .task-card.overdue{background:#fff7ed;border-color:#fdba74}
 .task-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .task-title{font-weight:700;color:#0f172a;line-height:1.25}
@@ -351,6 +426,7 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 
 .task-pill{display:inline-flex;align-items:center;border:1px solid #e5e7eb;background:#f8fafc;color:#0f172a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap}
 .task-pill.urgent{border-color:#fecaca;background:#fef2f2;color:#991b1b}
+.task-pill.free-time{border-color:#e5e7eb;background:#f1f5f9;color:#475569}
 
 .task-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
 .task-detail-title{font-weight:800;font-size:18px;color:#0f172a}

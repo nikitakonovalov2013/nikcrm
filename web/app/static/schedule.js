@@ -29,6 +29,17 @@
       .replaceAll("'",'&#039;');
   }
 
+  function safeTextColor(raw){
+    try {
+      const s = String(raw || '').trim();
+      if (!s) return '';
+      if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
+      return '';
+    } catch (_){
+      return '';
+    }
+  }
+
   function pad2(n){ return String(n).padStart(2,'0'); }
   function iso(d){ return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate()); }
 
@@ -145,29 +156,43 @@
     return st;
   }
 
+  function maxDayPreviewRows(){
+    try {
+      if (window.matchMedia && window.matchMedia('(max-width: 420px)').matches) return 1;
+    } catch (_) {}
+    return 2;
+  }
+
   function renderStaffNames(info){
     const preview = (info && Array.isArray(info.staff_preview)) ? info.staff_preview : [];
     if (!preview.length) return '';
     const total = (info && (info.staff_total !== null && info.staff_total !== undefined)) ? Number(info.staff_total) : preview.length;
+    const maxRows = maxDayPreviewRows();
 
-    // All-mode preview: ONLY names (2 rows max) + +N
+    // All-mode preview: name + hours (rows limited) + +N
     if (info && info.all_mode) {
       const rows = preview
         .filter(s => s && String((s && s.name) || '').trim())
-        .slice(0, 2)
+        .slice(0, maxRows)
         .map(s => {
           const c = String((s && s.color) || '#94a3b8');
           const n = String((s && s.name) || '').trim();
-          return '<div class="schedule-staff-name-row">'
-            + '<div style="display:flex;gap:6px;align-items:flex-start;min-width:0">'
+          const tc = safeTextColor(c);
+          const st = normalizeTimeValue(s && s.start_time ? s.start_time : '', '10:00');
+          const et = normalizeTimeValue(s && s.end_time ? s.end_time : '', '18:00');
+          const h = calcHoursInt(st, et);
+          const hs = (h !== null) ? formatHours(h) : '';
+          return '<div class="schedule-staff-name-row line">'
+            + '<div class="schedule-staff-name-left">'
               + '<span class="schedule-staff-dot" style="background:' + escapeHtml(c) + '"></span>'
-              + '<span class="schedule-staff-name-text">' + escapeHtml(n) + '</span>'
+              + '<span class="schedule-staff-name-text"' + (tc ? (' style="color:' + escapeHtml(tc) + '"') : '') + '>' + escapeHtml(n) + '</span>'
             + '</div>'
+            + (hs ? ('<div class="schedule-staff-hours">' + escapeHtml(hs) + '</div>') : '')
           + '</div>';
         })
         .join('');
       if (!rows) return '';
-      const extra = (total > 2) ? ('<div class="schedule-staff-more-row">+' + String(total - 2) + '</div>') : '';
+      const extra = (total > maxRows) ? ('<div class="schedule-staff-more-row">+' + String(total - maxRows) + '</div>') : '';
       return '<div class="schedule-day-staff-names">' + rows + extra + '</div>';
     }
 
@@ -175,7 +200,11 @@
     const selectedName = getSelectedUserName();
     if (selectedName) {
       const c = getSelectedUserColor();
+      const tc = safeTextColor(c);
       const kind = (info && info.kind) ? String(info.kind) : '';
+      const hasPlan = (kind === 'work' || kind === 'off');
+      const hasFact = !!(info && String(info.shift_status || '').trim());
+      if (!hasPlan && !hasFact) return '';
       const st = normalizeTimeValue(info && info.start_time ? info.start_time : '', '10:00');
       const et = normalizeTimeValue(info && info.end_time ? info.end_time : '', '18:00');
       const h = (kind === 'work') ? calcHoursInt(st, et) : null;
@@ -185,7 +214,7 @@
         + '<div class="schedule-staff-name-row line">'
           + '<div class="schedule-staff-name-left">'
             + '<span class="schedule-staff-dot" style="background:' + escapeHtml(c) + '"></span>'
-            + '<span class="schedule-staff-name-text">' + escapeHtml(selectedName) + '</span>'
+            + '<span class="schedule-staff-name-text"' + (tc ? (' style="color:' + escapeHtml(tc) + '"') : '') + '>' + escapeHtml(selectedName) + '</span>'
           + '</div>'
         + '</div>'
         + (interval ? ('<div class="schedule-day-label muted">' + escapeHtml(interval) + '</div>') : '')
@@ -193,10 +222,11 @@
         + '</div>';
     }
 
-    const names = preview.slice(0, 2).map(s => {
+    const names = preview.slice(0, maxRows).map(s => {
       const c = String((s && s.color) || '#94a3b8');
       const n = String((s && s.name) || '').trim();
       if (!n) return '';
+      const tc = safeTextColor(c);
       const badge = shiftStatusBadgeHtml(s);
       const st = normalizeTimeValue(s && s.start_time ? s.start_time : '', '10:00');
       const et = normalizeTimeValue(s && s.end_time ? s.end_time : '', '18:00');
@@ -206,7 +236,7 @@
       return '<div class="schedule-staff-name-row">'
         + '<div style="display:flex;gap:6px;align-items:flex-start;min-width:0">'
           + '<span class="schedule-staff-dot" style="background:' + escapeHtml(c) + '"></span>'
-          + '<span class="schedule-staff-name-text">' + escapeHtml(n) + '</span>'
+          + '<span class="schedule-staff-name-text"' + (tc ? (' style="color:' + escapeHtml(tc) + '"') : '') + '>' + escapeHtml(n) + '</span>'
           + em
         + '</div>'
         + (interval ? ('<div class="schedule-staff-hours">' + escapeHtml(interval) + '</div>') : '')
@@ -214,7 +244,7 @@
         + '</div>';
     }).filter(Boolean).join('');
     if (!names) return '';
-    const more = (total > preview.length) ? ('<div class="schedule-staff-more-row">+' + String(total - preview.length) + '</div>') : '';
+    const more = (total > maxRows) ? ('<div class="schedule-staff-more-row">+' + String(total - maxRows) + '</div>') : '';
     return '<div class="schedule-day-staff-names">' + names + more + '</div>';
   }
 

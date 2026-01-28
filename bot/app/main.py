@@ -12,6 +12,7 @@ from bot.app.handlers.purchases import router as purchases_router
 from bot.app.handlers.stocks import router as stocks_router
 from bot.app.handlers.reports_reminders import router as reports_reminders_router
 from bot.app.handlers.tasks import router as tasks_router
+from bot.app.handlers.broadcasts import router as broadcasts_router
 from bot.app.handlers.schedule import router as schedule_router
 from bot.app.handlers.shifts import router as shifts_router
 from bot.app.handlers.shift_swap import router as shift_swap_router
@@ -38,6 +39,7 @@ async def main() -> None:
     dp.include_router(stocks_router)
     dp.include_router(reports_reminders_router)
     dp.include_router(tasks_router)
+    dp.include_router(broadcasts_router)
     dp.include_router(schedule_router)
     dp.include_router(shifts_router)
     dp.include_router(shift_swap_router)

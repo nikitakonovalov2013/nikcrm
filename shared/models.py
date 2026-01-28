@@ -289,6 +289,98 @@ class AdminAction(Base):
     user: Mapped[User] = relationship(back_populates="actions")
 
 
+class Broadcast(Base):
+    __tablename__ = "broadcasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    sent_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    target_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="all")
+    filter_positions: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    filter_user_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+
+    cta_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cta_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+
+    total_recipients: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivered_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    no_tg_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    media_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    media_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tg_file_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    sent_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[sent_by_user_id])
+    deliveries: Mapped[list["BroadcastDelivery"]] = relationship(
+        back_populates="broadcast",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    ratings: Mapped[list["BroadcastRating"]] = relationship(
+        back_populates="broadcast",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_broadcasts_created_at", "created_at"),
+        Index("ix_broadcasts_sent_at", "sent_at"),
+        Index("ix_broadcasts_sent_by_user_id", "sent_by_user_id"),
+    )
+
+
+class BroadcastDelivery(Base):
+    __tablename__ = "broadcast_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcast_id: Mapped[int] = mapped_column(ForeignKey("broadcasts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    tg_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tg_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_status: Mapped[str] = mapped_column(String(32), nullable=False, default="no_tg")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    broadcast: Mapped["Broadcast"] = relationship(back_populates="deliveries")
+    user: Mapped[Optional["User"]] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "user_id", name="uq_broadcast_deliveries_broadcast_user"),
+        Index("ix_broadcast_deliveries_status", "delivery_status"),
+        Index("ix_broadcast_deliveries_broadcast_status", "broadcast_id", "delivery_status"),
+    )
+
+
+class BroadcastRating(Base):
+    __tablename__ = "broadcast_ratings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcast_id: Mapped[int] = mapped_column(ForeignKey("broadcasts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    rated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    broadcast: Mapped["Broadcast"] = relationship(back_populates="ratings")
+    user: Mapped["User"] = relationship(lazy="selectin")
+
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "user_id", name="uq_broadcast_ratings_broadcast_user"),
+        Index("ix_broadcast_ratings_broadcast_id", "broadcast_id"),
+        Index("ix_broadcast_ratings_user_id", "user_id"),
+    )
+
+
 class MaterialType(Base):
     __tablename__ = "material_types"
 

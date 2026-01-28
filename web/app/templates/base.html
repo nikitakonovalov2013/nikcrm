@@ -4,6 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Админ панель{% endblock %}</title>
+  <link rel="apple-touch-icon" sizes="57x57" href="/crm/favicon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="/crm/favicon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="/crm/favicon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/crm/favicon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="/crm/favicon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/crm/favicon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="/crm/favicon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/crm/favicon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/crm/favicon-180x180.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/crm/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/crm/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="/crm/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/crm/favicon-192x192.png">
+  <link rel="shortcut icon" type="image/x-icon" href="/crm/favicon.ico">
+  <link rel="icon" type="image/x-icon" href="/crm/favicon.ico">
+  <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="msapplication-TileImage" content="/crm/favicon-144x144.png">
+  <meta name="msapplication-config" content="/crm/browserconfig.xml">
+  <link rel="manifest" href="/crm/manifest.json">
+  <meta name="theme-color" content="#ffffff">
   <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
@@ -19,6 +39,7 @@
         <nav class="menu">
           {% set path = request.url.path %}
           <a class="menu-link {{ 'active' if path == '/crm/' else '' }}" href="{{ request.url_for('index') }}">Сотрудники</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/broadcast') else '' }}" href="{{ request.url_for('broadcast_page') }}">Рассылка</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/tasks') else '' }}" href="{{ request.url_for('tasks_board') }}">Задачи</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/schedule') else '' }}" href="{{ request.url_for('schedule_page') }}">График работы</a>
           <div class="menu-section">Остатки</div>

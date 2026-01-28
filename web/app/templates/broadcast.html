@@ -1,0 +1,871 @@
+{% extends "base.html" %}
+{% block title %}Рассылка{% endblock %}
+{% block content %}
+<h2 class="subtitle">Рассылка</h2>
+
+<div class="crm-tabs" id="broadcast-tabs" style="display:none; margin:0 0 12px 0;">
+  <button class="btn-outline crm-tab" type="button" data-tab="new">Новая</button>
+  <button class="btn-outline crm-tab" type="button" data-tab="history">История</button>
+  <button class="btn-outline crm-tab" type="button" data-tab="detail" disabled>Детализация</button>
+</div>
+
+<div class="grid broadcast-layout" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; align-items:start;">
+  <div class="crm-tab-panel" data-panel="new">
+    <h3 style="margin:0 0 12px 0;">Новая рассылка</h3>
+    <form id="broadcast-form" class="form-grid">
+      <label class="col-span-2">
+        Текст сообщения
+        <textarea name="text" rows="6" placeholder="Введите текст..." required></textarea>
+      </label>
+
+      <div class="col-span-2" style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+          <div style="font-weight:600;">Получатели</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn-outline" type="button" id="recipients-select-all">Выбрать всех</button>
+            <button class="btn-outline" type="button" id="recipients-clear">Очистить</button>
+          </div>
+        </div>
+        <div id="recipients-accordion" style="margin-top:10px; display:flex; flex-direction:column; gap:10px;"></div>
+      </div>
+
+      <input type="hidden" name="user_ids" id="user-ids-csv" />
+      <input type="hidden" name="media_type" id="media-type" />
+      <input type="hidden" name="media_key" id="media-key" />
+      <input type="hidden" id="media-url" />
+      <input type="hidden" id="media-filename" />
+
+      <div class="col-span-2" style="border:1px solid #e5e7eb; border-radius:10px; padding:10px;">
+        <div style="font-weight:600; margin-bottom:8px;">Вложения</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <button class="btn-outline" type="button" id="attach-photo">Прикрепить фото</button>
+          <button class="btn-outline" type="button" id="attach-video">Прикрепить видео</button>
+          <button class="btn-outline" type="button" id="attach-clear" style="display:none;">Удалить</button>
+          <span id="attach-status" class="muted"></span>
+        </div>
+        <input id="attach-photo-input" type="file" accept="image/*" style="display:none;" />
+        <input id="attach-video-input" type="file" accept="video/*" style="display:none;" />
+      </div>
+
+      <div class="form-row col-span-2 broadcast-send-row" style="display:flex; gap:10px; align-items:center;">
+        <button id="broadcast-send-all" class="btn" type="button">Отправить всем</button>
+        <button id="broadcast-send-approved" class="btn-outline" type="button">Отправить только одобренным</button>
+        <span id="broadcast-send-status" class="muted"></span>
+      </div>
+    </form>
+  </div>
+
+  <div class="crm-tab-panel" data-panel="history">
+    <h3 style="margin:0 0 12px 0;">История</h3>
+    <div id="broadcast-history" class="table-wrap" style="max-height:420px; overflow:auto;">
+      <div class="muted">Загрузка...</div>
+    </div>
+  </div>
+
+  <div class="crm-tab-panel" data-panel="detail">
+    <div style="margin-top:14px;">
+      <h3 style="margin:0 0 12px 0;">Детализация</h3>
+      <div id="broadcast-detail" class="table-wrap">
+        <div class="muted">Выберите рассылку из списка.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const apiList = '/crm/api/broadcasts';
+  const apiSend = '/crm/api/broadcasts/send';
+  const apiTargets = '/crm/api/broadcast/targets';
+  const apiUpload = '/crm/api/broadcasts/upload';
+  const historyEl = document.getElementById('broadcast-history');
+  const detailEl = document.getElementById('broadcast-detail');
+  const form = document.getElementById('broadcast-form');
+  const btnAll = document.getElementById('broadcast-send-all');
+  const btnApproved = document.getElementById('broadcast-send-approved');
+  const statusEl = document.getElementById('broadcast-send-status');
+
+  const recipientsAccordionEl = document.getElementById('recipients-accordion');
+  const recipientsSelectAllBtn = document.getElementById('recipients-select-all');
+  const recipientsClearBtn = document.getElementById('recipients-clear');
+  const usersCsvEl = document.getElementById('user-ids-csv');
+  const mediaTypeEl = document.getElementById('media-type');
+  const mediaKeyEl = document.getElementById('media-key');
+  const mediaUrlEl = document.getElementById('media-url');
+  const mediaFilenameEl = document.getElementById('media-filename');
+
+  const attachPhotoBtn = document.getElementById('attach-photo');
+  const attachVideoBtn = document.getElementById('attach-video');
+  const attachClearBtn = document.getElementById('attach-clear');
+  const attachStatusEl = document.getElementById('attach-status');
+  const attachPhotoInput = document.getElementById('attach-photo-input');
+  const attachVideoInput = document.getElementById('attach-video-input');
+
+  let targetsCache = null;
+  let pollTimer = null;
+  let pollIntervalMs = 5000;
+  let historyStore = new Map();
+  let historyRowEls = new Map();
+  let selectedBroadcastId = null;
+  let selectedDetailKey = null;
+  let localPreviewUrl = null;
+  let lastListHadSending = false;
+  let lastMediaMeta = null;
+  let selectedUserIds = new Set();
+  let usersByPosition = new Map();
+  let positionOrder = [];
+  let activeTab = 'new';
+  const tabsRoot = document.getElementById('broadcast-tabs');
+
+  function fmtTs(s){
+    if(!s) return '—';
+    try{
+      const d = new Date(s);
+      if(String(d) === 'Invalid Date') return String(s);
+      return d.toLocaleString('ru-RU');
+    }catch(e){
+      return String(s);
+    }
+  }
+
+  function setActiveTab(tab){
+    activeTab = String(tab||'new');
+    // enable detail tab only when something selected
+    const detailBtn = tabsRoot ? tabsRoot.querySelector('[data-tab="detail"]') : null;
+    if(detailBtn){
+      detailBtn.disabled = !selectedBroadcastId;
+    }
+    document.querySelectorAll('.crm-tab-panel[data-panel]').forEach((p)=>{
+      const want = p.getAttribute('data-panel') === activeTab;
+      p.style.display = want ? 'block' : 'none';
+    });
+    if(tabsRoot){
+      tabsRoot.querySelectorAll('.crm-tab').forEach((b)=>{
+        const on = b.getAttribute('data-tab') === activeTab;
+        b.classList.toggle('active', on);
+      });
+    }
+  }
+
+  function initMobileTabs(){
+    if(!tabsRoot) return;
+    const isMobile = window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+    if(!isMobile){
+      tabsRoot.style.display = 'none';
+      document.querySelectorAll('.crm-tab-panel[data-panel]').forEach((p)=>{ p.style.display = ''; });
+      return;
+    }
+    tabsRoot.style.display = 'flex';
+    tabsRoot.querySelectorAll('.crm-tab').forEach((b)=>{
+      if(b.dataset.bound === '1') return;
+      b.dataset.bound = '1';
+      b.addEventListener('click', ()=>{
+        const t = b.getAttribute('data-tab');
+        if(!t) return;
+        if(t === 'detail' && !selectedBroadcastId) return;
+        setActiveTab(t);
+      });
+    });
+    setActiveTab(activeTab);
+  }
+
+  function esc(s){
+    return String(s||'').replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c] || c);
+    });
+  }
+
+  function openModal(html){
+    const b = document.getElementById('modal-body');
+    if(!b) return;
+    b.innerHTML = html;
+    window.dispatchEvent(new CustomEvent('open-modal'));
+  }
+
+  function closeModal(){
+    try{ window.dispatchEvent(new CustomEvent('close-modal')); }catch(e){}
+  }
+
+  function colorDot(color){
+    const c = String(color||'').trim();
+    const safe = c ? c : '#94a3b8';
+    return '<span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:'+esc(safe)+'; margin-right:6px; vertical-align:middle;"></span>';
+  }
+
+  function formatDeliveryStatus(raw){
+    const s = String(raw || '').trim().toLowerCase();
+    if(!s){
+      return '❔';
+    }
+    if(s === 'success' || s === 'delivered' || s === 'sent'){
+      return '✅';
+    }
+    if(s === 'failed' || s === 'error'){
+      return '❌';
+    }
+    if(s === 'sending' || s === 'in_progress'){
+      return '⏳';
+    }
+    if(s === 'pending' || s === 'queued' || s === 'scheduled'){
+      return '🕓';
+    }
+    return '❔ <span class="muted" style="font-size:12px;">'+esc(s)+'</span>';
+  }
+
+  function revokeLocalPreviewUrl(){
+    if(localPreviewUrl){
+      try{ URL.revokeObjectURL(localPreviewUrl); }catch(e){}
+      localPreviewUrl = null;
+    }
+  }
+
+  function setRecipientsHiddenFields(){
+    usersCsvEl.value = Array.from(selectedUserIds.values()).map((x)=>String(x)).join(',');
+  }
+
+  function recipientsCount(mode){
+    if(!targetsCache) return 0;
+    const byId = new Map((targetsCache.users||[]).map(u=>[Number(u.id), u]));
+    let n = 0;
+    for(const id of selectedUserIds){
+      const u = byId.get(Number(id));
+      if(!u) continue;
+      if(mode === 'approved_only' && !u.approved) continue;
+      n += 1;
+    }
+    return n;
+  }
+
+  function selectedPositionsSummary(){
+    const res = [];
+    for(const pos of positionOrder){
+      const arr = usersByPosition.get(pos) || [];
+      if(!arr.length) continue;
+      let sel = 0;
+      for(const u of arr){
+        if(selectedUserIds.has(Number(u.id))) sel += 1;
+      }
+      if(sel === arr.length) res.push(pos);
+    }
+    return res;
+  }
+
+  function computePositionState(pos){
+    const arr = usersByPosition.get(pos) || [];
+    if(!arr.length) return { checked:false, indeterminate:false, selected:0, total:0 };
+    let selected = 0;
+    for(const u of arr){
+      if(selectedUserIds.has(Number(u.id))) selected += 1;
+    }
+    const total = arr.length;
+    const checked = selected === total;
+    const indeterminate = selected > 0 && selected < total;
+    return { checked, indeterminate, selected, total };
+  }
+
+  function syncPositionHeader(pos){
+    const st = computePositionState(pos);
+    const cb = document.getElementById('pos-cb-'+pos);
+    const cnt = document.getElementById('pos-cnt-'+pos);
+    if(cb){
+      cb.checked = st.checked;
+      cb.indeterminate = st.indeterminate;
+    }
+    if(cnt){
+      cnt.textContent = '('+String(st.total)+')';
+    }
+  }
+
+  function renderRecipientsAccordion(){
+    if(!targetsCache) return;
+    recipientsAccordionEl.innerHTML = '';
+
+    for(const pos of positionOrder){
+      const users = usersByPosition.get(pos) || [];
+      const posSafe = String(pos || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+
+      const wrap = document.createElement('div');
+      wrap.style.border = '1px solid #e5e7eb';
+      wrap.style.borderRadius = '10px';
+      wrap.style.overflow = 'hidden';
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.gap = '10px';
+      header.style.padding = '10px';
+      header.style.background = '#f9fafb';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = 'pos-cb-'+pos;
+      cb.style.marginTop = '0';
+
+      const title = document.createElement('button');
+      title.type = 'button';
+      title.className = 'btn-outline';
+      title.style.flex = '1';
+      title.style.display = 'flex';
+      title.style.justifyContent = 'space-between';
+      title.style.alignItems = 'center';
+      title.innerHTML = '<span>'+esc(pos || 'Без должности')+' <span id="pos-cnt-'+pos+'" class="muted">('+String(users.length)+')</span></span><span class="muted">▾</span>';
+
+      header.appendChild(cb);
+      header.appendChild(title);
+
+      const body = document.createElement('div');
+      body.style.display = 'none';
+      body.style.padding = '10px';
+
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'Поиск в должности...';
+      search.className = 'input';
+      search.style.width = '100%';
+
+      const list = document.createElement('div');
+      list.style.marginTop = '8px';
+      list.style.display = 'flex';
+      list.style.flexDirection = 'column';
+      list.style.gap = '6px';
+      list.style.maxHeight = '220px';
+      list.style.overflow = 'auto';
+
+      function renderUsersInPos(){
+        const q = String(search.value||'').trim().toLowerCase();
+        list.innerHTML = '';
+        const filtered = users.filter(u => {
+          const nm = String(u.full_name||'').toLowerCase();
+          return !q || nm.includes(q);
+        });
+        if(!filtered.length){
+          const empty = document.createElement('div');
+          empty.className = 'muted';
+          empty.textContent = 'Нет результатов';
+          list.appendChild(empty);
+          return;
+        }
+        for(const u of filtered){
+          const id = Number(u.id||0);
+          const nm = String(u.full_name||(''+id));
+          const color = String(u.color||'');
+          const row = document.createElement('label');
+          row.style.display = 'flex';
+          row.style.gap = '8px';
+          row.style.alignItems = 'flex-start';
+          row.style.padding = '6px 8px';
+          row.style.border = '1px solid #e5e7eb';
+          row.style.borderRadius = '10px';
+
+          const ucb = document.createElement('input');
+          ucb.type = 'checkbox';
+          ucb.checked = selectedUserIds.has(id);
+          ucb.style.marginTop = '3px';
+
+          const box = document.createElement('div');
+          box.style.flex = '1';
+          const line1 = document.createElement('div');
+          line1.innerHTML = colorDot(color) + '<b style="color:'+esc(color||'#111827')+';">'+esc(nm)+'</b>';
+          const line2 = document.createElement('div');
+          line2.className = 'muted';
+          line2.style.marginTop = '2px';
+          line2.textContent = u.approved ? 'одобрен' : '';
+          box.appendChild(line1);
+          box.appendChild(line2);
+
+          row.appendChild(ucb);
+          row.appendChild(box);
+          list.appendChild(row);
+
+          ucb.addEventListener('change', () => {
+            if(ucb.checked) selectedUserIds.add(id);
+            else selectedUserIds.delete(id);
+            syncPositionHeader(pos);
+            setRecipientsHiddenFields();
+          });
+        }
+      }
+
+      search.addEventListener('input', renderUsersInPos);
+      body.appendChild(search);
+      body.appendChild(list);
+
+      title.addEventListener('click', () => {
+        body.style.display = (body.style.display === 'none') ? 'block' : 'none';
+        if(body.style.display === 'block') renderUsersInPos();
+      });
+
+      cb.addEventListener('change', () => {
+        const want = cb.checked;
+        for(const u of users){
+          const id = Number(u.id||0);
+          if(want) selectedUserIds.add(id);
+          else selectedUserIds.delete(id);
+        }
+        syncPositionHeader(pos);
+        setRecipientsHiddenFields();
+        if(body.style.display === 'block') renderUsersInPos();
+      });
+
+      wrap.appendChild(header);
+      wrap.appendChild(body);
+      recipientsAccordionEl.appendChild(wrap);
+      syncPositionHeader(pos);
+    }
+
+    setRecipientsHiddenFields();
+  }
+
+  async function loadTargets(){
+    if(targetsCache) return targetsCache;
+    const r = await fetch(apiTargets, { credentials:'include' });
+    if(!r.ok) throw new Error('Не удалось загрузить получателей');
+    targetsCache = await r.json();
+    usersByPosition = new Map();
+    positionOrder = [];
+    for(const p of (targetsCache.positions||[])){
+      positionOrder.push(String(p.name||''));
+    }
+    const known = new Set(positionOrder);
+    for(const u of (targetsCache.users||[])){
+      const pos = String(u.position||'');
+      if(!usersByPosition.has(pos)) usersByPosition.set(pos, []);
+      usersByPosition.get(pos).push(u);
+      if(!known.has(pos)){
+        positionOrder.push(pos);
+        known.add(pos);
+      }
+    }
+    for(const pos of positionOrder){
+      const arr = usersByPosition.get(pos) || [];
+      arr.sort((a,b)=>String(a.full_name||'').localeCompare(String(b.full_name||''), 'ru'));
+      usersByPosition.set(pos, arr);
+    }
+    renderRecipientsAccordion();
+    return targetsCache;
+  }
+
+  function setAttachment(meta){
+    if(!meta){
+      mediaTypeEl.value = '';
+      mediaKeyEl.value = '';
+      mediaUrlEl.value = '';
+      mediaFilenameEl.value = '';
+      attachStatusEl.textContent = '';
+      attachClearBtn.style.display = 'none';
+      lastMediaMeta = null;
+      revokeLocalPreviewUrl();
+      return;
+    }
+    mediaTypeEl.value = String(meta.media_type||'');
+    mediaKeyEl.value = String(meta.media_key||'');
+    mediaUrlEl.value = String(meta.media_url||'');
+    mediaFilenameEl.value = String(meta.filename||'');
+    attachStatusEl.textContent = 'Файл прикреплён: ' + String(meta.filename||'');
+    attachClearBtn.style.display = 'inline-block';
+    lastMediaMeta = meta;
+  }
+
+  async function uploadFile(file){
+    const fd = new FormData();
+    fd.set('file', file);
+    const r = await fetch(apiUpload, { method:'POST', body: fd, credentials:'include' });
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok){
+      throw new Error((data && data.detail) ? String(data.detail) : 'Ошибка загрузки');
+    }
+    return data;
+  }
+
+  async function loadList(){
+    if(!historyEl.querySelector('table')){
+      historyEl.innerHTML = '';
+      const table = document.createElement('table');
+      table.className = 'table crm-table';
+      table.innerHTML = '<thead><tr><th>ID</th><th>Статус</th><th>Отправлено</th><th>Рейтинг</th></tr></thead><tbody id="history-tbody"></tbody>';
+      historyEl.appendChild(table);
+    }
+    const r = await fetch(apiList, { credentials:'include' });
+    if(!r.ok){
+      if(!historyEl.querySelector('table')){
+        historyEl.innerHTML = '<div class="muted">Не удалось загрузить историю</div>';
+      }
+      return;
+    }
+    const data = await r.json();
+    const items = (data && data.items) ? data.items : [];
+    if(!items.length){
+      historyStore = new Map();
+      historyRowEls = new Map();
+      const tb = document.getElementById('history-tbody');
+      if(tb) tb.innerHTML = '<tr><td colspan="4" class="muted">Пока нет рассылок</td></tr>';
+      return;
+    }
+
+    const hadSending = items.some(it => String(it.status||'') === 'sending');
+    if(hadSending !== lastListHadSending){
+      lastListHadSending = hadSending;
+      pollIntervalMs = hadSending ? 4000 : 12000;
+    }
+
+    const tbody = document.getElementById('history-tbody');
+    if(!tbody) return;
+
+    const incomingIds = new Set();
+    for(const it of items){
+      const id = Number(it.id||0);
+      if(!id) continue;
+      incomingIds.add(id);
+
+      const prev = historyStore.get(id);
+      const cur = {
+        id,
+        sent_at: it.sent_at || null,
+        status: String(it.status||''),
+        total: Number(it.total||0),
+        success: Number(it.success||0),
+        failed: Number(it.failed||0),
+        ratings_count: Number(it.ratings_count||0),
+        ratings_avg: (it.ratings_avg == null ? null : Number(it.ratings_avg)),
+        fail_reason: (it.fail_reason == null ? null : String(it.fail_reason||'')),
+      };
+      const key = JSON.stringify(cur);
+      if(prev && prev._key === key){
+        continue;
+      }
+
+      let tr = historyRowEls.get(id);
+      if(!tr){
+        tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.setAttribute('data-bid', String(id));
+        tr.innerHTML = ''
+          + '<td class="crm-field" data-label="ID"><span class="crm-value"></span></td>'
+          + '<td class="crm-field" data-label="Статус"><span class="crm-value"></span></td>'
+          + '<td class="crm-field" data-label="Отправлено"><span class="crm-value"></span></td>'
+          + '<td class="crm-field" data-label="Рейтинг"><span class="crm-value"></span></td>';
+        tr.addEventListener('click', () => {
+          selectedBroadcastId = id;
+          loadDetail(id);
+          initMobileTabs();
+          setActiveTab('detail');
+        });
+        tbody.appendChild(tr);
+        historyRowEls.set(id, tr);
+      }
+
+      // update row
+      const st = cur.status;
+      const sentAt = fmtTs(cur.sent_at);
+      const rtCnt = cur.ratings_count;
+      const rtAvg = (cur.ratings_avg == null) ? '—' : String(cur.ratings_avg.toFixed(2));
+      let statusText = '';
+      if(st === 'sending'){
+        const prog = (cur.total > 0) ? (' ' + String(cur.success) + '/' + String(cur.total)) : '';
+        statusText = '⏳ Отправляется' + prog;
+        tr.style.background = '';
+      } else if(st === 'sent'){
+        statusText = '✅ Отправлено';
+        tr.style.background = '#ecfdf5';
+      } else if(st === 'failed'){
+        statusText = '❌ Ошибка';
+        if(cur.fail_reason){
+          statusText += ' — ' + cur.fail_reason;
+        }
+        tr.style.background = '#fef2f2';
+      } else {
+        statusText = esc(st);
+        tr.style.background = '';
+      }
+
+      const vals = tr.querySelectorAll('.crm-value');
+      if(vals && vals.length >= 4){
+        vals[0].textContent = '#' + String(id);
+        vals[1].textContent = statusText;
+        vals[2].textContent = sentAt;
+        vals[3].textContent = rtAvg + ' (' + String(rtCnt) + ')';
+      }
+
+      historyStore.set(id, { ...cur, _key: key });
+    }
+
+    // remove rows that disappeared
+    for(const [id, tr] of historyRowEls.entries()){
+      if(!incomingIds.has(id)){
+        try{ tr.remove(); }catch(e){}
+        historyRowEls.delete(id);
+        historyStore.delete(id);
+      }
+    }
+  }
+
+  async function loadDetail(id){
+    // Build shell once to avoid flicker on polling.
+    if(!detailEl.querySelector('[data-detail-root]')){
+      detailEl.innerHTML = '';
+      const root = document.createElement('div');
+      root.setAttribute('data-detail-root', '1');
+      root.innerHTML = ''
+        + '<div id="detail-status" class="muted" style="margin-bottom:10px;"></div>'
+        + '<div id="detail-text" style="white-space:pre-wrap; margin-bottom:10px;"></div>'
+        + '<div id="detail-media" style="margin-bottom:10px;"></div>'
+        + '<div class="muted" style="margin-bottom:8px;">Доставки</div>'
+        + '<table class="table crm-table"><thead><tr><th>Сотрудник</th><th>Доставка</th><th>Оценка</th></tr></thead><tbody id="detail-tbody"></tbody></table>';
+      detailEl.appendChild(root);
+    }
+
+    const r = await fetch('/crm/api/broadcasts/'+String(id), { credentials:'include' });
+    if(!r.ok){
+      const stEl = document.getElementById('detail-status');
+      if(stEl) stEl.textContent = 'Не удалось загрузить детали';
+      return;
+    }
+    const data = await r.json();
+
+    const st = String(data.status||'');
+    const total = Number(data.total||0);
+    const ok = Number(data.success||0);
+    const failed = Number(data.failed||0);
+    const rtCnt = Number(data.ratings_count||0);
+    const rtAvg = (data.ratings_avg == null ? null : Number(data.ratings_avg));
+    const fr = (data.fail_reason == null ? null : String(data.fail_reason||''));
+
+    let statusText = '';
+    if(st === 'sending'){
+      statusText = '⏳ Отправляется' + (total ? (' ' + String(ok) + '/' + String(total)) : '');
+    } else if(st === 'sent'){
+      statusText = '✅ Отправлено';
+    } else if(st === 'failed'){
+      statusText = '❌ Ошибка' + (fr ? (' — ' + fr) : '');
+    } else {
+      statusText = st;
+    }
+
+    selectedBroadcastId = Number(data.id||id);
+    selectedDetailKey = JSON.stringify({ s:st, t:total, ok:ok, f:failed, ra:rtAvg, rc:rtCnt, fr:fr });
+
+    const stEl = document.getElementById('detail-status');
+    if(stEl) stEl.textContent = statusText;
+
+    const txEl = document.getElementById('detail-text');
+    if(txEl) txEl.textContent = String(data.text||'');
+
+    const mediaEl = document.getElementById('detail-media');
+    if(mediaEl){
+      mediaEl.innerHTML = '';
+      if(data.media_type && data.media_url){
+        if(String(data.media_type) === 'photo'){
+          mediaEl.innerHTML = '<div class="muted" style="margin-bottom:6px;">Фото</div><img src="'+esc(data.media_url)+'" style="max-width:100%; max-height:260px; object-fit:contain; border-radius:10px;" />';
+        } else if(String(data.media_type) === 'video'){
+          mediaEl.innerHTML = '<div class="muted" style="margin-bottom:6px;">Видео</div><video src="'+esc(data.media_url)+'" controls style="max-width:100%; max-height:260px; border-radius:10px;"></video>';
+        }
+      }
+    }
+
+    const root = detailEl.querySelector('[data-detail-root]');
+    const prevBid = root ? root.getAttribute('data-bid') : null;
+    const shouldRenderDeliveries = String(prevBid||'') !== String(id);
+    if(root) root.setAttribute('data-bid', String(id));
+    if(shouldRenderDeliveries){
+      const delivs = (data && data.deliveries) ? data.deliveries : [];
+      const tb = document.getElementById('detail-tbody');
+      if(tb){
+        tb.innerHTML = '';
+        for(const d of delivs){
+          const name = d.name || ('#'+String(d.user_id||''));
+          const status = d.delivery_status || '';
+          const err = d.error_text ? (' — '+d.error_text) : '';
+          const rating = (d.rating == null) ? '—' : ('⭐'+String(d.rating));
+          const tr = document.createElement('tr');
+          tr.innerHTML = ''
+            + '<td class="crm-field" data-label="Сотрудник"><span class="crm-value">'+colorDot(d.color)+ '<b style="color:'+esc(d.color||'#111827')+';">'+esc(name)+'</b><div class="muted" style="margin-top:2px;">'+esc(d.position||'')+'</div></span></td>'
+            + '<td class="crm-field" data-label="Доставка"><span class="crm-value">'+formatDeliveryStatus(status)+ (err ? '<div class="muted" style="margin-top:2px;">'+esc(err)+'</div>' : '') +'</span></td>'
+            + '<td class="crm-field" data-label="Оценка"><span class="crm-value">'+esc(rating)+ (d.rated_at ? '<div class="muted" style="margin-top:2px;">'+esc(fmtTs(d.rated_at))+'</div>' : '') +'</span></td>';
+          tb.appendChild(tr);
+        }
+      }
+    }
+  }
+
+  async function confirmAndSend(mode){
+    statusEl.textContent = '';
+    await loadTargets();
+    setRecipientsHiddenFields();
+    const text = String((form.querySelector('textarea[name="text"]')||{}).value||'').trim();
+    if(!text){
+      statusEl.textContent = 'Введите текст';
+      return;
+    }
+    const rcCount = recipientsCount(mode);
+    if(!rcCount){
+      statusEl.textContent = 'Выберите получателей';
+      return;
+    }
+
+    const positionsFully = selectedPositionsSummary();
+    const posLabel = positionsFully.length ? ('Должности выбраны: ' + positionsFully.join(', ')) : 'Должности выбраны: —';
+
+    const hasMedia = Boolean(mediaTypeEl.value && (mediaUrlEl.value || localPreviewUrl));
+    let mediaPreviewHtml = '';
+    if(hasMedia){
+      const mt = String(mediaTypeEl.value||'');
+      const src = (localPreviewUrl || String(mediaUrlEl.value||''));
+      if(mt === 'photo'){
+        mediaPreviewHtml = '<div style="margin-top:10px;"><div class="muted" style="margin-bottom:6px;">Фото</div><img src="'+esc(src)+'" style="max-width:100%; max-height:260px; object-fit:contain; border-radius:10px;" /></div>';
+      } else if(mt === 'video'){
+        mediaPreviewHtml = '<div style="margin-top:10px;"><div class="muted" style="margin-bottom:6px;">Видео</div><video src="'+esc(src)+'" controls style="max-width:100%; max-height:260px; border-radius:10px;"></video></div>';
+      } else {
+        mediaPreviewHtml = '<div style="margin-top:10px;" class="muted">Вложение: '+esc(mt)+'</div>';
+      }
+    }
+
+    const previewHtml = (
+      '<div class="broadcast-preview" style="padding:16px;">'
+        + '<div style="font-weight:600; margin-bottom:10px;">Предпросмотр рассылки</div>'
+        + '<div class="muted" style="margin-bottom:6px;">Текст</div>'
+        + '<div style="white-space:pre-wrap; padding:10px; border:1px solid #e5e7eb; border-radius:10px;">'+esc(text)+'</div>'
+        + mediaPreviewHtml
+        + '<div style="margin-top:10px;" class="muted">'+esc(posLabel)+'</div>'
+        + '<div class="muted" style="margin-top:6px;">Получателей: <b>'+String(rcCount)+'</b></div>'
+        + '<div style="margin-top:12px;">'
+          + '<div class="muted" style="margin-bottom:6px;">Кнопки</div>'
+          + '<div style="display:flex; gap:8px; flex-wrap:wrap;">'
+            + '<span style="padding:6px 10px; border:1px solid #e5e7eb; border-radius:10px;">⭐ Оценить новость</span>'
+          + '</div>'
+        + '</div>'
+        + '<div class="broadcast-preview-actions" style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px;">'
+          + '<button class="btn-outline" type="button" id="preview-cancel">Отмена</button>'
+          + '<button class="btn" type="button" id="preview-send">Отправить</button>'
+        + '</div>'
+      + '</div>'
+    );
+
+    openModal(previewHtml);
+    setTimeout(() => {
+      const cancelBtn = document.getElementById('preview-cancel');
+      const sendBtn = document.getElementById('preview-send');
+      if(cancelBtn) cancelBtn.addEventListener('click', () => closeModal());
+      if(sendBtn) sendBtn.addEventListener('click', async () => {
+        try{
+          sendBtn.disabled = true;
+          await doSend(mode);
+        } finally {
+          try{ sendBtn.disabled = false; }catch(e){}
+        }
+      });
+    }, 0);
+  }
+
+  async function doSend(mode){
+    closeModal();
+    btnAll.disabled = true;
+    btnApproved.disabled = true;
+    try{
+      const fd = new FormData(form);
+      fd.set('target_mode', String(mode));
+      fd.set('user_ids', usersCsvEl.value || '');
+      fd.set('media_type', mediaTypeEl.value || '');
+      fd.set('media_key', mediaKeyEl.value || '');
+
+      // Explicitly null CTA on server side; do not send any CTA fields.
+      try{ fd.delete('cta_label'); }catch(e){}
+      try{ fd.delete('cta_url'); }catch(e){}
+
+      const r = await fetch(apiSend, { method:'POST', body:fd, credentials:'include' });
+      const data = await r.json().catch(() => ({}));
+      if(!r.ok){
+        statusEl.textContent = data && data.detail ? String(data.detail) : 'Ошибка отправки';
+        return;
+      }
+      statusEl.textContent = 'Идёт рассылка...';
+      await loadList();
+      if(data && data.id) await loadDetail(Number(data.id));
+      startPolling();
+    } finally {
+      btnAll.disabled = false;
+      btnApproved.disabled = false;
+    }
+  }
+
+  function startPolling(){
+    if(pollTimer) return;
+    const tick = async () => {
+      try{ await loadList(); }catch(e){}
+      if(selectedBroadcastId){
+        try{
+          const cur = historyStore.get(Number(selectedBroadcastId));
+          if(cur){
+            const dk = JSON.stringify({ s:cur.status, t:cur.total, ok:cur.success, f:cur.failed, ra:cur.ratings_avg, rc:cur.ratings_count, fr:cur.fail_reason });
+            if(dk !== selectedDetailKey){
+              await loadDetail(Number(selectedBroadcastId));
+            }
+          }
+        }catch(e){}
+      }
+      pollTimer = setTimeout(tick, pollIntervalMs);
+    };
+    pollTimer = setTimeout(tick, pollIntervalMs);
+  }
+
+  recipientsSelectAllBtn.addEventListener('click', async () => {
+    await loadTargets();
+    for(const u of (targetsCache.users||[])){
+      selectedUserIds.add(Number(u.id));
+    }
+    renderRecipientsAccordion();
+  });
+  recipientsClearBtn.addEventListener('click', async () => {
+    await loadTargets();
+    selectedUserIds = new Set();
+    renderRecipientsAccordion();
+  });
+
+  attachPhotoBtn.addEventListener('click', () => attachPhotoInput.click());
+  attachVideoBtn.addEventListener('click', () => attachVideoInput.click());
+  attachClearBtn.addEventListener('click', () => setAttachment(null));
+  attachPhotoInput.addEventListener('change', async () => {
+    const f = attachPhotoInput.files && attachPhotoInput.files[0];
+    if(!f) return;
+    revokeLocalPreviewUrl();
+    try{ localPreviewUrl = URL.createObjectURL(f); }catch(e){ localPreviewUrl = null; }
+    attachStatusEl.textContent = 'Загрузка...';
+    try{
+      const meta = await uploadFile(f);
+      setAttachment(meta);
+    } catch(e){
+      attachStatusEl.textContent = String(e && e.message ? e.message : e);
+      setAttachment(null);
+    } finally {
+      attachPhotoInput.value = '';
+    }
+  });
+  attachVideoInput.addEventListener('change', async () => {
+    const f = attachVideoInput.files && attachVideoInput.files[0];
+    if(!f) return;
+    revokeLocalPreviewUrl();
+    try{ localPreviewUrl = URL.createObjectURL(f); }catch(e){ localPreviewUrl = null; }
+    attachStatusEl.textContent = 'Загрузка...';
+    try{
+      const meta = await uploadFile(f);
+      setAttachment(meta);
+    } catch(e){
+      attachStatusEl.textContent = String(e && e.message ? e.message : e);
+      setAttachment(null);
+    } finally {
+      attachVideoInput.value = '';
+    }
+  });
+
+  btnAll.addEventListener('click', () => confirmAndSend('all'));
+  btnApproved.addEventListener('click', () => confirmAndSend('approved_only'));
+
+  loadList();
+  loadTargets().catch(() => {});
+  startPolling();
+  initMobileTabs();
+  try{
+    window.addEventListener('resize', ()=>{ try{ initMobileTabs(); }catch(e){} });
+  }catch(e){}
+})();
+</script>
+{% endblock %}
