@@ -4450,9 +4450,24 @@ async def consumptions_create(
     res_m = await session.execute(select(Material).where(Material.id == material_id))
     mat = res_m.scalar_one_or_none()
     material_title = mat.name if mat else "—"
-    if mat and getattr(mat, "short_name", None):
-        material_title = f"{mat.name} ({mat.short_name})"
-    actor = StockEventActor(name=f"Staff {admin_id}", tg_id=admin_id)
+    # Expense notification should show a readable material label without bracketed codes
+    if (not material_title) and mat and getattr(mat, "short_name", None):
+        material_title = str(getattr(mat, "short_name") or "").strip() or material_title
+
+    res_u = await session.execute(select(User).where(User.tg_id == admin_id).where(User.is_deleted == False))
+    admin_user = res_u.scalar_one_or_none()
+    full_name = ""
+    if admin_user is not None:
+        full_name = str(getattr(admin_user, "full_name", "") or "").strip()
+        if not full_name:
+            first = str(getattr(admin_user, "first_name", "") or "").strip()
+            last = str(getattr(admin_user, "last_name", "") or "").strip()
+            full_name = (first + " " + last).strip()
+        if not full_name:
+            full_name = str(getattr(admin_user, "username", "") or "").strip()
+    if not full_name:
+        full_name = f"Staff {admin_id}"
+    actor = StockEventActor(name=full_name, tg_id=admin_id)
     stock_after = Decimal(mat.current_stock) if mat else None
     happened_at = getattr(rec, "created_at", None)
     add_after_commit_callback(
@@ -4617,7 +4632,20 @@ async def supplies_create(
     material_title = mat.name if mat else "—"
     if mat and getattr(mat, "short_name", None):
         material_title = f"{mat.name} ({mat.short_name})"
-    actor = StockEventActor(name=f"Staff {admin_id}", tg_id=admin_id)
+    res_u = await session.execute(select(User).where(User.tg_id == admin_id).where(User.is_deleted == False))
+    admin_user = res_u.scalar_one_or_none()
+    full_name = ""
+    if admin_user is not None:
+        full_name = str(getattr(admin_user, "full_name", "") or "").strip()
+        if not full_name:
+            first = str(getattr(admin_user, "first_name", "") or "").strip()
+            last = str(getattr(admin_user, "last_name", "") or "").strip()
+            full_name = (first + " " + last).strip()
+        if not full_name:
+            full_name = str(getattr(admin_user, "username", "") or "").strip()
+    if not full_name:
+        full_name = f"Staff {admin_id}"
+    actor = StockEventActor(name=full_name, tg_id=admin_id)
     stock_after = Decimal(mat.current_stock) if mat else None
     happened_at = getattr(rec, "created_at", None)
     add_after_commit_callback(

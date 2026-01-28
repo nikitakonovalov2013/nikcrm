@@ -519,9 +519,9 @@ async def stocks_confirm(cb: CallbackQuery, state: FSMContext):
 
             actor_name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "—"
             actor = StockEventActor(name=actor_name or "—", tg_id=cb.from_user.id)
-            material_title = m.name
-            if getattr(m, "short_name", None):
-                material_title = f"{m.name} ({m.short_name})"
+            material_title = (m.name or "").strip() if getattr(m, "name", None) else ""
+            if not material_title and getattr(m, "short_name", None):
+                material_title = str(getattr(m, "short_name") or "").strip()
             stock_after = Decimal(m.current_stock)
             happened_at = getattr(rec, "created_at", None)
             add_after_commit_callback(
