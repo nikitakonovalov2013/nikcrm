@@ -31,9 +31,10 @@ class AdminActionType(StrEnum):
 
 
 class PurchaseStatus(StrEnum):
-    PENDING = "PENDING"
-    DONE = "DONE"
-    REJECTED = "REJECTED"
+    NEW = "NEW"
+    IN_PROGRESS = "IN_PROGRESS"
+    BOUGHT = "BOUGHT"
+    CANCELED = "CANCELED"
 
 
 class TaskStatus(StrEnum):

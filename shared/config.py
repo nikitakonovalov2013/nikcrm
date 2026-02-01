@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 from typing import List, Any, Iterable
 import json
+import logging
 
 
 class Settings(BaseSettings):
@@ -78,6 +79,34 @@ class Settings(BaseSettings):
             return [int(v)]
         except Exception:
             return []
+
+
+    @field_validator("PURCHASES_CHAT_ID", "REPORTS_CHAT_ID", mode="before")
+    @classmethod
+    def parse_chat_id(cls, v: Any) -> int:
+        if v is None:
+            return 0
+        if isinstance(v, int):
+            return int(v)
+        if isinstance(v, str):
+            s = v.strip()
+            # allow accidental quotes in .env
+            if s.startswith("\"") and s.endswith("\""):
+                s = s[1:-1].strip()
+            if s.startswith("'") and s.endswith("'"):
+                s = s[1:-1].strip()
+            if not s:
+                return 0
+            try:
+                return int(s)
+            except Exception:
+                logging.getLogger(__name__).error("invalid chat id env value, expected int", extra={"value": v})
+                return 0
+        try:
+            return int(v)
+        except Exception:
+            logging.getLogger(__name__).error("invalid chat id env value type, expected int", extra={"value": str(v)})
+            return 0
 
 
 settings = Settings()

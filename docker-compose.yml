@@ -53,6 +53,7 @@ services:
       <<: *tz-env
     volumes:
       - logs_bot:/var/log/app/bot
+      - ./data/uploads:/app/web/app/static/uploads
       - *tz-localtime
       - *tz-timezone
     depends_on:
@@ -74,6 +75,7 @@ services:
       - "8001:8000"
     volumes:
       - logs_web:/var/log/app/web
+      - ./data/uploads:/app/web/app/static/uploads
       - *tz-localtime
       - *tz-timezone
     depends_on:

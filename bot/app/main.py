@@ -24,6 +24,16 @@ async def main() -> None:
     setup_logging(service_name="bot", log_dir="/var/log/app/bot", level=settings.LOG_LEVEL)
     logging.getLogger(__name__).info("bot starting")
     try:
+        v = int(getattr(settings, "PURCHASES_CHAT_ID", 0) or 0)
+        if v > 0:
+            tail = str(v)
+            tail = tail[-3:] if len(tail) >= 3 else tail
+            logging.getLogger(__name__).info("PURCHASES_CHAT_ID configured", extra={"tail": tail})
+        else:
+            logging.getLogger(__name__).warning("PURCHASES_CHAT_ID not configured")
+    except Exception:
+        logging.getLogger(__name__).exception("failed to read PURCHASES_CHAT_ID")
+    try:
         dsn = settings.DATABASE_URL.replace(settings.POSTGRES_PASSWORD, "***") if settings.POSTGRES_PASSWORD else settings.DATABASE_URL
         logging.getLogger(__name__).info("bot DATABASE_URL", extra={"dsn": dsn})
     except Exception:

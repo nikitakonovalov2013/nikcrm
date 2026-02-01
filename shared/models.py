@@ -454,6 +454,33 @@ class Purchase(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(String(2000))
     photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tg_photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tg_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tg_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    photo_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    taken_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    taken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    bought_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    bought_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    approved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    archived_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[PurchaseStatus] = mapped_column(
         PG_ENUM(
             PurchaseStatus,
@@ -461,14 +488,53 @@ class Purchase(Base):
             values_callable=lambda obj: [e.value for e in obj],
             create_type=False,
         ),
-        default=PurchaseStatus.PENDING,
+        default=PurchaseStatus.NEW,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
-    user: Mapped[User] = relationship()
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    taken_by_user: Mapped[User | None] = relationship(foreign_keys=[taken_by_user_id])
+    bought_by_user: Mapped[User | None] = relationship(foreign_keys=[bought_by_user_id])
+    approved_by_user: Mapped[User | None] = relationship(foreign_keys=[approved_by_user_id])
+    archived_by_user: Mapped[User | None] = relationship(foreign_keys=[archived_by_user_id])
+    events: Mapped[list["PurchaseEvent"]] = relationship(
+        back_populates="purchase",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_purchases_status", "status"),
+        Index("ix_purchases_taken_by_user_id", "taken_by_user_id"),
+        Index("ix_purchases_taken_at", "taken_at"),
+        Index("ix_purchases_bought_at", "bought_at"),
+        Index("ix_purchases_archived_at", "archived_at"),
+    )
+
+
+class PurchaseEvent(Base):
+    __tablename__ = "purchase_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    purchase_id: Mapped[int] = mapped_column(ForeignKey("purchases.id", ondelete="CASCADE"))
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    type: Mapped[str] = mapped_column(String(64))
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    purchase: Mapped[Purchase] = relationship(back_populates="events")
+    actor_user: Mapped[User | None] = relationship(foreign_keys=[actor_user_id])
+
+    __table_args__ = (
+        Index("ix_purchase_events_purchase_id", "purchase_id"),
+        Index("ix_purchase_events_created_at", "created_at"),
+    )
 
 
 class Task(Base):

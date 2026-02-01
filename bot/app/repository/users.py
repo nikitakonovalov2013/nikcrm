@@ -30,6 +30,62 @@ class UserRepository:
         res = await self.session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
         return res.scalar_one_or_none()
 
+    async def get_or_create_minimal_by_tg_id(
+        self,
+        *,
+        tg_id: int,
+        first_name: str | None = None,
+        last_name: str | None = None,
+    ) -> User | None:
+        q = select(User).where(User.tg_id == int(tg_id)).with_for_update()
+        existing = (await self.session.execute(q)).scalar_one_or_none()
+        if existing is not None:
+            if existing.is_deleted:
+                existing.is_deleted = False
+            # IMPORTANT: do not overwrite manually edited names with Telegram profile data.
+            # Only fill from Telegram if the corresponding DB field is empty.
+            if first_name is not None and not str(getattr(existing, "first_name", "") or "").strip():
+                existing.first_name = str(first_name)[:100]
+            if last_name is not None and not str(getattr(existing, "last_name", "") or "").strip():
+                existing.last_name = str(last_name)[:100]
+            if not getattr(existing, "color", None):
+                existing.color = await assign_user_color(self.session, seed=int(tg_id))
+            existing.updated_at = utc_now()
+            await self.session.flush()
+            await self.session.refresh(existing)
+            return existing
+
+        user = User(
+            tg_id=int(tg_id),
+            first_name=(str(first_name)[:100] if first_name is not None else None),
+            last_name=(str(last_name)[:100] if last_name is not None else None),
+            status=UserStatus.PENDING,
+            color=await assign_user_color(self.session, seed=int(tg_id)),
+        )
+        self.session.add(user)
+        try:
+            await self.session.flush()
+            await self.session.refresh(user)
+            return user
+        except IntegrityError:
+            await self.session.rollback()
+            existing2 = (await self.session.execute(q)).scalar_one_or_none()
+            if existing2 is None:
+                return None
+            if existing2.is_deleted:
+                existing2.is_deleted = False
+            # Same policy for concurrent create: do not overwrite non-empty names.
+            if first_name is not None and not str(getattr(existing2, "first_name", "") or "").strip():
+                existing2.first_name = str(first_name)[:100]
+            if last_name is not None and not str(getattr(existing2, "last_name", "") or "").strip():
+                existing2.last_name = str(last_name)[:100]
+            if not getattr(existing2, "color", None):
+                existing2.color = await assign_user_color(self.session, seed=int(tg_id))
+            existing2.updated_at = utc_now()
+            await self.session.flush()
+            await self.session.refresh(existing2)
+            return existing2
+
     async def create_pending(
         self,
         tg_id: int,

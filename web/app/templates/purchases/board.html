@@ -1,0 +1,612 @@
+{% extends base_template %}
+{% block title %}Закупки{% endblock %}
+{% block content %}
+<div class="tasks-header">
+  <div>
+    <h2 class="subtitle">Закупки</h2>
+    <div class="muted">Канбан-доска</div>
+  </div>
+  <div class="tasks-header-actions">
+    <a class="btn-outline" href="{{ archive_url }}">Архив закупок</a>
+    <button class="btn" type="button" onclick="window.purchasesOpenCreate()">+ Создать закупку</button>
+  </div>
+</div>
+
+<form class="tasks-filters" method="get" action="{{ board_url or request.url_for('purchases_board') }}">
+  <div class="tasks-filters-search">
+    <label class="tasks-filter">
+      <span class="tasks-filter-label">Поиск</span>
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="Текст закупки" />
+    </label>
+  </div>
+
+  <div class="tasks-filters-row">
+    <label class="tasks-filter tasks-filter-checkbox">
+      <span class="tasks-filter-label">&nbsp;</span>
+      <span class="checkbox-row">
+        <input type="checkbox" name="mine" value="1" {% if mine %}checked{% endif %} />
+        <span>Только мои</span>
+      </span>
+    </label>
+
+    <div class="tasks-filters-actions">
+      <button class="btn-outline" type="submit">Применить</button>
+      <a class="btn-outline" href="{{ board_url or request.url_for('purchases_board') }}">Сбросить</a>
+    </div>
+  </div>
+</form>
+
+<div class="kanban">
+  {% for col in columns %}
+    <section class="kanban-col" data-status="{{ col["status"] }}">
+      <div class="kanban-col-header" role="button" tabindex="0" title="Свернуть/развернуть">
+        <div class="kanban-col-title">
+          <span class="kanban-col-chevron" aria-hidden="true">▾</span>
+          <span class="kanban-col-title-text">{{ col["title"] }}</span>
+        </div>
+        <div class="kanban-col-count">{{ col.get("items", [])|length }}</div>
+      </div>
+      <div class="kanban-col-body" id="col-{{ col["status"] }}">
+        {% for p in col.get("items", []) %}
+          <div class="task-card" data-purchase-id="{{ p.id }}" data-created-at-ts="{{ p.created_at_ts or '' }}" data-status="{{ p.status or '' }}" onclick="window.purchasesOpenDetail(this.dataset.purchaseId)">
+            <div class="task-card-top">
+              <div class="task-title break-word">{{ p.text }}</div>
+              {% if p.photo_url %}
+                <img src="{{ p.photo_url }}" alt="" style="width:42px;height:42px;object-fit:cover;border-radius:10px;border:1px solid #e5e7eb;flex:0 0 auto" loading="lazy" />
+              {% endif %}
+            </div>
+
+            <div class="task-meta">
+              <div class="task-card-meta">
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Создано:</span>
+                  <span class="task-card-meta-value">{{ p.created_at_str or '—' }}</span>
+                </div>
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Создал:</span>
+                  {% set cb = p.get('creator') %}
+                  {% set cb_name = (cb.get('name') if cb else '') or (p.creator_str or '—') %}
+                  {% set cb_color = (cb.get('color') if cb else '') or '#9CA3AF' %}
+                  <span class="task-created-by">
+                    <span class="task-created-by-dot" style="background: {{ cb_color }}"></span>
+                    <span class="task-created-by-name" style="color: {{ cb_color }}" title="{{ cb_name }}">{{ cb_name }}</span>
+                  </span>
+                </div>
+                {% if p.priority %}
+                <div class="task-card-meta-row">
+                  <span class="task-card-meta-label">Приоритет:</span>
+                  {% if p.priority == 'urgent' %}
+                    <span class="task-card-meta-value" style="font-weight:700;color:#991b1b">🔥 Срочно</span>
+                  {% else %}
+                    <span class="task-card-meta-value">Обычный</span>
+                  {% endif %}
+                </div>
+                {% endif %}
+              </div>
+
+              <div class="purchase-actions">
+                {% if col["status"] == 'new' %}
+                  <button class="btn-danger" type="button" title="Отменить" onclick="event.stopPropagation(); window.purchasesCancel({{ p.id }});">Отменить</button>
+                  <button class="btn-success" type="button" title="Взять в работу" onclick="event.stopPropagation(); window.purchasesTake({{ p.id }});">Взять в работу</button>
+                {% elif col["status"] == 'in_progress' %}
+                  <button class="btn-success" type="button" title="Куплено" onclick="event.stopPropagation(); window.purchasesBought({{ p.id }});">Куплено</button>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+        {% if not col.get("items") or (col.get("items")|length == 0) %}
+          <div class="kanban-empty muted">Нет закупок</div>
+        {% endif %}
+      </div>
+    </section>
+  {% endfor %}
+</div>
+
+<script>
+(function(){
+  const COLLAPSED_KEY = 'crm.purchases.board.collapsedCols';
+
+  const IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
+  const IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
+
+  async function apiJson(url, opts){
+    const o = Object.assign({ credentials: 'include' }, (opts || {}));
+    const r = await fetch(url, o);
+    if (r.status === 401) {
+      try { window.location.href = '/crm/login'; } catch (_) {}
+      throw new Error('Требуется вход');
+    }
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    const isJson = ct.includes('application/json');
+    if (!r.ok) {
+      let msg = 'Ошибка';
+      try {
+        if (isJson) {
+          const data = await r.json();
+          msg = (data && (data.detail || data.message)) || msg;
+        } else {
+          msg = await r.text();
+        }
+      } catch (_){ }
+      throw new Error(msg);
+    }
+    if (r.status === 204) return null;
+    return isJson ? await r.json() : await r.text();
+  }
+
+  function openModal(html){
+    const b = document.getElementById('modal-body');
+    if (!b) return;
+    b.innerHTML = String(html || '');
+    window.dispatchEvent(new CustomEvent('open-modal'));
+  }
+
+  function statusColumnId(status){
+    return 'col-' + String(status || '');
+  }
+
+  function kanbanColFromItem(p){
+    const st = String((p && p.status) ? p.status : (p && p.getAttribute ? (p.getAttribute('data-status') || '') : ''));
+    if (st === 'IN_PROGRESS') return 'in_progress';
+    if (st === 'BOUGHT' || st === 'CANCELED') return 'archived';
+    return 'new';
+  }
+
+  function statusRu(status){
+    const s = String(status || '').trim();
+    if (s === 'IN_PROGRESS') return 'В работе';
+    if (s === 'BOUGHT') return 'Куплено';
+    if (s === 'CANCELED') return 'Отменено';
+    return 'Новые';
+  }
+
+  function loadCollapsed(){
+    try {
+      const raw = window.localStorage.getItem(COLLAPSED_KEY);
+      if (raw === null) {
+        return new Set(['done']);
+      }
+      const arr = JSON.parse(raw || '[]');
+      if (!Array.isArray(arr)) return new Set();
+      return new Set(arr.map(x => String(x || '').trim()).filter(Boolean));
+    } catch (_){
+      return new Set();
+    }
+  }
+
+  function saveCollapsed(set){
+    try {
+      const arr = Array.from(set || []).map(x => String(x || '').trim()).filter(Boolean);
+      window.localStorage.setItem(COLLAPSED_KEY, JSON.stringify(arr));
+    } catch (_){ }
+  }
+
+  function applyCollapsedFromStorage(){
+    const root = document.querySelector('.kanban');
+    if (!root) return;
+    const collapsed = loadCollapsed();
+    root.querySelectorAll('.kanban-col').forEach(col => {
+      const st = String(col.getAttribute('data-status') || '').trim();
+      col.classList.toggle('is-collapsed', collapsed.has(st));
+    });
+  }
+
+  function bindCollapseHandlers(){
+    const root = document.querySelector('.kanban');
+    if (!root) return;
+    root.querySelectorAll('.kanban-col').forEach(col => {
+      const header = col.querySelector('.kanban-col-header');
+      if (!header) return;
+      if (header.dataset.boundCollapse === '1') return;
+      header.dataset.boundCollapse = '1';
+
+      const toggle = () => {
+        const st = String(col.getAttribute('data-status') || '').trim();
+        const collapsed = loadCollapsed();
+        const next = !col.classList.contains('is-collapsed');
+        col.classList.toggle('is-collapsed', next);
+        if (next) collapsed.add(st); else collapsed.delete(st);
+        saveCollapsed(collapsed);
+      };
+
+      header.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        toggle();
+      });
+      header.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          toggle();
+        }
+      });
+    });
+  }
+
+  function updateColumnCounts(){
+    try {
+      const cols = document.querySelectorAll('.kanban-col');
+      cols.forEach(col => {
+        const status = col.getAttribute('data-status');
+        const body = document.getElementById(statusColumnId(status));
+        const countEl = col.querySelector('.kanban-col-count');
+        const emptyEl = body ? body.querySelector('.kanban-empty') : null;
+        const cards = body ? body.querySelectorAll('.task-card') : [];
+        if (countEl) countEl.textContent = String(cards.length || 0);
+        if (emptyEl) {
+          emptyEl.style.display = (cards.length ? 'none' : 'block');
+        } else if (body && !cards.length) {
+          const div = document.createElement('div');
+          div.className = 'kanban-empty muted';
+          div.textContent = 'Нет закупок';
+          body.appendChild(div);
+        }
+      });
+    } catch (_) {}
+  }
+
+  function renderPurchaseCard(p){
+    const id = (p && p.id) ? String(p.id) : '';
+    const createdAtTs = (p && p.created_at_ts) ? String(p.created_at_ts) : '';
+    const createdAtStr = (p && p.created_at_str) ? String(p.created_at_str) : '';
+    const text = (p && p.text) ? String(p.text) : '';
+    const creator = (p && p.creator) ? p.creator : null;
+    const creatorStr = (creator && creator.name) ? String(creator.name) : ((p && p.creator_str) ? String(p.creator_str) : '—');
+    const creatorColor = (creator && creator.color) ? String(creator.color) : '#9CA3AF';
+    const pr = (p && p.priority) ? String(p.priority) : '';
+    const photoUrl = (p && p.photo_url) ? String(p.photo_url) : '';
+    const st = (p && p.status) ? String(p.status) : '';
+    const col = kanbanColFromItem(p);
+    return (
+      '<div class="task-card" data-purchase-id="' + esc(id) + '" data-created-at-ts="' + esc(createdAtTs) + '" data-status="' + esc(st) + '" onclick="window.purchasesOpenDetail(this.dataset.purchaseId)">' +
+        '<div class="task-card-top">' +
+          '<div class="task-title break-word">' + esc(text) + '</div>' +
+          (photoUrl ? ('<img src="' + esc(photoUrl) + '" alt="" style="width:42px;height:42px;object-fit:cover;border-radius:10px;border:1px solid #e5e7eb;flex:0 0 auto" loading="lazy" />') : '') +
+        '</div>' +
+        '<div class="task-meta">' +
+          '<div class="task-card-meta">' +
+            '<div class="task-card-meta-row"><span class="task-card-meta-label">Создано:</span><span class="task-card-meta-value">' + esc(createdAtStr) + '</span></div>' +
+            '<div class="task-card-meta-row"><span class="task-card-meta-label">Создал:</span>' +
+              '<span class="task-created-by">' +
+                '<span class="task-created-by-dot" style="background:' + esc(creatorColor) + '"></span>' +
+                '<span class="task-created-by-name" style="color:' + esc(creatorColor) + '" title="' + esc(creatorStr) + '">' + esc(creatorStr) + '</span>' +
+              '</span>' +
+            '</div>' +
+            (pr ? ('<div class="task-card-meta-row"><span class="task-card-meta-label">Приоритет:</span><span class="task-card-meta-value"' + (pr === 'urgent' ? ' style="font-weight:700;color:#991b1b"' : '') + '>' + (pr === 'urgent' ? '🔥 Срочно' : 'Обычный') + '</span></div>') : '') +
+          '</div>' +
+          '<div class="purchase-actions">' +
+            (col === 'new'
+              ? (
+                  '<button class="btn-danger" type="button" title="Отменить" onclick="event.stopPropagation(); window.purchasesCancel(' + esc(id) + ');">Отменить</button>' +
+                  '<button class="btn-success" type="button" title="Взять в работу" onclick="event.stopPropagation(); window.purchasesTake(' + esc(id) + ');">Взять в работу</button>'
+                )
+              : (col === 'in_progress'
+                  ? '<button class="btn-success" type="button" title="Куплено" onclick="event.stopPropagation(); window.purchasesBought(' + esc(id) + ');">Куплено</button>'
+                  : ''
+                )
+            ) +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  window.purchasesUpsertCard = function(purchase){
+    try {
+      const id = purchase && purchase.id ? String(purchase.id) : '';
+      if (!id) return;
+      const existing = document.querySelector('.task-card[data-purchase-id="' + id + '"]');
+      if (existing && existing.parentElement) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = renderPurchaseCard(purchase);
+        const el = wrap.firstChild;
+        existing.parentElement.replaceChild(el, existing);
+      }
+      updateColumnCounts();
+    } catch (_) {}
+  };
+
+  window.purchasesRemoveCard = function(purchaseId){
+    const el = document.querySelector('.task-card[data-purchase-id="' + String(purchaseId) + '"]');
+    if (el && el.parentElement) {
+      el.parentElement.removeChild(el);
+      updateColumnCounts();
+    }
+  };
+
+  window.purchasesMoveCard = function(purchaseId, newColStatus){
+    const el = document.querySelector('.task-card[data-purchase-id="' + String(purchaseId) + '"]');
+    const target = document.getElementById(statusColumnId(newColStatus));
+    if (!el || !target) {
+      updateColumnCounts();
+      return;
+    }
+    const empty = target.querySelector('.kanban-empty');
+    if (empty) empty.style.display = 'none';
+    target.appendChild(el);
+    updateColumnCounts();
+  };
+
+  function esc(s){
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderEvents(events){
+    const items = Array.isArray(events) ? events : [];
+    if (!items.length) return '<div class="muted">История пуста</div>';
+    return items.map(e => {
+      const who = (e.actor && e.actor.name) ? e.actor.name : '—';
+      const txt = e.text ? ('<div style="white-space:pre-wrap;">' + esc(e.text) + '</div>') : '';
+      const typ = esc(e.type_ru || e.type || '');
+      return (
+        '<div style="padding:10px 0; border-bottom:1px solid rgba(0,0,0,0.06);">' +
+          '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:baseline;">' +
+            '<div style="font-weight:600;">' + typ + '</div>' +
+            '<div class="muted">' + esc(e.created_at_str || '') + '</div>' +
+          '</div>' +
+          '<div class="muted">' + esc(who) + '</div>' +
+          txt +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderDetailModal(p){
+    const perms = (p && p.permissions) ? p.permissions : {};
+    const canComment = !!perms.comment;
+    const canCancel = !!perms.cancel;
+    const canTake = !!perms.take;
+    const canBought = !!perms.bought;
+    const photoUrl = (p && p.photo_url) ? String(p.photo_url) : '';
+
+    const creator = (p && p.creator) ? p.creator : null;
+    const creatorStr = (creator && creator.name) ? String(creator.name) : '—';
+    const creatorColor = (creator && creator.color) ? String(creator.color) : '#9CA3AF';
+    const takenBy = (p && p.taken_by) ? p.taken_by : null;
+    const takenByStr = (takenBy && takenBy.name) ? String(takenBy.name) : '';
+    const takenByColor = (takenBy && takenBy.color) ? String(takenBy.color) : '#9CA3AF';
+    const boughtBy = (p && p.bought_by) ? p.bought_by : null;
+    const boughtByStr = (boughtBy && boughtBy.name) ? String(boughtBy.name) : '';
+    const boughtByColor = (boughtBy && boughtBy.color) ? String(boughtBy.color) : '#9CA3AF';
+    const archivedBy = (p && p.archived_by) ? p.archived_by : null;
+    const archivedByStr = (archivedBy && archivedBy.name) ? String(archivedBy.name) : '';
+    const archivedByColor = (archivedBy && archivedBy.color) ? String(archivedBy.color) : '#9CA3AF';
+    const pr = (p && p.priority) ? String(p.priority) : '';
+    const prLabel = (pr === 'urgent') ? '🔥 Срочно' : 'Обычный';
+    const prStyle = (pr === 'urgent') ? ' style="font-weight:700;color:#991b1b"' : '';
+
+    return (
+      '<div class="task-modal">' +
+        '<div class="task-modal-head">' +
+          '<div>' +
+            '<div class="task-modal-title">Закупка #' + esc(p.id) + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div style="display:flex; flex-direction:column; gap:10px;">' +
+          '<div>' +
+            '<div class="muted" style="margin-bottom:6px;">Запрос</div>' +
+            '<div style="white-space:pre-wrap;">' + esc(p.text || '') + '</div>' +
+          '</div>' +
+
+          '<div class="task-detail-grid">' +
+            '<div class="card-row"><span class="card-row-label">Кто создал</span><span class="card-row-value">' +
+              '<span class="task-created-by">' +
+                '<span class="task-created-by-dot" style="background:' + esc(creatorColor) + '"></span>' +
+                '<span class="task-created-by-name" style="color:' + esc(creatorColor) + '" title="' + esc(creatorStr) + '">' + esc(creatorStr) + '</span>' +
+              '</span>' +
+            '</span></div>' +
+            (takenByStr
+              ? ('<div class="card-row"><span class="card-row-label">Взял в работу</span><span class="card-row-value">' +
+                  '<span class="task-created-by">' +
+                    '<span class="task-created-by-dot" style="background:' + esc(takenByColor) + '"></span>' +
+                    '<span class="task-created-by-name" style="color:' + esc(takenByColor) + '" title="' + esc(takenByStr) + '">' + esc(takenByStr) + '</span>' +
+                  '</span>' +
+                '</span></div>')
+              : ''
+            ) +
+            (boughtByStr
+              ? ('<div class="card-row"><span class="card-row-label">Купил</span><span class="card-row-value">' +
+                  '<span class="task-created-by">' +
+                    '<span class="task-created-by-dot" style="background:' + esc(boughtByColor) + '"></span>' +
+                    '<span class="task-created-by-name" style="color:' + esc(boughtByColor) + '" title="' + esc(boughtByStr) + '">' + esc(boughtByStr) + '</span>' +
+                  '</span>' +
+                '</span></div>')
+              : ''
+            ) +
+            (archivedByStr
+              ? ('<div class="card-row"><span class="card-row-label">Закрыл</span><span class="card-row-value">' +
+                  '<span class="task-created-by">' +
+                    '<span class="task-created-by-dot" style="background:' + esc(archivedByColor) + '"></span>' +
+                    '<span class="task-created-by-name" style="color:' + esc(archivedByColor) + '" title="' + esc(archivedByStr) + '">' + esc(archivedByStr) + '</span>' +
+                  '</span>' +
+                '</span></div>')
+              : ''
+            ) +
+            '<div class="card-row"><span class="card-row-label">Когда создал</span><span class="card-row-value">' + esc(p.created_at_str || '—') + '</span></div>' +
+            '<div class="card-row"><span class="card-row-label">Приоритет</span><span class="card-row-value"' + prStyle + '>' + esc(prLabel) + '</span></div>' +
+          '</div>' +
+
+          '<div>' +
+            '<div class="muted" style="margin-bottom:6px;">Фото</div>' +
+            (photoUrl ? ('<div class="task-main-photo"><img class="task-main-photo-img" src="' + esc(photoUrl) + '" alt="" /></div>') : '<div class="muted">—</div>') +
+          '</div>' +
+
+          '<div class="divider"></div>' +
+          '<div class="task-comments">' +
+            '<div class="task-comments-title">История</div>' +
+            '<div id="purchase-events-list">' + renderEvents(p.events) + '</div>' +
+          '</div>' +
+          '<div class="divider"></div>' +
+
+          (canComment
+            ? '<form class="purchase-comment-form" onsubmit="return window.purchasesSubmitComment(event,' + esc(p.id) + ')">' +
+                '<div class="task-comments">' +
+                  '<div class="task-comments-title">Комментарий</div>' +
+                  '<textarea name="text" class="input" rows="3" placeholder="Напишите комментарий" required></textarea>' +
+                '</div>' +
+                '<div class="purchase-comment-form-actions">' +
+                  '<button class="btn" type="submit">Отправить</button>' +
+                '</div>' +
+              '</form>'
+            : ''
+          ) +
+
+          '<div class="divider"></div>' +
+          '<div class="purchase-actions">' +
+            (canCancel ? '<button class="btn-danger" type="button" onclick="window.purchasesCancel(' + esc(p.id) + ')">Отменить</button>' : '') +
+            (canTake ? '<button class="btn-success" type="button" onclick="window.purchasesTake(' + esc(p.id) + ')">Взять в работу</button>' : '') +
+            (canBought ? '<button class="btn-success" type="button" onclick="window.purchasesBought(' + esc(p.id) + ')">Куплено</button>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  window.purchasesOpenCreate = function(){
+    openModal(
+      '<div class="task-modal">' +
+        '<div class="task-modal-head">' +
+          '<div>' +
+            '<div class="task-modal-title">Создать закупку</div>' +
+            '<div class="muted">Заполните данные</div>' +
+          '</div>' +
+        '</div>' +
+        '<form onsubmit="return window.purchasesSubmitCreate(event)">' +
+          '<div style="display:flex; flex-direction:column; gap:12px;">' +
+            '<div>' +
+              '<div class="muted" style="margin-bottom:6px;">Описание / Что купить</div>' +
+              '<textarea id="purchase-create-text" name="text" class="input" rows="4" required style="width:100%;" placeholder="Например: Перчатки нитриловые, 100 шт, размер M"></textarea>' +
+            '</div>' +
+            '<div>' +
+              '<div class="muted" style="margin-bottom:6px;">Приоритет</div>' +
+              '<select id="purchase-create-priority" name="priority" class="input" style="width:100%;">' +
+                '<option value="normal" selected>Обычный</option>' +
+                '<option value="urgent">Срочно</option>' +
+              '</select>' +
+            '</div>' +
+            '<div>' +
+              '<div class="muted" style="margin-bottom:6px;">Фото</div>' +
+              '<input id="purchase-create-photo" name="photo" type="file" accept="image/*" />' +
+            '</div>' +
+            '<div class="purchase-form-actions">' +
+              '<button id="purchase-create-submit" class="btn" type="submit">Создать</button>' +
+            '</div>' +
+          '</div>' +
+        '</form>' +
+      '</div>'
+    );
+  };
+
+  window.purchasesSubmitCreate = async function(ev){
+    ev.preventDefault();
+    const form = ev.target;
+    const fd = new FormData(form);
+    try {
+      const resp = await apiJson('/crm/api/purchases', { method: 'POST', body: fd });
+      const id = resp && resp.id ? resp.id : null;
+      if (!id) {
+        window.dispatchEvent(new CustomEvent('close-modal'));
+        try { window.location.reload(); } catch (_) {}
+        return false;
+      }
+
+      window.dispatchEvent(new CustomEvent('close-modal'));
+      try {
+        const detail = await apiJson('/crm/api/purchases/' + String(id));
+        const col = kanbanColFromItem(detail);
+        const target = document.getElementById(statusColumnId(col));
+        if (target) {
+          const wrap = document.createElement('div');
+          wrap.innerHTML = renderPurchaseCard(Object.assign({}, detail, { creator_str: (detail.creator && detail.creator.name) ? detail.creator.name : '—' }));
+          const el = wrap.firstChild;
+          target.insertBefore(el, target.firstChild);
+          updateColumnCounts();
+        } else {
+          window.location.reload();
+        }
+      } catch (_){ try { window.location.reload(); } catch (__){ } }
+      return false;
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось создать закупку');
+      return false;
+    }
+  };
+
+  window.purchasesOpenDetail = async function(purchaseId){
+    try {
+      const p = await apiJson('/crm/api/purchases/' + String(purchaseId));
+      openModal(renderDetailModal(p));
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось загрузить закупку');
+    }
+  };
+
+
+  window.purchasesSubmitComment = async function(ev, purchaseId){
+    ev.preventDefault();
+    const form = ev.target;
+    const fd = new FormData(form);
+    try {
+      await apiJson('/crm/api/purchases/' + String(purchaseId) + '/comment', { method: 'POST', body: fd });
+      await window.purchasesOpenDetail(purchaseId);
+      return false;
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отправить комментарий');
+      return false;
+    }
+  };
+
+  async function refetchAndSync(purchaseId){
+    const p = await apiJson('/crm/api/purchases/' + String(purchaseId));
+    const col = kanbanColFromItem(p);
+    window.purchasesUpsertCard(p);
+    if (col === 'archived') {
+      window.purchasesRemoveCard(purchaseId);
+    } else {
+      window.purchasesMoveCard(purchaseId, col);
+    }
+    return p;
+  }
+
+  window.purchasesCancel = async function(purchaseId){
+    const ok = await window.crmConfirm('Отменить закупку?', { title: 'Подтвердите действие', danger: true, okText: 'Отменить' });
+    if (!ok) return;
+    try {
+      await apiJson('/crm/api/purchases/' + String(purchaseId) + '/cancel', { method: 'POST' });
+      await refetchAndSync(purchaseId);
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отменить');
+    }
+  };
+
+  window.purchasesTake = async function(purchaseId){
+    const ok = await window.crmConfirm('Взять закупку в работу?', { title: 'Подтвердите действие', okText: 'Взять в работу' });
+    if (!ok) return;
+    try {
+      await apiJson('/crm/api/purchases/' + String(purchaseId) + '/take', { method: 'POST' });
+      await refetchAndSync(purchaseId);
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось взять в работу');
+    }
+  };
+
+  window.purchasesBought = async function(purchaseId){
+    const ok = await window.crmConfirm('Отметить как куплено?', { title: 'Подтвердите действие', okText: 'Куплено' });
+    if (!ok) return;
+    try {
+      await apiJson('/crm/api/purchases/' + String(purchaseId) + '/bought', { method: 'POST' });
+      await refetchAndSync(purchaseId);
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отметить как куплено');
+    }
+  };
+
+  try {
+    applyCollapsedFromStorage();
+    bindCollapseHandlers();
+    updateColumnCounts();
+  } catch (_){ }
+})();
+</script>
+{% endblock %}

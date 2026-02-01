@@ -19,10 +19,11 @@ import calendar
 from shared.config import settings
 from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus
+from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus, PurchaseStatus
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
 from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
+from shared.models import Purchase, PurchaseEvent
 from shared.models import WorkShiftDay
 from shared.models import ShiftInstance
 from shared.models import ShiftInstanceEvent
@@ -76,6 +77,8 @@ from shared.permissions import role_flags
 from shared.services.task_permissions import task_permissions, validate_status_transition
 from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
+from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
+from shared.services.purchases_render import purchases_chat_message_text, purchases_chat_kb_dict
 
 from shared.services.shifts_domain import (
     calc_int_hours_from_times,
@@ -90,6 +93,9 @@ DEFAULT_SHIFT_END = time(18, 0)
 MAX_TASK_PHOTO_MB = 20
 MAX_TASK_PHOTO_BYTES = MAX_TASK_PHOTO_MB * 1024 * 1024
 
+MAX_PURCHASE_PHOTO_MB = 20
+MAX_PURCHASE_PHOTO_BYTES = MAX_PURCHASE_PHOTO_MB * 1024 * 1024
+
 MAX_TG_TEXT = 4096
 
 
@@ -97,6 +103,7 @@ def _format_hours_from_times(st: time, et: time) -> str:
     minutes = (et.hour * 60 + et.minute) - (st.hour * 60 + st.minute)
     if minutes <= 0:
         return "—"
+
     h = minutes / 60.0
     if abs(h - round(h)) < 1e-9:
         return f"{int(round(h))}"
@@ -291,6 +298,9 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 BROADCAST_UPLOADS_DIR = STATIC_DIR / "uploads" / "broadcasts"
 BROADCAST_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+PURCHASE_UPLOADS_DIR = STATIC_DIR / "uploads" / "purchases"
+PURCHASE_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def _task_photo_path_from_key(photo_key: str | None) -> str | None:
     if not photo_key:
@@ -329,6 +339,48 @@ async def _save_task_photo(*, photo: UploadFile) -> tuple[str, str]:
     fs_path.write_bytes(data)
 
     photo_path = _task_photo_path_from_key(photo_key)
+    if not photo_path:
+        raise HTTPException(status_code=500, detail="Не удалось сформировать путь фото")
+    return str(photo_key), str(photo_path)
+
+
+def _purchase_photo_path_from_key(photo_key: str | None) -> str | None:
+    if not photo_key:
+        return None
+    key = str(photo_key).lstrip("/")
+    return f"/crm/static/uploads/{key}"
+
+
+def _purchase_photo_url_from_key(photo_key: str | None) -> str | None:
+    path = _purchase_photo_path_from_key(photo_key)
+    return _to_public_url(path)
+
+
+def _purchase_photo_fs_path_from_key(photo_key: str) -> Path:
+    key = str(photo_key).lstrip("/")
+    return STATIC_DIR / "uploads" / key
+
+
+async def _save_purchase_photo(*, photo: UploadFile) -> tuple[str, str]:
+    ext = Path(getattr(photo, "filename", "") or "").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        ext = ".jpg"
+    name = f"{uuid4().hex}{ext}"
+    photo_key = f"purchases/{name}"
+    fs_path = _purchase_photo_fs_path_from_key(photo_key)
+    fs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = await photo.read(MAX_PURCHASE_PHOTO_BYTES + 1)
+    if not data:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Пустой файл")
+    if len(data) > MAX_PURCHASE_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Файл слишком большой. Максимум: {MAX_PURCHASE_PHOTO_MB} MB.",
+        )
+    fs_path.write_bytes(data)
+
+    photo_path = _purchase_photo_path_from_key(photo_key)
     if not photo_path:
         raise HTTPException(status_code=500, detail="Не удалось сформировать путь фото")
     return str(photo_key), str(photo_path)
@@ -412,6 +464,15 @@ def _rating_pick_kb(*, broadcast_id: int) -> dict:
     for n in range(1, 6):
         row.append({"text": f"⭐{n}", "callback_data": f"broadcast_rate_set:{int(broadcast_id)}:{int(n)}"})
     return {"inline_keyboard": [row]}
+
+
+def _user_fio(u: User | None) -> str:
+    if not u:
+        return "—"
+    fio = (
+        f"{(getattr(u, 'first_name', '') or '').strip()} {(getattr(u, 'last_name', '') or '').strip()}".strip()
+    )
+    return fio or f"#{int(getattr(u, 'id', 0) or 0)}"
 
 
 @app.get("/api/broadcast/targets")
@@ -556,7 +617,6 @@ async def _run_broadcast_send(*, broadcast_id: int) -> None:
                 try:
                     msg_text = str(getattr(b, "text", "") or "")
                     msg_id: int | None = None
-
                     if media_type in {"photo", "video"} and media_bytes is not None and media_filename is not None:
                         # Telegram caption is limited; if too long -> send media without caption, then text+kb
                         if len(msg_text) > 1024:
@@ -1235,6 +1295,397 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
     }
 
 
+def _purchase_event_view(e: PurchaseEvent) -> dict:
+    actor = getattr(e, "actor_user", None)
+    actor_str = "—"
+    if actor is not None:
+        actor_str = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{actor.id}")
+    typ = str(getattr(e, "type", "") or "")
+    type_ru = {
+        "created": "Создано",
+        "updated": "Обновлено",
+        "edited": "Обновлено",
+        "comment": "Комментарий",
+        "comment_added": "Комментарий",
+        "bought": "Сделано",
+        "done": "Сделано",
+        "completed": "Сделано",
+        "rejected": "Отклонено",
+        "declined": "Отклонено",
+        "returned": "Возвращено",
+        "taken": "Взято в работу",
+        "unarchived": "Возвращено из архива",
+        "archived": "В архив",
+        "photo_added": "Фото добавлено",
+        "photo_replaced": "Фото обновлено",
+        "photo_removed": "Фото удалено",
+    }.get(typ, typ)
+    payload = dict(getattr(e, "payload", None) or {})
+    return {
+        "id": int(e.id),
+        "type": typ,
+        "type_ru": type_ru,
+        "text": getattr(e, "text", None),
+        "created_at_str": format_moscow(getattr(e, "created_at", None), "%d.%m.%Y %H:%M"),
+        "actor": {"id": int(getattr(actor, "id", 0) or 0), "name": actor_str},
+        "payload": payload,
+    }
+
+
+def _purchase_photo_proxy_url(p: Purchase) -> str | None:
+    fid = getattr(p, "tg_photo_file_id", None) or getattr(p, "photo_file_id", None) or None
+    if not fid:
+        return None
+    return f"/crm/purchases/{int(getattr(p, 'id', 0) or 0)}/photo"
+
+
+def _purchase_card_view(p: Purchase, *, actor_id: int | None = None) -> dict:
+    created_at_utc = getattr(p, "created_at", None)
+    created_at_ts: int | None = None
+    if created_at_utc is not None:
+        try:
+            created_at_ts = int(created_at_utc.timestamp())
+        except Exception:
+            created_at_ts = None
+
+    creator = getattr(p, "user", None)
+    creator_str = _user_fio(creator)
+    creator_view: dict | None = None
+    if creator is not None:
+        creator_view = {
+            "id": int(getattr(creator, "id", 0) or 0),
+            "name": creator_str,
+            "color": (getattr(creator, "color", None) or None),
+        }
+
+    taken_by = getattr(p, "taken_by_user", None)
+    taken_by_str = ""
+    taken_by_view: dict | None = None
+    if taken_by is not None:
+        taken_by_str = _user_fio(taken_by)
+        taken_by_view = {
+            "id": int(getattr(taken_by, "id", 0) or 0),
+            "name": taken_by_str,
+            "color": (getattr(taken_by, "color", None) or None),
+        }
+
+    bought_by = getattr(p, "bought_by_user", None)
+    bought_by_str = ""
+    bought_by_view: dict | None = None
+    if bought_by is not None:
+        bought_by_str = _user_fio(bought_by)
+        bought_by_view = {
+            "id": int(getattr(bought_by, "id", 0) or 0),
+            "name": bought_by_str,
+            "color": (getattr(bought_by, "color", None) or None),
+        }
+
+    archived_by = getattr(p, "archived_by_user", None)
+    archived_by_str = ""
+    archived_by_view: dict | None = None
+    if archived_by is not None:
+        archived_by_str = _user_fio(archived_by)
+        archived_by_view = {
+            "id": int(getattr(archived_by, "id", 0) or 0),
+            "name": archived_by_str,
+            "color": (getattr(archived_by, "color", None) or None),
+        }
+
+    is_taken_by_me = False
+    if actor_id is not None:
+        try:
+            is_taken_by_me = int(getattr(p, "taken_by_user_id", 0) or 0) == int(actor_id)
+        except Exception:
+            is_taken_by_me = False
+
+    st = getattr(p, "status", None)
+    st_val = st.value if hasattr(st, "value") else str(st)
+    photo_url = getattr(p, "photo_url", None) or _purchase_photo_url_from_key(getattr(p, "photo_key", None)) or _to_public_url(getattr(p, "photo_path", None))
+    if not photo_url:
+        photo_url = _purchase_photo_proxy_url(p)
+    return {
+        "id": int(p.id),
+        "text": getattr(p, "text", "") or "",
+        "description": getattr(p, "description", None),
+        "priority": getattr(p, "priority", None),
+        "status": st_val,
+        "approved_at": format_moscow(getattr(p, "approved_at", None), "%d.%m.%Y %H:%M") if getattr(p, "approved_at", None) else "",
+        "archived_at": format_moscow(getattr(p, "archived_at", None), "%d.%m.%Y %H:%M") if getattr(p, "archived_at", None) else "",
+        "bought_at": format_moscow(getattr(p, "bought_at", None), "%d.%m.%Y %H:%M") if getattr(p, "bought_at", None) else "",
+        "photo_url": photo_url,
+        "created_at_str": format_moscow(created_at_utc, "%d.%m.%Y %H:%M"),
+        "created_at_ts": created_at_ts,
+        "creator_str": creator_str,
+        "creator": creator_view,
+        "taken_by_str": taken_by_str,
+        "taken_by": taken_by_view,
+        "bought_by_str": bought_by_str,
+        "bought_by": bought_by_view,
+        "archived_by_str": archived_by_str,
+        "archived_by": archived_by_view,
+        "is_taken_by_me": is_taken_by_me,
+    }
+
+
+@app.get("/purchases/{purchase_id}/photo")
+async def purchases_photo_proxy(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    p = await _load_purchase_full(session, int(purchase_id))
+
+    existing = getattr(p, "photo_url", None) or _purchase_photo_url_from_key(getattr(p, "photo_key", None)) or _to_public_url(getattr(p, "photo_path", None))
+    if existing:
+        logger.info("purchases_photo_proxy redirect", extra={"purchase_id": int(purchase_id), "url": str(existing)})
+        return RedirectResponse(url=str(existing), status_code=302)
+
+    fid = getattr(p, "tg_photo_file_id", None) or getattr(p, "photo_file_id", None) or None
+    if not fid:
+        logger.info(
+            "purchases_photo_proxy no photo sources",
+            extra={
+                "purchase_id": int(purchase_id),
+                "photo_url": getattr(p, "photo_url", None),
+                "photo_path": getattr(p, "photo_path", None),
+                "tg_photo_file_id": getattr(p, "tg_photo_file_id", None),
+                "photo_file_id": getattr(p, "photo_file_id", None),
+            },
+        )
+        raise HTTPException(status_code=404)
+
+    data, content_type = await _download_tg_file_bytes(file_id=str(fid))
+    if not data:
+        logger.info(
+            "purchases_photo_proxy tg download returned empty",
+            extra={"purchase_id": int(purchase_id), "file_id": str(fid)},
+        )
+        raise HTTPException(status_code=404)
+
+    return Response(content=data, media_type=content_type or "application/octet-stream")
+
+
+@app.get("/crm/purchases/{purchase_id}/photo")
+async def purchases_photo_proxy_crm(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    return await purchases_photo_proxy(purchase_id=purchase_id, request=request, admin_id=admin_id, session=session)
+
+
+def _purchase_kanban_column(p: Purchase) -> str:
+    # Keep PurchaseStatus enum unchanged for bot compatibility.
+    # Web kanban must follow bot logic strictly.
+    st = getattr(p, "status", None)
+    st_val = st.value if hasattr(st, "value") else str(st or "")
+    if st_val == PurchaseStatus.IN_PROGRESS.value:
+        return "in_progress"
+    return "new"
+
+
+def _purchase_is_archived(p: Purchase) -> bool:
+    st = getattr(p, "status", None)
+    st_val = st.value if hasattr(st, "value") else str(st or "")
+    return st_val in {PurchaseStatus.BOUGHT.value, PurchaseStatus.CANCELED.value}
+
+
+async def _notify_purchases_chat_new_purchase_after_commit(*, purchase_id: int, user_name: str, created_at_str: str) -> None:
+    # Keep signature for backward compatibility, but delegate to the unified notifier.
+    # This guarantees that the very first notification (on create) is sent with photo
+    # using the same mechanism as status updates.
+    await _notify_purchases_chat_status_after_commit(purchase_id=int(purchase_id))
+
+
+def _purchase_status_ru(st: str) -> str:
+    s = str(st or "").strip()
+    if s == PurchaseStatus.NEW.value:
+        return "Новые"
+    if s == PurchaseStatus.IN_PROGRESS.value:
+        return "В работе"
+    if s == PurchaseStatus.BOUGHT.value:
+        return "Куплено"
+    if s == PurchaseStatus.CANCELED.value:
+        return "Отменено"
+    return "—"
+
+
+def _purchase_priority_human(priority: str | None) -> str:
+    p = str(priority or "").strip().lower()
+    if p == "urgent":
+        return "🔥 Срочно"
+    return "Обычный"
+
+
+def _purchase_status_message_text(p: Purchase, *, status: str) -> str:
+    purchase_id = int(getattr(p, "id", 0) or 0)
+    text = str(getattr(p, "text", None) or "—")
+    pr = _purchase_priority_human(getattr(p, "priority", None))
+    status_ru = _purchase_status_ru(str(status))
+
+    created_by = getattr(p, "user", None)
+    taken_by = getattr(p, "taken_by_user", None)
+    bought_by = getattr(p, "bought_by_user", None)
+    archived_by = getattr(p, "archived_by_user", None)
+
+    created_at_str = format_moscow(getattr(p, "created_at", None), "%d.%m.%Y %H:%M") if getattr(p, "created_at", None) else "—"
+
+    lines: list[str] = []
+    lines.append(f"🛒 <b>Закупка #{purchase_id}</b>")
+    lines.append("")
+    lines.append(f"🛒 <b>Что купить:</b> {text}")
+    lines.append(f"⚡ <b>Приоритет:</b> {pr}")
+    lines.append(f"📌 <b>Статус:</b> {status_ru}")
+    lines.append(f"👤 <b>Кто создал:</b> {_user_fio(created_by)}")
+    lines.append(f"⏱ <b>Когда:</b> {created_at_str}")
+
+    if taken_by is not None:
+        lines.append(f"🛠 <b>Взял в работу:</b> {_user_fio(taken_by)}")
+    if bought_by is not None:
+        lines.append(f"✅ <b>Купил:</b> {_user_fio(bought_by)}")
+    if archived_by is not None and str(status).strip() in {PurchaseStatus.BOUGHT.value, PurchaseStatus.CANCELED.value}:
+        lines.append(f"📦 <b>Закрыл:</b> {_user_fio(archived_by)}")
+
+    return "\n".join(lines)
+
+
+def _purchase_kb_for_status(*, purchase_id: int, status: str) -> dict | None:
+    st = str(status or "").strip()
+    if st == PurchaseStatus.NEW.value:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "❌ Отменить", "callback_data": f"purchase:{int(purchase_id)}:cancel"},
+                    {"text": "✅ Взять в работу", "callback_data": f"purchase:{int(purchase_id)}:take"},
+                ]
+            ]
+        }
+    if st == PurchaseStatus.IN_PROGRESS.value:
+        return {"inline_keyboard": [[{"text": "✅ Куплено", "callback_data": f"purchase:{int(purchase_id)}:bought"}]]}
+    return None
+
+
+async def _notify_purchases_chat_status_after_commit(*, purchase_id: int) -> None:
+    chat_id = int(getattr(settings, "PURCHASES_CHAT_ID", 0) or 0)
+    if chat_id == 0:
+        logger.error("[purchases_notify] PURCHASES_CHAT_ID is not configured, skipping", extra={"purchase_id": int(purchase_id)})
+        return
+    token = str(getattr(settings, "BOT_TOKEN", "") or "").strip()
+    if not token:
+        logger.error("[purchases_notify] BOT_TOKEN is not configured, skipping", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id)})
+        return
+    try:
+        from shared.db import get_async_session
+
+        async with get_async_session() as s2:
+            p = await _load_purchase_full(s2, int(purchase_id))
+            st = p.status.value if hasattr(p.status, "value") else str(p.status)
+            text = purchases_chat_message_text(user=getattr(p, "user", None), purchase=p)
+            kb = purchases_chat_kb_dict(purchase_id=int(purchase_id), status=getattr(p, "status", PurchaseStatus.NEW))
+
+            tg_file_id = str(getattr(p, "tg_photo_file_id", None) or getattr(p, "photo_file_id", None) or "").strip()
+            photo_path = str(getattr(p, "photo_path", None) or "").strip()
+            photo_url = str(getattr(p, "photo_url", None) or "").strip()
+
+        def _caption_safe(full_html: str, limit: int = 1024) -> tuple[str, str | None]:
+            if len(full_html) <= limit:
+                return full_html, None
+            short = (
+                "ℹ️ Текст заявки слишком длинный для подписи к фото. "
+                "Полное описание — следующим сообщением."
+            )
+            return short[:limit], full_html
+
+        logger.info("[purchases_notify] send", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id), "status": str(st)})
+        messenger = Messenger(token)
+        caption, extra_text = _caption_safe(str(text))
+        ok = False
+        mid = None
+        err = None
+        if tg_file_id:
+            ok, mid, err = await messenger.send_photo_by_id_ex(chat_id=int(chat_id), photo=str(tg_file_id), caption=str(caption), reply_markup=kb)
+            if ok and extra_text:
+                await messenger.send_message_ex(chat_id=int(chat_id), text=str(extra_text))
+        elif photo_path:
+            # photo_path stored as /crm/static/uploads/...
+            try:
+                rel = str(photo_path).replace("/crm/static/uploads/", "").lstrip("/")
+                fs_path = (STATIC_DIR / "uploads" / rel).resolve()
+                file_bytes = fs_path.read_bytes()
+                ok, mid, err = await messenger.send_photo_ex(
+                    chat_id=int(chat_id),
+                    file_bytes=file_bytes,
+                    filename=str(fs_path.name),
+                    caption=str(caption),
+                    reply_markup=kb,
+                )
+                if ok and extra_text:
+                    await messenger.send_message_ex(chat_id=int(chat_id), text=str(extra_text))
+            except Exception as e:
+                ok, mid, err = await messenger.send_message_ex(chat_id=int(chat_id), text=str(text), reply_markup=kb)
+                if ok:
+                    logger.warning(
+                        "[purchases_notify] failed to send photo from photo_path, fallback to text",
+                        extra={"purchase_id": int(purchase_id), "err": str(e)},
+                    )
+        elif photo_url:
+            ok, mid, err = await messenger.send_photo_by_id_ex(chat_id=int(chat_id), photo=str(photo_url), caption=str(caption), reply_markup=kb)
+            if ok and extra_text:
+                await messenger.send_message_ex(chat_id=int(chat_id), text=str(extra_text))
+        else:
+            ok, mid, err = await messenger.send_message_ex(chat_id=int(chat_id), text=str(text), reply_markup=kb)
+        if not ok:
+            logger.warning("[purchases_notify] send_message_ex failed", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id), "status": str(st), "err": str(err)})
+            return
+        try:
+            async with get_async_session() as s3:
+                pp = (await s3.execute(select(Purchase).where(Purchase.id == int(purchase_id)))).scalar_one_or_none()
+                if pp is not None:
+                    pp.tg_chat_id = int(chat_id)
+                    pp.tg_message_id = int(mid or 0) or None
+                    await s3.commit()
+        except Exception:
+            logger.exception("failed to save purchase tg link", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id), "message_id": int(mid or 0)})
+    except Exception:
+        logger.exception("failed to notify purchases chat", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id)})
+
+
+async def _notify_purchases_chat_event_after_commit(*, purchase_id: int, kind: str, actor_name: str, text: str | None = None) -> None:
+    chat_id = int(getattr(settings, "PURCHASES_CHAT_ID", 0) or 0)
+    if chat_id == 0:
+        logger.warning("PURCHASES_CHAT_ID is not configured, skipping purchases chat notification")
+        return
+
+    token = str(getattr(settings, "BOT_TOKEN", "") or "").strip()
+    if not token:
+        logger.warning("BOT_TOKEN is not configured, skipping purchases chat notification")
+        return
+
+    title = {
+        "comment": "Комментарий",
+        "bought": "Сделано",
+        "canceled": "Отменено",
+    }.get(str(kind or "").strip(), "Обновлено")
+
+    body = (
+        f"🛒 <b>Закупка #{int(purchase_id)}</b>\n"
+        f"🧾 <b>Событие:</b> {title}\n"
+        f"👤 <b>Кто:</b> {str(actor_name or '—')}"
+    )
+    if text:
+        body += f"\n\n{text}"
+
+    from web.app.services.messenger import Messenger
+
+    messenger = Messenger(token)
+    ok, _, err = await messenger.send_message_ex(chat_id=int(chat_id), text=body)
+    if not ok:
+        logger.warning("purchases chat event send failed", extra={"purchase_id": int(purchase_id), "kind": str(kind), "err": str(err)})
+
+
 def _task_permissions(*, t: Task, actor: User, is_admin: bool, is_manager: bool) -> dict:
     st = t.status.value if hasattr(t.status, "value") else str(t.status)
     assignees = list(getattr(t, "assignees", None) or [])
@@ -1699,6 +2150,695 @@ async def schedule_page(request: Request, admin_id: int = Depends(require_admin_
             "users_json": users_json,
         },
     )
+
+
+# ========== Purchases (CRM) ==========
+
+
+@app.get("/purchases", response_class=HTMLResponse, name="purchases_board")
+async def purchases_board(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    q = (request.query_params.get("q") or "").strip()
+    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+
+    from sqlalchemy import case
+
+    urgent_first = case((Purchase.priority == "urgent", 0), else_=1)
+    query = (
+        select(Purchase)
+        .options(selectinload(Purchase.user), selectinload(Purchase.taken_by_user))
+        .order_by(urgent_first.asc(), Purchase.created_at.desc(), Purchase.id.desc())
+    )
+    if q:
+        like = f"%{q}%"
+        query = query.where(Purchase.text.ilike(like))
+    if mine:
+        query = query.where(Purchase.taken_by_user_id == int(actor.id))
+
+    # Show only active statuses (NEW + IN_PROGRESS). Archive is separate page.
+    query = query.where(Purchase.status.in_([PurchaseStatus.NEW, PurchaseStatus.IN_PROGRESS]))
+
+    res = await session.execute(query)
+    purchases = list(res.scalars().unique().all())
+
+    col_new: list[dict] = []
+    col_in_progress: list[dict] = []
+    for p in purchases:
+        col = _purchase_kanban_column(p)
+        view = _purchase_card_view(p, actor_id=int(actor.id))
+        if col == "new":
+            col_new.append(view)
+        else:
+            col_in_progress.append(view)
+
+    columns = [
+        {"status": "new", "title": "Новые", "items": col_new},
+        {"status": "in_progress", "title": "В работе", "items": col_in_progress},
+    ]
+
+    return templates.TemplateResponse(
+        "purchases/board.html",
+        {
+            "request": request,
+            "board_url": request.url_for("purchases_board"),
+            "archive_url": request.url_for("purchases_archive"),
+            "columns": columns,
+            "q": q,
+            "mine": mine,
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+            "base_template": "base.html",
+        },
+    )
+
+
+@app.get("/purchases/archive", response_class=HTMLResponse, name="purchases_archive")
+async def purchases_archive(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    q = (request.query_params.get("q") or "").strip()
+
+    from sqlalchemy import case
+
+    urgent_first = case((Purchase.priority == "urgent", 0), else_=1)
+    query = (
+        select(Purchase)
+        .where(Purchase.status.in_([PurchaseStatus.BOUGHT, PurchaseStatus.CANCELED]))
+        .options(selectinload(Purchase.user), selectinload(Purchase.taken_by_user))
+        .order_by(urgent_first.asc(), Purchase.created_at.desc(), Purchase.id.desc())
+    )
+    if q:
+        like = f"%{q}%"
+        query = query.where(Purchase.text.ilike(like))
+
+    res = await session.execute(query)
+    purchases = list(res.scalars().unique().all())
+    items = [_purchase_card_view(p, actor_id=int(actor.id)) for p in purchases]
+
+    return templates.TemplateResponse(
+        "purchases/archive.html",
+        {
+            "request": request,
+            "board_url": request.url_for("purchases_board"),
+            "archive_url": request.url_for("purchases_archive"),
+            "items": items,
+            "q": q,
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+            "base_template": "base.html",
+        },
+    )
+
+
+@app.get("/api/purchases")
+@app.get("/crm/api/purchases")
+async def purchases_api_list(request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    q = (request.query_params.get("q") or "").strip()
+    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+
+    from sqlalchemy import case
+
+    urgent_first = case((Purchase.priority == "urgent", 0), else_=1)
+    query = (
+        select(Purchase)
+        .options(selectinload(Purchase.user), selectinload(Purchase.taken_by_user))
+        .order_by(urgent_first.asc(), Purchase.created_at.desc(), Purchase.id.desc())
+    )
+    if q:
+        like = f"%{q}%"
+        query = query.where(Purchase.text.ilike(like))
+    if mine:
+        query = query.where(Purchase.taken_by_user_id == int(actor.id))
+
+    res = await session.execute(query)
+    purchases = list(res.scalars().unique().all())
+    return {"items": [_purchase_card_view(p, actor_id=int(actor.id)) for p in purchases]}
+
+
+@app.post("/api/purchases")
+@app.post("/crm/api/purchases")
+async def purchases_api_create(
+    request: Request,
+    text: str = Form(...),
+    photo: UploadFile | None = File(None),
+    description: str | None = Form(None),
+    priority: str | None = Form(None),
+    status: str | None = Form(None),
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    pr_in = (str(priority or "").strip().lower() if priority is not None else "")
+    pr_norm = "urgent" if pr_in in {"urgent", "срочно"} else ("normal" if pr_in in {"normal", "обычный"} else "normal")
+    p = Purchase(
+        user_id=int(actor.id),
+        text=str(text or "").strip(),
+        description=(str(description).strip() if description is not None and str(description).strip() else None),
+        priority=pr_norm,
+        status=PurchaseStatus.NEW,
+    )
+
+    # Newly created purchases are always NEW
+    initial = "new"
+
+    session.add(p)
+    await session.flush()
+
+    if photo is not None:
+        photo_key, photo_path = await _save_purchase_photo(photo=photo)
+        p.photo_key = str(photo_key)
+        p.photo_path = str(photo_path)
+        p.photo_url = _purchase_photo_url_from_key(p.photo_key)
+        await session.flush()
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="created",
+            text=None,
+            payload={"initial": (initial if initial else None)},
+        )
+    )
+    await session.flush()
+    await session.refresh(p)
+
+    add_after_commit_callback(
+        session,
+        lambda: _notify_purchases_chat_status_after_commit(purchase_id=int(p.id)),
+    )
+    return {"id": int(p.id)}
+
+
+async def _load_purchase_full(session: AsyncSession, purchase_id: int) -> Purchase:
+    res = await session.execute(
+        select(Purchase)
+        .where(Purchase.id == int(purchase_id))
+        .options(
+            selectinload(Purchase.user),
+            selectinload(Purchase.taken_by_user),
+            selectinload(Purchase.bought_by_user),
+            selectinload(Purchase.archived_by_user),
+            selectinload(Purchase.events).selectinload(PurchaseEvent.actor_user),
+        )
+    )
+    p = res.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404)
+    return p
+
+
+@app.get("/api/purchases/{purchase_id}")
+@app.get("/crm/api/purchases/{purchase_id}")
+async def purchases_api_detail(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    p = await _load_purchase_full(session, int(purchase_id))
+
+    creator = getattr(p, "user", None)
+    creator_str = ""
+    creator_view: dict | None = None
+    if creator is not None:
+        creator_str = (f"{(creator.first_name or '').strip()} {(creator.last_name or '').strip()}".strip() or f"#{creator.id}")
+        creator_view = {"id": int(getattr(creator, "id", 0) or 0), "name": creator_str, "color": (getattr(creator, "color", None) or None)}
+
+    taken_by = getattr(p, "taken_by_user", None)
+    taken_by_str = ""
+    taken_by_view: dict | None = None
+    if taken_by is not None:
+        taken_by_str = (f"{(taken_by.first_name or '').strip()} {(taken_by.last_name or '').strip()}".strip() or f"#{taken_by.id}")
+        taken_by_view = {"id": int(taken_by.id), "name": taken_by_str, "color": (getattr(taken_by, "color", None) or None)}
+
+    events = list(getattr(p, "events", None) or [])
+    events_sorted = sorted(events, key=lambda x: x.created_at)
+
+    st = p.status.value if hasattr(p.status, "value") else str(p.status)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    # Actions depend on status:
+    # NEW: cancel, take
+    # IN_PROGRESS: bought
+    can_take = bool((is_admin or is_manager) and (st == PurchaseStatus.NEW.value))
+    can_cancel = bool((is_admin or is_manager) and (st in {PurchaseStatus.NEW.value, PurchaseStatus.IN_PROGRESS.value}))
+    can_bought = bool((is_admin or is_manager) and (st == PurchaseStatus.IN_PROGRESS.value))
+
+    photo_url = getattr(p, "photo_url", None) or _purchase_photo_url_from_key(getattr(p, "photo_key", None)) or _to_public_url(getattr(p, "photo_path", None))
+    if not photo_url:
+        photo_url = _purchase_photo_proxy_url(p)
+
+    return {
+        "id": int(p.id),
+        "text": getattr(p, "text", "") or "",
+        "description": getattr(p, "description", None),
+        "priority": getattr(p, "priority", None),
+        "status": st,
+        "created_at_str": format_moscow(getattr(p, "created_at", None), "%d.%m.%Y %H:%M"),
+        "creator": creator_view or {"id": int(getattr(creator, "id", 0) or 0), "name": creator_str, "color": None},
+        "taken_by": taken_by_view,
+        "photo_url": photo_url,
+        "tg_photo_file_id": getattr(p, "tg_photo_file_id", None) or getattr(p, "photo_file_id", None),
+        "photo_file_id": getattr(p, "photo_file_id", None),
+        "meta": {
+            "taken_at": format_moscow(getattr(p, "taken_at", None), "%d.%m.%Y %H:%M") if getattr(p, "taken_at", None) else "",
+            "bought_at": format_moscow(getattr(p, "bought_at", None), "%d.%m.%Y %H:%M") if getattr(p, "bought_at", None) else "",
+            "approved_at": format_moscow(getattr(p, "approved_at", None), "%d.%m.%Y %H:%M") if getattr(p, "approved_at", None) else "",
+            "archived_at": format_moscow(getattr(p, "archived_at", None), "%d.%m.%Y %H:%M") if getattr(p, "archived_at", None) else "",
+        },
+        "permissions": {
+            "take": bool(can_take),
+            "cancel": bool(can_cancel),
+            "bought": bool(can_bought),
+            "comment": bool(st in {PurchaseStatus.NEW.value, PurchaseStatus.IN_PROGRESS.value}),
+            "edit": bool(st == PurchaseStatus.NEW.value and (getattr(p, "taken_by_user_id", None) in {None, int(actor.id)})),
+            "approve": False,
+            "archive": False,
+            "unarchive": False,
+            "mark_bought": bool(can_bought),
+            "return_to_work": False,
+            "photo": False,
+        },
+        "events": [_purchase_event_view(e) for e in events_sorted],
+    }
+
+
+@app.post("/api/purchases/{purchase_id}/take")
+@app.post("/crm/api/purchases/{purchase_id}/take")
+async def purchases_api_take(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    result = await purchase_take_in_work(session=session, purchase_id=int(purchase_id), actor_user_id=int(actor.id))
+    if not bool(getattr(result, "changed", False)):
+        return {"ok": True, "id": int(getattr(result, "purchase_id", purchase_id) or purchase_id), "updated": False}
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(purchase_id),
+            actor_user_id=int(actor.id),
+            type="taken",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    add_after_commit_callback(session, lambda: _notify_purchases_chat_status_after_commit(purchase_id=int(purchase_id)))
+    return {"ok": True, "id": int(purchase_id)}
+
+
+@app.post("/api/purchases/{purchase_id}/cancel")
+@app.post("/crm/api/purchases/{purchase_id}/cancel")
+@app.post("/api/purchases/{purchase_id}/reject")
+@app.post("/crm/api/purchases/{purchase_id}/reject")
+async def purchases_api_cancel(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    result = await purchase_cancel(session=session, purchase_id=int(purchase_id), actor_user_id=int(actor.id))
+    if not bool(getattr(result, "changed", False)):
+        return {"ok": True, "id": int(getattr(result, "purchase_id", purchase_id) or purchase_id), "updated": False}
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(purchase_id),
+            actor_user_id=int(actor.id),
+            type="canceled",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    add_after_commit_callback(session, lambda: _notify_purchases_chat_status_after_commit(purchase_id=int(purchase_id)))
+    return {"ok": True, "id": int(purchase_id)}
+
+
+@app.post("/api/purchases/{purchase_id}/bought")
+@app.post("/crm/api/purchases/{purchase_id}/bought")
+@app.post("/api/purchases/{purchase_id}/mark_bought")
+@app.post("/crm/api/purchases/{purchase_id}/mark_bought")
+async def purchases_api_bought(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+    result = await purchase_mark_bought(session=session, purchase_id=int(purchase_id), actor_user_id=int(actor.id))
+    if not bool(getattr(result, "changed", False)):
+        return {"ok": True, "id": int(getattr(result, "purchase_id", purchase_id) or purchase_id), "updated": False}
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(purchase_id),
+            actor_user_id=int(actor.id),
+            type="bought",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    add_after_commit_callback(session, lambda: _notify_purchases_chat_status_after_commit(purchase_id=int(purchase_id)))
+    return {"ok": True, "id": int(purchase_id)}
+
+
+@app.post("/api/purchases/{purchase_id}/return_to_work")
+@app.post("/crm/api/purchases/{purchase_id}/return_to_work")
+async def purchases_api_return_to_work(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    p = await _load_purchase_full(session, int(purchase_id))
+
+    # Deprecated in new purchases workflow (no reopening from archive).
+    raise HTTPException(status_code=400, detail="Возврат в работу не поддерживается")
+
+
+@app.post("/api/purchases/{purchase_id}/approve")
+@app.post("/crm/api/purchases/{purchase_id}/approve")
+async def purchases_api_approve(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    p = await _load_purchase_full(session, int(purchase_id))
+    if getattr(p, "archived_at", None) is not None:
+        raise HTTPException(status_code=400, detail="Закупка в архиве")
+    if getattr(p, "approved_at", None) is not None:
+        raise HTTPException(status_code=409, detail="Уже одобрено")
+
+    p.approved_by_user_id = int(actor.id)
+    p.approved_at = utc_now()
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="approved",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    return {"ok": True, "id": int(p.id)}
+
+
+@app.post("/api/purchases/{purchase_id}/archive")
+@app.post("/crm/api/purchases/{purchase_id}/archive")
+async def purchases_api_archive(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    p = await _load_purchase_full(session, int(purchase_id))
+    if getattr(p, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail="Уже в архиве")
+    p.archived_by_user_id = int(actor.id)
+    p.archived_at = utc_now()
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="archived",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    return {"ok": True, "id": int(p.id)}
+
+
+@app.post("/api/purchases/{purchase_id}/unarchive")
+@app.post("/crm/api/purchases/{purchase_id}/unarchive")
+async def purchases_api_unarchive(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    p = await _load_purchase_full(session, int(purchase_id))
+    if getattr(p, "archived_at", None) is None:
+        raise HTTPException(status_code=409, detail="Не в архиве")
+    p.archived_by_user_id = None
+    p.archived_at = None
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="unarchived",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    return {"ok": True, "id": int(p.id)}
+
+
+@app.post("/api/purchases/{purchase_id}/photo_web")
+@app.post("/crm/api/purchases/{purchase_id}/photo_web")
+async def purchases_api_set_photo_web(
+    purchase_id: int,
+    request: Request,
+    photo: UploadFile = File(...),
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    p = await _load_purchase_full(session, int(purchase_id))
+    had_photo = bool(getattr(p, "photo_key", None) or getattr(p, "photo_path", None) or getattr(p, "photo_url", None))
+    photo_key, photo_path = await _save_purchase_photo(photo=photo)
+    p.photo_key = str(photo_key)
+    p.photo_path = str(photo_path)
+    p.photo_url = _purchase_photo_url_from_key(p.photo_key)
+    await session.flush()
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="photo_replaced" if had_photo else "photo_added",
+            text=None,
+            payload={"photo_key": p.photo_key},
+        )
+    )
+    await session.flush()
+    return await purchases_api_detail(int(p.id), request, admin_id, session)
+
+
+@app.delete("/api/purchases/{purchase_id}/photo")
+@app.delete("/crm/api/purchases/{purchase_id}/photo")
+async def purchases_api_delete_photo(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (bool(r.is_admin) or bool(r.is_manager)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    p = await _load_purchase_full(session, int(purchase_id))
+    try:
+        key = str(getattr(p, "photo_key", "") or "").strip()
+        if key:
+            fs_path = _purchase_photo_fs_path_from_key(key)
+            if fs_path.exists():
+                fs_path.unlink(missing_ok=True)  # type: ignore[arg-type]
+    except Exception:
+        pass
+
+    p.photo_key = None
+    p.photo_path = None
+    p.photo_url = None
+    try:
+        p.tg_photo_file_id = None
+    except Exception:
+        pass
+    try:
+        p.photo_file_id = None
+    except Exception:
+        pass
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="photo_removed",
+            text=None,
+            payload=None,
+        )
+    )
+    await session.flush()
+    return await purchases_api_detail(int(p.id), request, admin_id, session)
+
+
+@app.post("/api/purchases/{purchase_id}/comment")
+@app.post("/crm/api/purchases/{purchase_id}/comment")
+async def purchases_api_comment(
+    purchase_id: int,
+    request: Request,
+    text: str = Form(...),
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    p = await _load_purchase_full(session, int(purchase_id))
+
+    st = p.status.value if hasattr(p.status, "value") else str(p.status)
+    if st not in {PurchaseStatus.NEW.value, PurchaseStatus.IN_PROGRESS.value}:
+        raise HTTPException(status_code=400, detail="Нельзя комментировать")
+
+    txt = str(text or "").strip()
+    if not txt:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Комментарий пуст")
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="comment",
+            text=txt,
+            payload=None,
+        )
+    )
+    await session.flush()
+    try:
+        actor_name = (
+            f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}"
+        )
+    except Exception:
+        actor_name = "—"
+    add_after_commit_callback(
+        session,
+        lambda: _notify_purchases_chat_event_after_commit(
+            purchase_id=int(p.id),
+            kind="comment",
+            actor_name=str(actor_name),
+            text=f"💬 <b>Комментарий:</b>\n{txt}",
+        ),
+    )
+    return {"ok": True}
+
+
+@app.patch("/api/purchases/{purchase_id}")
+@app.patch("/crm/api/purchases/{purchase_id}")
+async def purchases_api_patch(
+    purchase_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    p = await _load_purchase_full(session, int(purchase_id))
+
+    body = await request.json()
+    description = body.get("description") if isinstance(body, dict) else None
+    priority = body.get("priority") if isinstance(body, dict) else None
+
+    st = p.status.value if hasattr(p.status, "value") else str(p.status)
+    if st != PurchaseStatus.NEW.value:
+        raise HTTPException(status_code=400, detail="Нельзя редактировать")
+    if getattr(p, "taken_by_user_id", None) not in {None, int(actor.id)}:
+        raise HTTPException(status_code=403, detail="Нельзя редактировать чужую закупку")
+
+    if description is not None:
+        d = str(description).strip()
+        p.description = d if d else None
+    if priority is not None:
+        pr = str(priority).strip()
+        p.priority = pr if pr else None
+
+    session.add(
+        PurchaseEvent(
+            purchase_id=int(p.id),
+            actor_user_id=int(actor.id),
+            type="edited",
+            text=None,
+            payload={"description": p.description, "priority": p.priority},
+        )
+    )
+    await session.flush()
+    return {"ok": True}
 
 
 @app.get("/schedule/public", response_class=HTMLResponse, name="schedule_page_public")
@@ -2489,6 +3629,24 @@ async def user_update(
     session: AsyncSession = Depends(get_db),
 ):
     user = await load_user(session, user_id)
+    old_status = user.status
+    logger.info(
+        "user_update request",
+        extra={
+            "admin_id": int(admin_id),
+            "user_id": int(user_id),
+            "fields": {
+                "first_name": first_name is not None,
+                "last_name": last_name is not None,
+                "birth_date": bool(birth_date),
+                "rate_k": rate_k is not None,
+                "schedule": schedule is not None,
+                "position": position is not None,
+                "status_value": status_value is not None,
+                "color": color is not None,
+            },
+        },
+    )
     if first_name is not None:
         user.first_name = first_name or None
     if last_name is not None:

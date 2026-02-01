@@ -1,0 +1,197 @@
+{% extends base_template %}
+{% block title %}Архив закупок{% endblock %}
+{% block content %}
+<div class="tasks-header">
+  <div>
+    <h2 class="subtitle">Закупки · Архив</h2>
+    <div class="muted">Завершенные и отмененные закупки</div>
+  </div>
+  <div class="tasks-header-actions">
+    <a class="btn-outline" href="{{ board_url }}">← На доску</a>
+  </div>
+</div>
+
+<form class="tasks-filters" method="get" action="{{ archive_url }}">
+  <div class="tasks-filters-search">
+    <label class="tasks-filter">
+      <span class="tasks-filter-label">Поиск</span>
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="Текст закупки" />
+    </label>
+  </div>
+
+  <div class="tasks-filters-row">
+    <div class="tasks-filters-actions">
+      <button class="btn-outline" type="submit">Применить</button>
+      <a class="btn-outline" href="{{ archive_url }}">Сбросить</a>
+    </div>
+  </div>
+</form>
+
+<div class="tasks-archive-grid">
+  {% for p in items %}
+    <div class="task-card" data-purchase-id="{{ p.id }}" onclick="window.purchasesArchiveOpenDetail(this.dataset.purchaseId)">
+      <div class="task-card-top">
+        <div class="task-title break-word">{{ p.text }}</div>
+        {% if p.photo_url %}
+          <img src="{{ p.photo_url }}" alt="" style="width:42px;height:42px;object-fit:cover;border-radius:10px;border:1px solid #e5e7eb;flex:0 0 auto" loading="lazy" />
+        {% endif %}
+      </div>
+      <div class="task-meta">
+        <div class="task-card-meta">
+          <div class="task-card-meta-row">
+            <span class="task-card-meta-label">Создано:</span>
+            <span class="task-card-meta-value">{{ p.created_at_str or '—' }}</span>
+          </div>
+          <div class="task-card-meta-row">
+            <span class="task-card-meta-label">Создатель:</span>
+            <span class="task-card-meta-value break-word">{{ p.creator_str or '—' }}</span>
+          </div>
+          {% if p.priority %}
+          <div class="task-card-meta-row">
+            <span class="task-card-meta-label">Приоритет:</span>
+            {% if p.priority == 'urgent' %}
+              <span class="task-card-meta-value" style="font-weight:700;color:#991b1b">🔥 Срочно</span>
+            {% else %}
+              <span class="task-card-meta-value">Обычный</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          <div class="task-card-meta-row">
+            <span class="task-card-meta-label">Статус:</span>
+            {% if p.status == 'BOUGHT' %}
+              <span class="task-card-meta-value">Куплено</span>
+            {% elif p.status == 'CANCELED' %}
+              <span class="task-card-meta-value">Отменено</span>
+            {% else %}
+              <span class="task-card-meta-value">—</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+
+  {% if not items %}
+    <div class="muted">В архиве пока нет закупок.</div>
+  {% endif %}
+</div>
+
+<script>
+(function(){
+  async function apiJson(url, opts){
+    const o = Object.assign({ credentials: 'include' }, (opts || {}));
+    const r = await fetch(url, o);
+    if (r.status === 401) {
+      try { window.location.href = '/crm/login'; } catch (_) {}
+      throw new Error('Требуется вход');
+    }
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    const isJson = ct.includes('application/json');
+    if (!r.ok) {
+      let msg = 'Ошибка';
+      try {
+        if (isJson) {
+          const data = await r.json();
+          msg = (data && (data.detail || data.message)) || msg;
+        } else {
+          msg = await r.text();
+        }
+      } catch (_){ }
+      throw new Error(msg);
+    }
+    if (r.status === 204) return null;
+    return isJson ? await r.json() : await r.text();
+  }
+
+  function openModal(html){
+    const b = document.getElementById('modal-body');
+    if (!b) return;
+    b.innerHTML = String(html || '');
+    window.dispatchEvent(new CustomEvent('open-modal'));
+  }
+
+  function esc(s){
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderEvents(events){
+    const items = Array.isArray(events) ? events : [];
+    if (!items.length) return '<div class="muted">История пуста</div>';
+
+    const typeRu = (t) => {
+      const s = String(t || '');
+      if (s === 'created') return 'Создано';
+      if (s === 'taken') return 'Взято в работу';
+      if (s === 'bought') return 'Куплено';
+      if (s === 'canceled') return 'Отменено';
+      if (s === 'comment') return 'Комментарий';
+      if (s === 'edited') return 'Изменено';
+      if (s === 'photo_added') return 'Фото добавлено';
+      if (s === 'photo_replaced') return 'Фото заменено';
+      if (s === 'photo_removed') return 'Фото удалено';
+      if (s === 'archived') return 'Закрыто';
+      if (s === 'unarchived') return 'Возвращено из архива';
+      return s || '—';
+    };
+
+    return items.map(e => {
+      const who = (e.actor && e.actor.name) ? e.actor.name : '—';
+      const txt = e.text ? ('<div style="white-space:pre-wrap;">' + esc(e.text) + '</div>') : '';
+      const typ = esc(typeRu(e.type));
+      return (
+        '<div style="padding:10px 0; border-bottom:1px solid rgba(0,0,0,0.06);">' +
+          '<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:baseline;">' +
+            '<div style="font-weight:600;">' + typ + '</div>' +
+            '<div class="muted">' + esc(e.created_at_str || '') + '</div>' +
+          '</div>' +
+          '<div class="muted">' + esc(who) + '</div>' +
+          txt +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function renderDetailModal(p){
+    const photoUrl = (p && p.photo_url) ? String(p.photo_url) : '';
+    const st = String((p && p.status) ? p.status : '');
+    const stRu = (st === 'BOUGHT') ? 'Куплено' : ((st === 'CANCELED') ? 'Отменено' : '—');
+    return (
+      '<div class="task-modal">' +
+        '<div class="task-modal-head">' +
+          '<div>' +
+            '<div class="task-modal-title">Закупка #' + esc(p.id) + '</div>' +
+            '<div class="muted">Создано: ' + esc(p.created_at_str || '') + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex; flex-direction:column; gap:10px;">' +
+          '<div>' +
+            '<div class="muted" style="margin-bottom:6px;">Текст</div>' +
+            '<div style="white-space:pre-wrap;">' + esc(p.text || '') + '</div>' +
+          '</div>' +
+          '<div class="task-detail-grid">' +
+            '<div class="card-row"><span class="card-row-label">Статус</span><span class="card-row-value">' + esc(stRu) + '</span></div>' +
+          '</div>' +
+          '<div>' +
+            '<div class="muted" style="margin-bottom:6px;">Фото</div>' +
+            (photoUrl ? ('<div class="task-main-photo"><img class="task-main-photo-img" src="' + esc(photoUrl) + '" alt="" /></div>') : '<div class="muted">—</div>') +
+          '</div>' +
+          '<div>' +
+            '<div class="muted" style="margin-bottom:6px;">История</div>' +
+            '<div>' + renderEvents(p.events) + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  window.purchasesArchiveOpenDetail = async function(purchaseId){
+    try {
+      const p = await apiJson('/crm/api/purchases/' + String(purchaseId));
+      openModal(renderDetailModal(p));
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось загрузить закупку');
+    }
+  };
+})();
+</script>
+{% endblock %}
