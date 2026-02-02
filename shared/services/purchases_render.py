@@ -44,33 +44,18 @@ def purchases_chat_message_text(*, user, purchase) -> str:
     created_ddmm = format_moscow(created_dt, "%d.%m") if isinstance(created_dt, datetime) else ""
     created_hhmm = format_moscow(created_dt, "%H:%M") if isinstance(created_dt, datetime) else ""
     pr_raw = str(getattr(purchase, "priority", None) or "").strip().lower()
-    status_ru = purchase_status_ru(getattr(purchase, "status", PurchaseStatus.NEW))
-    taken_by = getattr(purchase, "taken_by_user", None)
-    bought_by = getattr(purchase, "bought_by_user", None)
-    archived_by = getattr(purchase, "archived_by_user", None)
-
-    purchase_text = str(getattr(purchase, "text", None) or "—")
+    emoji = "🔥" if pr_raw == "urgent" else "🛒"
     author = _fio(user)
-    created_line = f"{author} создал(а) запрос {created_ddmm} в {created_hhmm}".strip()
-    if pr_raw == "urgent":
-        head = f"🔥СРОЧНО: {purchase_text}"
-    else:
-        head = f"🛒 {purchase_text}"
+    purchase_id = int(getattr(purchase, "id", 0) or 0)
+    purchase_text = str(getattr(purchase, "text", None) or "—")
+    desc = str(getattr(purchase, "description", None) or "").strip()
 
-    txt = (
-        f"🛒 <b>Закупка #{int(purchase.id)}</b>\n\n"
-        f"{head}\n"
-        f"{created_line}\n"
-        f"📌 <b>Статус:</b> {status_ru}"
-    )
+    header = f"{emoji} {author} создал(а) #{purchase_id}: {purchase_text}".strip()
+    when_line = f"{created_ddmm} в {created_hhmm}".strip()
 
-    if taken_by is not None:
-        txt += f"\n🛠 <b>Взял в работу:</b> {_fio(taken_by)}"
-    if bought_by is not None:
-        txt += f"\n✅ <b>Купил:</b> {_fio(bought_by)}"
-    if archived_by is not None and getattr(purchase, "status", None) in {PurchaseStatus.BOUGHT, PurchaseStatus.CANCELED}:
-        txt += f"\n📦 <b>Закрыл:</b> {_fio(archived_by)}"
-    return txt
+    if desc:
+        return f"{header}\n{desc}\n\n{when_line}".strip()
+    return f"{header}\n\n{when_line}".strip()
 
 
 def purchase_created_user_message(*, purchase_id: int) -> str:
