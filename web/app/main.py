@@ -1590,6 +1590,9 @@ async def _notify_purchases_chat_status_after_commit(*, purchase_id: int) -> Non
             photo_path = str(getattr(p, "photo_path", None) or "").strip()
             photo_url = str(getattr(p, "photo_url", None) or "").strip()
 
+            owner_tg_id = int(getattr(getattr(p, "user", None), "tg_id", 0) or 0)
+            purchase_text_plain = str(getattr(p, "text", "") or "").strip() or "—"
+
         def _caption_safe(full_html: str, limit: int = 1024) -> tuple[str, str | None]:
             if len(full_html) <= limit:
                 return full_html, None
@@ -1640,6 +1643,23 @@ async def _notify_purchases_chat_status_after_commit(*, purchase_id: int) -> Non
         if not ok:
             logger.warning("[purchases_notify] send_message_ex failed", extra={"purchase_id": int(purchase_id), "chat_id": int(chat_id), "status": str(st), "err": str(err)})
             return
+
+        # Also notify purchase creator (NEW messages only, without photos)
+        try:
+            if int(owner_tg_id) > 0:
+                s = str(st or "").strip()
+                body = None
+                if s == PurchaseStatus.IN_PROGRESS.value:
+                    body = f"☑️ Ваша заявка на закупку № {int(purchase_id)} взята в работу!\n\n{purchase_text_plain}"
+                elif s == PurchaseStatus.CANCELED.value:
+                    body = f"❌ Ваша заявка на закупку № {int(purchase_id)} отклонена!\n\n{purchase_text_plain}"
+                elif s == PurchaseStatus.BOUGHT.value:
+                    body = f"✅ Ваша заявка на закупку № {int(purchase_id)} выполнена!\n\n{purchase_text_plain}"
+
+                if body:
+                    await messenger.send_message_ex(chat_id=int(owner_tg_id), text=str(body))
+        except Exception:
+            logger.exception("failed to notify purchase creator", extra={"purchase_id": int(purchase_id), "status": str(st)})
         try:
             async with get_async_session() as s3:
                 pp = (await s3.execute(select(Purchase).where(Purchase.id == int(purchase_id)))).scalar_one_or_none()
