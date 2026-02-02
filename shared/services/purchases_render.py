@@ -49,13 +49,20 @@ def purchases_chat_message_text(*, user, purchase) -> str:
     purchase_id = int(getattr(purchase, "id", 0) or 0)
     purchase_text = str(getattr(purchase, "text", None) or "—")
     desc = str(getattr(purchase, "description", None) or "").strip()
+    status_ru = purchase_status_ru(getattr(purchase, "status", PurchaseStatus.NEW))
+    taken_by = getattr(purchase, "taken_by_user", None)
+    bought_by = getattr(purchase, "bought_by_user", None)
 
     header = f"{emoji} {author} создал(а) #{purchase_id}: {purchase_text}".strip()
     when_line = f"{created_ddmm} в {created_hhmm}".strip()
 
-    if desc:
-        return f"{header}\n{desc}\n\n{when_line}".strip()
-    return f"{header}\n\n{when_line}".strip()
+    txt = f"{header}\n{desc}\n\n{when_line}" if desc else f"{header}\n\n{when_line}"
+    txt += f"\n📌 <b>Статус:</b> {status_ru}"
+    if taken_by is not None:
+        txt += f"\n🛠 <b>Взял в работу:</b> {_fio(taken_by)}"
+    if bought_by is not None:
+        txt += f"\n✅ <b>Купил:</b> {_fio(bought_by)}"
+    return txt.strip()
 
 
 def purchase_created_user_message(*, purchase_id: int) -> str:
