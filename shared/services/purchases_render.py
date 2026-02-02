@@ -66,6 +66,14 @@ def purchases_chat_message_text(*, user, purchase) -> str:
     return txt
 
 
+def purchase_created_user_message(*, purchase_id: int) -> str:
+    return (
+        f"✅ Успешно! Спасибо, закупка № {int(purchase_id)} создана.\n\n"
+        "Ваш запрос получен и отправлен руководству! При изменении\n"
+        "статуса у заявки вы получите уведомление. 🔔"
+    )
+
+
 def purchases_chat_kb_dict(*, purchase_id: int, status: PurchaseStatus | str) -> dict | None:
     st = status.value if hasattr(status, "value") else str(status or "")
     if st == PurchaseStatus.NEW.value:

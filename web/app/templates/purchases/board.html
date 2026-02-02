@@ -503,6 +503,15 @@
     const form = ev.target;
     const fd = new FormData(form);
     try {
+      const inp = document.getElementById('purchase-create-photo');
+      const file = inp && inp.files ? inp.files[0] : null;
+      if (!file || !file.size || file.size <= 0) {
+        fd.delete('photo');
+      } else {
+        fd.set('photo', file);
+      }
+    } catch (_){ }
+    try {
       const resp = await apiJson('/crm/api/purchases', { method: 'POST', body: fd });
       const id = resp && resp.id ? resp.id : null;
       if (!id) {

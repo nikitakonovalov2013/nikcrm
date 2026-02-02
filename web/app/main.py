@@ -78,7 +78,7 @@ from shared.services.task_permissions import task_permissions, validate_status_t
 from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
-from shared.services.purchases_render import purchases_chat_message_text, purchases_chat_kb_dict
+from shared.services.purchases_render import purchases_chat_message_text, purchases_chat_kb_dict, purchase_created_user_message
 
 from shared.services.shifts_domain import (
     calc_int_hours_from_times,
@@ -2345,11 +2345,20 @@ async def purchases_api_create(
     await session.flush()
 
     if photo is not None:
-        photo_key, photo_path = await _save_purchase_photo(photo=photo)
-        p.photo_key = str(photo_key)
-        p.photo_path = str(photo_path)
-        p.photo_url = _purchase_photo_url_from_key(p.photo_key)
-        await session.flush()
+        try:
+            filename = str(getattr(photo, "filename", "") or "").strip()
+            size = int(getattr(photo, "size", 0) or 0)
+        except Exception:
+            filename = ""
+            size = 0
+
+        # Treat empty file as "no photo" (front can still send empty part)
+        if filename and size != 0:
+            photo_key, photo_path = await _save_purchase_photo(photo=photo)
+            p.photo_key = str(photo_key)
+            p.photo_path = str(photo_path)
+            p.photo_url = _purchase_photo_url_from_key(p.photo_key)
+            await session.flush()
 
     session.add(
         PurchaseEvent(
@@ -2367,7 +2376,32 @@ async def purchases_api_create(
         session,
         lambda: _notify_purchases_chat_status_after_commit(purchase_id=int(p.id)),
     )
+
+    add_after_commit_callback(
+        session,
+        lambda: _notify_purchase_creator_created_after_commit(purchase_id=int(p.id)),
+    )
     return {"id": int(p.id)}
+
+
+async def _notify_purchase_creator_created_after_commit(*, purchase_id: int) -> None:
+    pid = int(purchase_id)
+    if pid <= 0:
+        return
+    token = str(getattr(settings, "BOT_TOKEN", "") or "").strip()
+    if not token:
+        logger.error("[purchases_notify] BOT_TOKEN is not configured, skipping creator created notify", extra={"purchase_id": int(pid)})
+        return
+    try:
+        async with get_async_session() as s2:
+            p = await _load_purchase_full(s2, int(pid))
+            tg_id = int(getattr(getattr(p, "user", None), "tg_id", 0) or 0)
+        if tg_id <= 0:
+            return
+        messenger = Messenger(token)
+        await messenger.send_message_ex(chat_id=int(tg_id), text=purchase_created_user_message(purchase_id=int(pid)))
+    except Exception:
+        logger.exception("failed to notify purchase creator about creation", extra={"purchase_id": int(pid)})
 
 
 async def _load_purchase_full(session: AsyncSession, purchase_id: int) -> Purchase:

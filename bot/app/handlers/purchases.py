@@ -24,7 +24,7 @@ from bot.app.keyboards.main import main_menu_kb
 from bot.app.repository.users import UserRepository
 from bot.app.repository.purchases import PurchaseRepository
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
-from shared.services.purchases_render import purchases_chat_message_text
+from shared.services.purchases_render import purchases_chat_message_text, purchase_created_user_message
 
 router = Router()
 
@@ -470,9 +470,7 @@ async def purchases_receive_input(message: Message, state: FSMContext):
             )
 
         await message.answer(
-            f"✅ Успешно! Спасибо, закупка № {int(purchase.id)} создана.\n\n"
-            "Ваш запрос получен и отправлен руководству! При изменении\n"
-            "статуса у заявки вы получите уведомление. 🔔"
+            purchase_created_user_message(purchase_id=int(purchase.id))
         )
         try:
             await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
@@ -556,9 +554,7 @@ async def purchases_receive_text_after_photo(message: Message, state: FSMContext
             )
 
         await message.answer(
-            f"✅ Успешно! Спасибо, закупка № {int(purchase.id)} создана.\n\n"
-            "Ваш запрос получен и отправлен руководству! При изменении\n"
-            "статуса у заявки вы получите уведомление. 🔔"
+            purchase_created_user_message(purchase_id=int(purchase.id))
         )
         try:
             await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
