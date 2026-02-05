@@ -1058,6 +1058,8 @@ async def cb_tasks_create_confirm(cb: CallbackQuery, state: FSMContext):
             recipients = [int(x) for x in (assignee_ids or []) if int(x) > 0 and int(x) != int(actor.id)]
             if recipients:
                 ns = TaskNotificationService(session)
+                tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+                recipients = [rid for rid in recipients if int(tg_map.get(int(rid), 0) or 0) > 0]
                 actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
                 for rid in recipients:
                     await ns.enqueue(

@@ -164,6 +164,14 @@ def render_notification_html(*, n) -> str:
         fr = str(payload.get("from") or "")
         to = str(payload.get("to") or "")
         comment = str(payload.get("comment") or "").strip()
+        if fr == TaskStatus.REVIEW.value and to == TaskStatus.IN_PROGRESS.value:
+            extra = ""
+            if comment:
+                extra = f"\n\n<b>Комментарий:</b>\n{esc(comment)}"
+            return (
+                f"↩️ <b>Задача возвращена на доработку</b>\n\n{base}\n\n"
+                f"<b>Кто вернул:</b> {esc(actor_name)}{extra}"
+            )
         extra = ""
         if comment:
             extra = f"\n\n<b>Комментарий:</b>\n{esc(comment)}"
@@ -262,9 +270,34 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                         await repo.inc_attempts(n=n)
                         try:
                             recipient = getattr(n, "recipient_user", None)
-                            chat_id = int(getattr(recipient, "tg_id"))
+                            chat_id = int(getattr(recipient, "tg_id", 0) or 0)
+                            if chat_id <= 0:
+                                try:
+                                    _logger.info(
+                                        "TASK_NOTIFY_SKIP reason=no_tg_id source=worker notification_id=%s type=%s task_id=%s recipient_user_id=%s",
+                                        int(getattr(n, "id", 0) or 0),
+                                        str(getattr(n, "type", "")),
+                                        int(getattr(n, "task_id", 0) or 0),
+                                        int(getattr(recipient, "id", 0) or 0),
+                                    )
+                                except Exception:
+                                    pass
+                                await repo.mark_failed(n=n, now=now, error="no tg_id for recipient", retry_at=None)
+                                continue
                             task = getattr(n, "task", None)
                             task_id = int(getattr(task, "id")) if task is not None else int(getattr(n, "task_id"))
+
+                            try:
+                                _logger.info(
+                                    "TASK_NOTIFY_PROCESS source=worker notification_id=%s type=%s task_id=%s recipient_user_id=%s chat_id=%s",
+                                    int(getattr(n, "id", 0) or 0),
+                                    str(getattr(n, "type", "")),
+                                    int(task_id),
+                                    int(getattr(recipient, "id", 0) or 0),
+                                    int(chat_id),
+                                )
+                            except Exception:
+                                pass
 
                             # Build the same keyboard as in task detail view, using existing permissions logic.
                             tasks_repo = TaskRepository(session)
@@ -282,6 +315,17 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                 )
                                 await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
                                 await repo.mark_sent(n=n, now=now)
+                                try:
+                                    _logger.info(
+                                        "TASK_NOTIFY_SENT source=worker notification_id=%s type=%s task_id=%s chat_id=%s message_id=%s mode=send_fallback",
+                                        int(getattr(n, "id", 0) or 0),
+                                        str(getattr(n, "type", "")),
+                                        int(task_id),
+                                        int(chat_id),
+                                        int(sent.message_id),
+                                    )
+                                except Exception:
+                                    pass
                                 continue
 
                             r = role_flags(
@@ -314,33 +358,62 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                             )
 
                             payload = dict(getattr(n, "payload", None) or {})
-                            if str(getattr(n, "type", "")) == "status_changed":
-                                text = _format_status_changed_compact(task=task2, payload=payload, board_url=board_url)
+                            n_type = str(getattr(n, "type", ""))
+                            if n_type == "status_changed":
+                                # Special-case 'return to rework' to guarantee comment is visible.
+                                action = str(payload.get("action") or "")
+                                fr = str(payload.get("from") or "")
+                                to = str(payload.get("to") or "")
+                                is_rework = action == "return_to_rework" or (
+                                    fr == TaskStatus.REVIEW.value and to == TaskStatus.IN_PROGRESS.value and str(payload.get("comment") or "").strip()
+                                )
+                                if is_rework:
+                                    text = render_notification_html(n=n) + "\n\n" + format_plain_url("🔗 Открыть задачу:", str(board_url))
+                                else:
+                                    text = _format_status_changed_compact(task=task2, payload=payload, board_url=board_url)
                             else:
                                 # Keep existing formats for other notification types, but append board URL explicitly.
                                 text = render_notification_html(n=n) + "\n\n" + format_plain_url("🌐 Доска задач:", str(board_url))
 
                             # Prefer edit of last sent notification for this task+recipient.
+                            # BUT: for some types we must send a new message to ensure the user gets a visible notification.
+                            typ = str(getattr(n, "type", ""))
+                            force_new = False
+                            if typ == "created":
+                                force_new = True
+                            if typ == "status_changed":
+                                try:
+                                    action = str(payload.get("action") or "")
+                                    fr = str(payload.get("from") or "")
+                                    to = str(payload.get("to") or "")
+                                    if action == "return_to_rework":
+                                        force_new = True
+                                    elif fr == TaskStatus.REVIEW.value and to == TaskStatus.IN_PROGRESS.value:
+                                        force_new = True
+                                except Exception:
+                                    pass
+
                             edited = False
-                            last_sent = await repo.get_last_sent_for_task_recipient(task_id=int(task_id), recipient_user_id=int(getattr(recipient, "id")))
-                            if last_sent is not None:
-                                lp = dict(getattr(last_sent, "payload", None) or {})
-                                last_chat_id = lp.get("tg_chat_id")
-                                last_message_id = lp.get("tg_message_id")
-                                if last_chat_id and last_message_id:
-                                    try:
-                                        await bot.edit_message_text(
-                                            chat_id=int(last_chat_id),
-                                            message_id=int(last_message_id),
-                                            text=text,
-                                            parse_mode="HTML",
-                                            reply_markup=kb,
-                                            disable_web_page_preview=True,
-                                        )
-                                        await repo.store_delivery_info(n=n, chat_id=int(last_chat_id), message_id=int(last_message_id))
-                                        edited = True
-                                    except Exception:
-                                        edited = False
+                            if not force_new:
+                                last_sent = await repo.get_last_sent_for_task_recipient(task_id=int(task_id), recipient_user_id=int(getattr(recipient, "id")))
+                                if last_sent is not None:
+                                    lp = dict(getattr(last_sent, "payload", None) or {})
+                                    last_chat_id = lp.get("tg_chat_id")
+                                    last_message_id = lp.get("tg_message_id")
+                                    if last_chat_id and last_message_id:
+                                        try:
+                                            await bot.edit_message_text(
+                                                chat_id=int(last_chat_id),
+                                                message_id=int(last_message_id),
+                                                text=text,
+                                                parse_mode="HTML",
+                                                reply_markup=kb,
+                                                disable_web_page_preview=True,
+                                            )
+                                            await repo.store_delivery_info(n=n, chat_id=int(last_chat_id), message_id=int(last_message_id))
+                                            edited = True
+                                        except Exception:
+                                            edited = False
 
                             if not edited:
                                 sent = await bot.send_message(
@@ -351,6 +424,29 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                     disable_web_page_preview=True,
                                 )
                                 await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
+                                try:
+                                    _logger.info(
+                                        "TASK_NOTIFY_SENT source=worker notification_id=%s type=%s task_id=%s chat_id=%s message_id=%s mode=send",
+                                        int(getattr(n, "id", 0) or 0),
+                                        str(getattr(n, "type", "")),
+                                        int(task_id),
+                                        int(chat_id),
+                                        int(sent.message_id),
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    _logger.info(
+                                        "TASK_NOTIFY_SENT source=worker notification_id=%s type=%s task_id=%s chat_id=%s message_id=%s mode=edit",
+                                        int(getattr(n, "id", 0) or 0),
+                                        str(getattr(n, "type", "")),
+                                        int(task_id),
+                                        int(chat_id),
+                                        int(getattr(n, "tg_message_id", 0) or 0),
+                                    )
+                                except Exception:
+                                    pass
 
                             await repo.mark_sent(n=n, now=now)
                         except Exception as e:

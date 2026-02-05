@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 
@@ -11,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.db import add_after_commit_callback
 from shared.models import Task, TaskNotification, User
 from shared.utils import MOSCOW_TZ, utc_now
+
+
+logger = logging.getLogger(__name__)
 
 
 WORK_START = time(8, 0)
@@ -53,6 +57,14 @@ class TaskNotificationService:
         # Lightweight wake-up signal for bot worker. Actual sending is still driven by DB state.
         payload = f"recipient={int(recipient_user_id)};id={int(notification_id or 0)}"
         try:
+            try:
+                logger.info(
+                    "TASK_NOTIFY_AFTER_COMMIT recipient_user_id=%s notification_id=%s",
+                    int(recipient_user_id),
+                    int(notification_id or 0),
+                )
+            except Exception:
+                pass
             await self.session.execute(
                 text("SELECT pg_notify(:channel, :payload)"),
                 {"channel": "task_notifications", "payload": payload},
@@ -86,6 +98,17 @@ class TaskNotificationService:
             )
             existing_id = res.scalar_one_or_none()
             if existing_id:
+                try:
+                    logger.info(
+                        "TASK_NOTIFY_ENQUEUE_DEDUPE task_id=%s recipient_user_id=%s type=%s dedupe_key=%s existing_id=%s",
+                        int(task_id),
+                        int(recipient_user_id),
+                        str(type),
+                        str(dedupe_key_h),
+                        int(existing_id),
+                    )
+                except Exception:
+                    pass
                 return EnqueueResult(created=False, notification_id=int(existing_id))
 
         n = TaskNotification(
@@ -103,6 +126,18 @@ class TaskNotificationService:
         )
         self.session.add(n)
         await self.session.flush()
+
+        try:
+            logger.info(
+                "TASK_NOTIFY_ENQUEUED task_id=%s recipient_user_id=%s type=%s notification_id=%s scheduled_at=%s",
+                int(task_id),
+                int(recipient_user_id),
+                str(type),
+                int(n.id),
+                getattr(n, "scheduled_at", None),
+            )
+        except Exception:
+            pass
 
         # Event-driven wake up (after commit).
         add_after_commit_callback(

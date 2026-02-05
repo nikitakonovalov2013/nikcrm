@@ -78,60 +78,104 @@
       </div>
       <div class="kanban-col-body" id="col-{{ col["status"] }}">
         {% for t in col.get("items", []) %}
-          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" data-task-id="{{ t.id }}" data-priority="{{ t.priority or 'normal' }}" data-due-at-ts="{{ t.due_at_ts or '' }}" data-created-at-ts="{{ t.created_at_ts or '' }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
-            <div class="task-card-top">
-              <div class="task-title">{{ t.title }}</div>
-              {% if t.priority == 'urgent' %}
-                <div class="task-urgent" title="Срочно">🔥</div>
-              {% endif %}
-            </div>
-            <div class="task-meta">
-              {% if t.due_at_str %}
-                <div class="task-due">До: <b>{{ t.due_at_str }}</b></div>
-              {% else %}
-                <div class="task-due muted">Дедлайн: —</div>
-              {% endif %}
-              <div class="task-assignees">
-                {% if t.assignees and (t.assignees|length > 0) %}
-                  <span class="task-assignee-dots-inline" aria-hidden="true">
-                    {% for a in t.assignees[:3] %}
-                      {% if a.get('color') %}
-                        <span class="task-assignee-dot" title="{{ (a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '') }}" style="background: {{ a.get('color') }}"></span>
-                      {% endif %}
-                    {% endfor %}
-                    {% if t.assignees|length > 3 %}
-                      <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
-                    {% endif %}
-                  </span>
-                  <span class="task-assignees-text">
-                    {% for a in t.assignees %}
-                      {% set nm = ((a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '')).strip() %}
-                      <span{% if a.get('color') %} style="color: {{ a.get('color') }}"{% endif %}>{{ nm or ('#' ~ a.get('id')) }}</span>{% if not loop.last %}, {% endif %}
-                    {% endfor %}
-                  </span>
-                {% else %}
-                  <span class="muted">Общая</span>
-                {% endif %}
+          {% set perms = t.get('permissions') or {} %}
+          {% set st = t.status or '' %}
+          {% set a0 = (t.assignees[0] if t.assignees and (t.assignees|length > 0) else None) %}
+          {% set a0_color = (a0.get('color') if a0 else '') or '#cbd5e1' %}
+          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" style="--assignee-color: {{ a0_color }}" data-task-id="{{ t.id }}" data-status="{{ st }}" data-priority="{{ t.priority or 'normal' }}" data-due-at-ts="{{ t.due_at_ts or '' }}" data-created-at-ts="{{ t.created_at_ts or '' }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
+            <div class="task-card-strip" aria-hidden="true"></div>
+            <div class="task-card-inner">
+              <div class="task-card-top">
+                <div class="task-title">{{ t.title }}</div>
+                <div class="task-card-top-icons">
+                  {% if t.has_attachment and t.attachment_url %}
+                    <a class="task-attach" href="{{ t.attachment_url }}" target="_blank" rel="noopener" title="Открыть вложение" onclick="event.stopPropagation()">📎</a>
+                  {% endif %}
+                  {% if t.priority == 'urgent' %}
+                    <div class="task-urgent" title="Срочно">🔥</div>
+                  {% endif %}
+                </div>
               </div>
 
-              <div class="task-card-meta">
-                <div class="task-card-meta-row">
-                  <span class="task-card-meta-label">Создано:</span>
-                  <span class="task-card-meta-value">{{ t.created_at_str or '—' }}</span>
+              {% if t.description %}
+                <div class="task-desc-preview">{{ t.description }}</div>
+              {% endif %}
+
+              <div class="task-meta">
+                <div class="task-meta-row">
+                  <div class="task-assignees">
+                    {% if t.assignees and (t.assignees|length > 0) %}
+                      <span class="task-assignee-dots-inline" aria-hidden="true">
+                        {% for a in t.assignees[:3] %}
+                          {% if a.get('color') %}
+                            <span class="task-assignee-dot" title="{{ (a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '') }}" style="background: {{ a.get('color') }}"></span>
+                          {% endif %}
+                        {% endfor %}
+                        {% if t.assignees|length > 3 %}
+                          <span class="task-assignee-more">+{{ (t.assignees|length - 3) }}</span>
+                        {% endif %}
+                      </span>
+                      <span class="task-assignees-text">
+                        {% for a in t.assignees %}
+                          {% set nm = ((a.get('first_name') or '') ~ ' ' ~ (a.get('last_name') or '')).strip() %}
+                          <span{% if a.get('color') %} style="color: {{ a.get('color') }}"{% endif %}>{{ nm or ('#' ~ a.get('id')) }}</span>{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                      </span>
+                    {% else %}
+                      <span class="muted">Общая</span>
+                    {% endif %}
+                  </div>
+
+                  {% if t.due_at_str %}
+                    <div class="task-due">⏳ <strong>{{ t.due_at_str }}</strong></div>
+                  {% else %}
+                    <div class="task-due muted">⏳ —</div>
+                  {% endif %}
                 </div>
-                <div class="task-card-meta-row">
-                  <span class="task-card-meta-label">Создал:</span>
-                  {% set cb = t.get('created_by') %}
-                  {% set cb_name = (cb.get('name') if cb else '') or (t.created_by_str or '—') %}
-                  {% set cb_color = (cb.get('color') if cb else '') or '#9CA3AF' %}
-                  <span class="task-created-by">
-                    <span class="task-created-by-dot" style="background: {{ cb_color }}"></span>
-                    <span class="task-created-by-name" style="color: {{ cb_color }}" title="{{ cb_name }}">{{ cb_name }}</span>
-                  </span>
+
+                <div class="task-card-meta">
+                  <div class="task-card-meta-row">
+                    <span class="task-card-meta-label">Создал:</span>
+                    {% set cb = t.get('created_by') %}
+                    {% set cb_name = (cb.get('name') if cb else '') or (t.created_by_str or '—') %}
+                    {% set cb_color = (cb.get('color') if cb else '') or '#9CA3AF' %}
+                    <span class="task-created-by">
+                      <span class="task-created-by-dot" style="background: {{ cb_color }}"></span>
+                      <span class="task-created-by-name" style="color: {{ cb_color }}" title="{{ cb_name }}">{{ cb_name }}</span>
+                    </span>
+                  </div>
+                  <div class="task-card-meta-row">
+                    <span class="task-card-meta-label">Создано:</span>
+                    <span class="task-card-meta-value">{{ t.created_at_str or '—' }}</span>
+                  </div>
+                  <div class="task-card-meta-row">
+                    <span class="task-card-meta-label">Прошло:</span>
+                    <span class="task-card-meta-value" data-role="task-elapsed" data-created-at-ts="{{ t.created_at_ts or '' }}">—</span>
+                  </div>
                 </div>
-                <div class="task-card-meta-row">
-                  <span class="task-card-meta-label">Прошло:</span>
-                  <span class="task-card-meta-value" data-role="task-elapsed" data-created-at-ts="{{ t.created_at_ts or '' }}">—</span>
+
+                <div class="task-quick-actions" data-role="task-quick-actions" onclick="event.stopPropagation()">
+                  {% if (is_admin or is_manager) and (st == 'new' or st == 'in_progress') %}
+                    {% if not (st == 'in_progress' and t.is_assigned_to_me) %}
+                      <button class="btn-remind" type="button" onclick="window.tasksQuickRemind(event, {{ t.id }})">Напомнить</button>
+                    {% endif %}
+                  {% endif %}
+
+                  {% if st == 'new' and perms.take_in_progress %}
+                    <button class="btn-success" type="button" onclick="window.tasksQuickTake(event, {{ t.id }})">Взять в работу</button>
+                  {% endif %}
+
+                  {% if st == 'in_progress' and perms.finish_to_review %}
+                    <button class="btn-success" type="button" onclick="window.tasksQuickToReview(event, {{ t.id }})">На проверку</button>
+                  {% endif %}
+
+                  {% if st == 'review' and perms.accept_done %}
+                    <button class="btn-success" type="button" onclick="window.tasksQuickAccept(event, {{ t.id }})">Принять</button>
+                  {% endif %}
+
+                  {% if st == 'review' and perms.send_back %}
+                    <button class="btn-warn" type="button" onclick="window.tasksQuickSendBack(event, {{ t.id }})">На доработку</button>
+                  {% endif %}
                 </div>
               </div>
             </div>
@@ -182,6 +226,156 @@
       col.classList.toggle('is-collapsed', collapsed.has(st));
     });
   }
+
+  function _setQuickActionsLoading(taskId, loading){
+    try {
+      const card = document.querySelector('.task-card[data-task-id="' + String(taskId) + '"]');
+      if (!card) return;
+      const qa = card.querySelector('[data-role="task-quick-actions"]');
+      if (!qa) return;
+      qa.querySelectorAll('button').forEach(btn => {
+        if (!btn) return;
+        btn.disabled = !!loading;
+        if (loading) {
+          btn.dataset.prevText = btn.textContent || '';
+          btn.textContent = '…';
+        } else {
+          const prev = btn.dataset.prevText;
+          if (prev !== undefined && prev !== null && String(prev)) {
+            btn.textContent = String(prev);
+          }
+          delete btn.dataset.prevText;
+        }
+      });
+    } catch (_){ }
+  }
+
+  function renderQuickActions(task){
+    try {
+      const st = String(task.status || '');
+      const can = task.permissions || {};
+      const parts = [];
+
+      const isAdminOrManager = !!(IS_ADMIN || IS_MANAGER);
+      const isAssignedToMe = !!task.is_assigned_to_me;
+
+      if (isAdminOrManager && (st === 'new' || st === 'in_progress')) {
+        if (!(st === 'in_progress' && isAssignedToMe)) {
+          parts.push('<button class="btn-remind" type="button" onclick="window.tasksQuickRemind(event, ' + String(task.id) + ')">Напомнить</button>');
+        }
+      }
+
+      if (st === 'new' && can.take_in_progress) {
+        parts.push('<button class="btn-success" type="button" onclick="window.tasksQuickTake(event, ' + String(task.id) + ')">Взять в работу</button>');
+      }
+
+      if (st === 'in_progress' && can.finish_to_review) {
+        parts.push('<button class="btn-success" type="button" onclick="window.tasksQuickToReview(event, ' + String(task.id) + ')">На проверку</button>');
+      }
+
+      if (st === 'review' && can.accept_done) {
+        parts.push('<button class="btn-success" type="button" onclick="window.tasksQuickAccept(event, ' + String(task.id) + ')">Принять</button>');
+      }
+
+      if (st === 'review' && can.send_back) {
+        parts.push('<button class="btn-warn" type="button" onclick="window.tasksQuickSendBack(event, ' + String(task.id) + ')">На доработку</button>');
+      }
+
+      return parts.join('');
+    } catch (_){
+      return '';
+    }
+  }
+
+  async function refreshCardQuickActions(taskId){
+    const el = document.querySelector('.task-card[data-task-id="' + String(taskId) + '"]');
+    if (!el) return;
+    const task = await apiJson('/api/tasks/' + String(taskId));
+    try { el.setAttribute('data-status', String(task.status || '')); } catch (_){ }
+    const qa = el.querySelector('[data-role="task-quick-actions"]');
+    if (qa) qa.innerHTML = renderQuickActions(task);
+  }
+
+  window.tasksQuickChangeStatus = async function(taskId, status){
+    const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: status })
+    });
+    window.tasksMoveCard(taskId, resp.status || status);
+    await refreshCardQuickActions(taskId);
+  };
+
+  window.tasksQuickTake = async function(ev, taskId){
+    try { if (ev) ev.preventDefault(); if (ev) ev.stopPropagation(); } catch (_){ }
+    _setQuickActionsLoading(taskId, true);
+    try {
+      await window.tasksQuickChangeStatus(taskId, 'in_progress');
+      await window.crmAlert('✅ Задача взята в работу');
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось взять в работу');
+    } finally {
+      _setQuickActionsLoading(taskId, false);
+    }
+  };
+
+  window.tasksQuickToReview = async function(ev, taskId){
+    try { if (ev) ev.preventDefault(); if (ev) ev.stopPropagation(); } catch (_){ }
+    _setQuickActionsLoading(taskId, true);
+    try {
+      await window.tasksQuickChangeStatus(taskId, 'review');
+      await window.crmAlert('✅ Отправлено на проверку');
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отправить на проверку');
+    } finally {
+      _setQuickActionsLoading(taskId, false);
+    }
+  };
+
+  window.tasksQuickAccept = async function(ev, taskId){
+    try { if (ev) ev.preventDefault(); if (ev) ev.stopPropagation(); } catch (_){ }
+    _setQuickActionsLoading(taskId, true);
+    try {
+      await window.tasksQuickChangeStatus(taskId, 'done');
+      await window.crmAlert('✅ Работа принята');
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось принять работу');
+    } finally {
+      _setQuickActionsLoading(taskId, false);
+    }
+  };
+
+  window.tasksQuickSendBack = async function(ev, taskId){
+    try { if (ev) ev.preventDefault(); if (ev) ev.stopPropagation(); } catch (_){ }
+    _setQuickActionsLoading(taskId, false);
+    try {
+      await window.tasksSendBackPrompt(taskId);
+    } catch (e) {
+      await window.crmAlert((e && e.message) || 'Не удалось отправить на доработку');
+    }
+  };
+
+  const _remindCooldown = new Map();
+  window.tasksQuickRemind = async function(ev, taskId){
+    try { if (ev) ev.preventDefault(); if (ev) ev.stopPropagation(); } catch (_){ }
+    _setQuickActionsLoading(taskId, true);
+    try {
+      const now = Date.now();
+      const last = Number(_remindCooldown.get(String(taskId)) || 0);
+      if (last && (now - last) < 60 * 1000) {
+        await window.crmAlert('⏳ Напоминание уже отправлялось недавно. Подождите минуту.');
+        return;
+      }
+      _remindCooldown.set(String(taskId), now);
+      await apiJson('/crm/api/tasks/' + String(taskId) + '/remind', { method: 'POST' });
+      await window.crmAlert('🔔 Напоминание отправлено');
+    } catch (e) {
+      _remindCooldown.delete(String(taskId));
+      await window.crmAlert((e && e.message) || 'Не удалось отправить напоминание');
+    } finally {
+      _setQuickActionsLoading(taskId, false);
+    }
+  };
 
   function bindCollapseHandlers(){
     const root = kanbanRoot();
@@ -545,7 +739,7 @@
     const form = ev.target;
     const fd = new FormData(form);
     try {
-      await apiJson('/crm/api/tasks', { method: 'POST', body: fd });
+      await apiJson('/api/tasks', { method: 'POST', body: fd });
       window.location.reload();
       return false;
     } catch (e) {
@@ -556,7 +750,7 @@
 
   window.tasksOpenDetail = async function(taskId){
     try {
-      const task = await apiJson('/crm/api/tasks/' + String(taskId));
+      const task = await apiJson('/api/tasks/' + String(taskId));
       openModal(renderDetailModal(task));
     } catch (e) {
       await window.crmAlert((e && e.message) || 'Не удалось загрузить задачу');
@@ -582,7 +776,7 @@
 
   window.tasksOpenEdit = async function(taskId){
     try {
-      const task = await apiJson('/crm/api/tasks/' + String(taskId));
+      const task = await apiJson('/api/tasks/' + String(taskId));
       const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
       const visibleUsers = (users || []).filter(u => {
         if (IS_ADMIN || IS_MANAGER) return true;
@@ -680,10 +874,10 @@
 
     try {
       if (removePhoto) {
-        await apiJson('/crm/api/tasks/' + String(taskId) + '/photo', { method: 'DELETE' });
+        await apiJson('/api/tasks/' + String(taskId) + '/photo', { method: 'DELETE' });
       }
 
-      await apiJson('/crm/api/tasks/' + String(taskId), {
+      await apiJson('/api/tasks/' + String(taskId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -698,7 +892,7 @@
       if (photo && typeof photo === 'object' && photo.size) {
         const up = new FormData();
         up.append('photo', photo);
-        await apiJson('/crm/api/tasks/' + String(taskId) + '/photo_web', { method: 'POST', body: up });
+        await apiJson('/api/tasks/' + String(taskId) + '/photo_web', { method: 'POST', body: up });
       }
 
       await window.tasksOpenDetail(taskId);
@@ -711,7 +905,7 @@
 
   window.tasksChangeStatus = async function(taskId, status){
     try {
-      const resp = await apiJson('/crm/api/tasks/' + String(taskId) + '/status', {
+      const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: status })
@@ -736,12 +930,13 @@
     });
     if (txt === null) return;
     try {
-      const resp = await apiJson('/crm/api/tasks/' + String(taskId) + '/status', {
+      const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'in_progress', comment: String(txt) })
       });
       window.tasksMoveCard(taskId, resp.status || 'in_progress');
+      try { await refreshCardQuickActions(taskId); } catch (_) {}
       try { await window.tasksOpenDetail(taskId); } catch (_) {}
     } catch (e) {
       await window.crmAlert((e && e.message) || 'Не удалось отправить на доработку');
@@ -752,7 +947,7 @@
     const ok = await window.crmConfirm('Отправить задачу в архив?', { title: 'Подтвердите действие', danger: true, okText: 'В архив' });
     if (!ok) return;
     try {
-      await apiJson('/crm/api/tasks/' + String(taskId) + '/archive', { method: 'POST' });
+      await apiJson('/api/tasks/' + String(taskId) + '/archive', { method: 'POST' });
       window.tasksRemoveCard(taskId);
       window.dispatchEvent(new CustomEvent('close-modal'));
     } catch (e) {
@@ -859,7 +1054,7 @@
           return false;
         }
       }
-      const task = await apiJson('/crm/api/tasks/' + String(taskId) + '/comments', { method: 'POST', body: fd });
+      const task = await apiJson('/api/tasks/' + String(taskId) + '/comments', { method: 'POST', body: fd });
       // refresh comments in modal without closing
       const list = document.getElementById('task-comments-list');
       if (list) list.innerHTML = renderComments(task.comments);

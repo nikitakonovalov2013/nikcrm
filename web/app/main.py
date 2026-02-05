@@ -79,6 +79,8 @@ from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
 from shared.services.purchases_render import purchases_chat_message_text, purchases_chat_kb_dict, purchase_created_user_message
+from shared.services.tasks_flow import add_task_comment as shared_add_task_comment
+from shared.services.tasks_flow import return_task_to_rework as shared_return_task_to_rework
 
 from shared.services.shifts_domain import (
     calc_int_hours_from_times,
@@ -97,6 +99,8 @@ MAX_PURCHASE_PHOTO_MB = 20
 MAX_PURCHASE_PHOTO_BYTES = MAX_PURCHASE_PHOTO_MB * 1024 * 1024
 
 MAX_TG_TEXT = 4096
+
+_TASK_REMIND_LAST_TS: dict[int, float] = {}
 
 
 def _format_hours_from_times(st: time, et: time) -> str:
@@ -1277,9 +1281,29 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
             "color": (getattr(created_by, "color", None) or None),
         }
     is_overdue = bool(due_at_utc and due_at_utc < utc_now())
+
+    # Attachment indicator (reuse the same effective photo logic as in detail modal)
+    photo_url = str(getattr(t, "photo_url", "") or "").strip()
+    photo_path = str(getattr(t, "photo_path", "") or "").strip()
+    tg_photo_file_id = str(getattr(t, "tg_photo_file_id", "") or getattr(t, "photo_file_id", "") or "").strip()
+    proxy_photo_url = f"/crm/tasks/{int(t.id)}/photo" if tg_photo_file_id else ""
+    attachment_url = photo_url or photo_path or proxy_photo_url
+    has_attachment = bool(attachment_url)
+
+    # Permissions (same logic as detail modal)
+    perms_view: dict | None = None
+    try:
+        if actor_id is not None:
+            # derive actor flags from task board globals (passed via closure in tasks_board)
+            # NOTE: tasks_board passes actor_id only; permissions on board are computed there.
+            pass
+    except Exception:
+        perms_view = None
+
     return {
         "id": int(t.id),
         "title": t.title,
+        "description": (str(getattr(t, "description", "") or "").strip() or None),
         "priority": t.priority.value if hasattr(t.priority, "value") else str(t.priority),
         "status": t.status.value if hasattr(t.status, "value") else str(t.status),
         "due_at_str": due_at_str,
@@ -1292,6 +1316,9 @@ def _task_card_view(t: Task, *, actor_id: int | None = None) -> dict:
         "assignees_str": assignees_str,
         "is_assigned_to_me": is_assigned_to_me,
         "is_overdue": is_overdue,
+        "has_attachment": has_attachment,
+        "attachment_url": attachment_url or None,
+        "permissions": perms_view,
     }
 
 
@@ -1968,6 +1995,70 @@ async def tasks_api_patch_crm(
     session: AsyncSession = Depends(get_db),
 ):
     return await tasks_api_patch(task_id=task_id, request=request, admin_id=admin_id, session=session)
+
+
+@app.post("/crm/api/tasks")
+async def tasks_api_create_crm(
+    request: Request,
+    title: str = Form(...),
+    description: str | None = Form(None),
+    priority: str = Form("normal"),
+    due_at: str | None = Form(None),
+    assignee_ids: list[int] = Form([]),
+    photo: UploadFile | None = File(None),
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_create(
+        request=request,
+        title=title,
+        description=description,
+        priority=priority,
+        due_at=due_at,
+        assignee_ids=assignee_ids,
+        photo=photo,
+        admin_id=admin_id,
+        session=session,
+    )
+
+
+@app.get("/crm/api/tasks/{task_id}")
+async def tasks_api_detail_crm(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_detail(task_id=int(task_id), request=request, admin_id=admin_id, session=session)
+
+
+@app.post("/crm/api/tasks/{task_id}/status")
+async def tasks_api_change_status_crm(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_change_status(task_id=int(task_id), request=request, admin_id=admin_id, session=session)
+
+
+@app.post("/crm/api/tasks/{task_id}/comments")
+async def tasks_api_add_comment_crm(
+    task_id: int,
+    request: Request,
+    text: str | None = Form(None),
+    photos: list[UploadFile] | None = File(None),
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    return await tasks_api_add_comment(
+        task_id=int(task_id),
+        request=request,
+        text=text,
+        photos=photos,
+        admin_id=admin_id,
+        session=session,
+    )
 
 
 @app.post("/api/tasks/{task_id}/photo_web")
@@ -3963,9 +4054,12 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
 
     items_by = {TaskStatus.NEW.value: [], TaskStatus.IN_PROGRESS.value: [], TaskStatus.REVIEW.value: [], TaskStatus.DONE.value: []}
     for t in tasks:
-        items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(
-            _task_card_view(t, actor_id=int(actor.id))
-        )
+        view = _task_card_view(t, actor_id=int(actor.id))
+        try:
+            view["permissions"] = _task_permissions(t=t, actor=actor, is_admin=is_admin, is_manager=is_manager)
+        except Exception:
+            view["permissions"] = None
+        items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(view)
 
     columns = [
         {"status": TaskStatus.NEW.value, "title": "Новые", "items": items_by[TaskStatus.NEW.value]},
@@ -4482,10 +4576,17 @@ async def tasks_api_create(
         if users_assignees:
             ns = TaskNotificationService(session)
             actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+            recipient_ids = [int(getattr(u, "id", 0) or 0) for u in users_assignees]
+            tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipient_ids))
             for u in users_assignees:
+                rid = int(getattr(u, "id", 0) or 0)
+                if rid <= 0:
+                    continue
+                if int(tg_map.get(int(rid), 0) or 0) <= 0:
+                    continue
                 await ns.enqueue(
                     task_id=int(t.id),
-                    recipient_user_id=int(u.id),
+                    recipient_user_id=int(rid),
                     type="created",
                     payload={
                         "task_id": int(t.id),
@@ -4692,67 +4793,19 @@ async def tasks_api_add_comment(
 
     t = await _load_task_full(session, task_id)
     # Visibility is not restricted; permissions control actions.
-    c = TaskComment(task_id=int(t.id), author_user_id=int(actor.id), text=(text or None))
-    session.add(c)
-    await session.flush()
-
     urls = await _save_uploads(photos)
-
-    session.add(
-        TaskEvent(
-            task_id=int(t.id),
-            actor_user_id=int(actor.id),
-            type=TaskEventType.COMMENT_ADDED,
-            payload={"has_text": bool(text and text.strip()), "photos_count": int(len(urls))},
-        )
+    actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+    await shared_add_task_comment(
+        session=session,
+        task_id=int(t.id),
+        author_user_id=int(actor.id),
+        author_name=str(actor_name),
+        text=(text or None),
+        photo_file_ids=[str(x) for x in (urls or []) if str(x).strip()],
+        notify=True,
+        notify_self=True,
+        hard_send_tg=True,
     )
-    for url in urls:
-        session.add(TaskCommentPhoto(comment_id=int(c.id), tg_file_id=url))
-    await session.flush()
-
-    try:
-        # Notify other side: executor <-> creator
-        assignees = list(getattr(t, "assignees", None) or [])
-        is_executor = any(int(u.id) == int(actor.id) for u in assignees) or (
-            (len(assignees) == 0)
-            and (getattr(t, "started_by_user_id", None) is not None)
-            and int(getattr(t, "started_by_user_id")) == int(actor.id)
-        )
-
-        recipients: list[int] = []
-        if is_executor:
-            recipients = [int(getattr(t, "created_by_user_id"))]
-        else:
-            if assignees:
-                recipients = [int(u.id) for u in assignees]
-            else:
-                sb = getattr(t, "started_by_user_id", None)
-                if sb is not None:
-                    recipients = [int(sb)]
-
-        recipients = [r for r in recipients if int(r) != int(actor.id)]
-        if recipients:
-            ns = TaskNotificationService(session)
-            actor_name = (
-                f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}"
-            )
-            for rid in recipients:
-                await ns.enqueue(
-                    task_id=int(t.id),
-                    recipient_user_id=int(rid),
-                    type="comment",
-                    payload={
-                        "task_id": int(t.id),
-                        "comment_id": int(getattr(c, "id", 0) or 0),
-                        "text": (text or ""),
-                        "photos_count": int(len(urls)),
-                        "actor_user_id": int(actor.id),
-                        "actor_name": actor_name,
-                    },
-                    dedupe_key=f"comment:{int(getattr(c, 'id', 0) or 0)}",
-                )
-    except Exception:
-        pass
 
     # return refreshed detail view for convenience
     return await tasks_api_detail(task_id, request, admin_id, session)
@@ -4803,6 +4856,17 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
     new_status = (body.get("status") or "").strip()
     comment = (body.get("comment") or "").strip()
 
+    try:
+        logger.info(
+            "TASK_STATUS_CHANGE_REQUEST task_id=%s actor_user_id=%s new_status=%s comment_len=%s",
+            int(task_id),
+            int(actor.id),
+            str(new_status),
+            int(len(comment or "")),
+        )
+    except Exception:
+        pass
+
     t = await _load_task_full(session, task_id)
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
@@ -4829,6 +4893,19 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
     )
     if not ok:
         raise HTTPException(status_code=int(code), detail=str(msg or "Ошибка"))
+
+    # Route explicit 'return to rework' through shared service to guarantee notification + comment.
+    if str(old_status) == TaskStatus.REVIEW.value and str(new_status) == TaskStatus.IN_PROGRESS.value and (comment or "").strip() and bool(perms.send_back):
+        actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+        await shared_return_task_to_rework(
+            session=session,
+            task_id=int(t.id),
+            actor_user_id=int(actor.id),
+            actor_name=str(actor_name),
+            comment=str(comment),
+            hard_send_tg=True,
+        )
+        return {"ok": True, "id": int(t.id), "status": TaskStatus.IN_PROGRESS.value}
 
     if new_status == TaskStatus.IN_PROGRESS.value:
         t.status = TaskStatus.IN_PROGRESS
@@ -4857,8 +4934,18 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
     await session.flush()
 
     try:
-        # status notifications
-        recipients: list[int] = []
+        logger.info(
+            "TASK_STATUS_CHANGED task_id=%s old=%s new=%s actor_user_id=%s",
+            int(t.id),
+            str(old_status),
+            str(new_status_val),
+            int(actor.id),
+        )
+    except Exception:
+        pass
+
+    try:
+        # status notifications -> notify executor(s) (assignees or started_by for common tasks)
         assignees = list(getattr(t, "assignees", None) or [])
         executor_ids: list[int] = [int(u.id) for u in assignees]
         if not executor_ids:
@@ -4866,38 +4953,132 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
             if sb is not None:
                 executor_ids = [int(sb)]
 
-        if old_status == TaskStatus.NEW.value and new_status_val == TaskStatus.IN_PROGRESS.value:
-            recipients = [int(getattr(t, "created_by_user_id"))]
-        elif old_status == TaskStatus.IN_PROGRESS.value and new_status_val == TaskStatus.REVIEW.value:
-            recipients = [int(getattr(t, "created_by_user_id"))]
-        elif old_status == TaskStatus.REVIEW.value and new_status_val == TaskStatus.DONE.value:
-            recipients = list(executor_ids)
-        elif old_status == TaskStatus.REVIEW.value and new_status_val == TaskStatus.IN_PROGRESS.value:
-            recipients = list(executor_ids)
-
-        recipients = [r for r in recipients if r and int(r) != int(actor.id)]
+        recipients = [int(r) for r in executor_ids if int(r) != int(actor.id)]
         if recipients:
             ns = TaskNotificationService(session)
-            actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+            tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+            filtered: list[int] = []
             for rid in recipients:
-                await ns.enqueue(
-                    task_id=int(t.id),
-                    recipient_user_id=int(rid),
-                    type="status_changed",
-                    payload={
-                        "task_id": int(t.id),
-                        "from": str(old_status),
-                        "to": str(new_status_val),
-                        "comment": comment or None,
-                        "actor_user_id": int(actor.id),
-                        "actor_name": actor_name,
-                        "event_id": int(getattr(ev, "id", 0) or 0),
-                    },
-                    dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
-                )
+                tg_id = int(tg_map.get(int(rid), 0) or 0)
+                if tg_id <= 0:
+                    try:
+                        _logger.info(
+                            "TASK_NOTIFY_SKIP reason=no_tg_id type=status_changed task_id=%s assignee_id=%s",
+                            int(t.id),
+                            int(rid),
+                        )
+                    except Exception:
+                        pass
+                    continue
+                filtered.append(int(rid))
+            recipients = filtered
+            if recipients:
+                actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+                for rid in recipients:
+                    try:
+                        logger.info(
+                            "TASK_NOTIFY_ATTEMPT type=status_changed task_id=%s to_assignee_id=%s tg_id=%s from=%s to=%s event_id=%s",
+                            int(t.id),
+                            int(rid),
+                            int(tg_map.get(int(rid), 0) or 0),
+                            str(old_status),
+                            str(new_status_val),
+                            int(getattr(ev, "id", 0) or 0),
+                        )
+                    except Exception:
+                        pass
+                    await ns.enqueue(
+                        task_id=int(t.id),
+                        recipient_user_id=int(rid),
+                        type="status_changed",
+                        payload={
+                            "task_id": int(t.id),
+                            "from": str(old_status),
+                            "to": str(new_status_val),
+                            "comment": comment or None,
+                            "action": (
+                                "return_to_rework"
+                                if str(old_status) == TaskStatus.REVIEW.value and str(new_status_val) == TaskStatus.IN_PROGRESS.value and (comment or "").strip()
+                                else None
+                            ),
+                            "actor_user_id": int(actor.id),
+                            "actor_name": actor_name,
+                            "event_id": int(getattr(ev, "id", 0) or 0),
+                        },
+                        dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
+                    )
     except Exception:
-        pass
+        try:
+            logger.exception("TASK_NOTIFY_FAILED type=status_changed task_id=%s", int(getattr(t, "id", task_id) or task_id))
+        except Exception:
+            pass
     return {"ok": True, "id": int(t.id), "status": new_status_val}
+
+
+@app.post("/crm/api/tasks/{task_id}/remind")
+async def tasks_api_remind_crm(
+    task_id: int,
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    if not (is_admin or is_manager):
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
+
+    t = await _load_task_full(session, int(task_id))
+
+    import time as _time
+
+    now = float(_time.time())
+    last = float(_TASK_REMIND_LAST_TS.get(int(task_id), 0.0) or 0.0)
+    if last and (now - last) < 60.0:
+        raise HTTPException(status_code=429, detail="Напоминание уже отправлялось недавно. Подождите минуту.")
+
+    assignees = list(getattr(t, "assignees", None) or [])
+    recipient_user_id: int | None = None
+    if assignees:
+        recipient_user_id = int(getattr(assignees[0], "id", 0) or 0) or None
+    if recipient_user_id is None:
+        sb = getattr(t, "started_by_user_id", None)
+        recipient_user_id = int(sb) if sb is not None else None
+
+    if recipient_user_id is None:
+        raise HTTPException(status_code=400, detail="У задачи не назначен исполнитель")
+
+    u = await session.get(User, int(recipient_user_id))
+    tg_id = int(getattr(u, "tg_id", 0) or 0) if u is not None else 0
+    if tg_id <= 0:
+        raise HTTPException(status_code=400, detail="У исполнителя не привязан Telegram")
+
+    # Enqueue reminder notification; sending is done by bot worker after commit.
+    ns = TaskNotificationService(session)
+    actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+    await ns.enqueue(
+        task_id=int(t.id),
+        recipient_user_id=int(recipient_user_id),
+        type="remind",
+        payload={
+            "task_id": int(t.id),
+            "actor_user_id": int(actor.id),
+            "actor_name": actor_name,
+        },
+        dedupe_key=f"remind:{int(t.id)}:{int(now)}",
+    )
+
+    _TASK_REMIND_LAST_TS[int(task_id)] = float(now)
+    return {"ok": True}
+
+
+@app.post("/api/tasks/{task_id}/remind")
+async def tasks_api_remind(task_id: int, request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)):
+    # Alias for frontend environments that call /api instead of /crm/api.
+    return await tasks_api_remind_crm(task_id=int(task_id), request=request, admin_id=admin_id, session=session)
 
 
 @app.post("/api/tasks/{task_id}/archive")
@@ -4925,6 +5106,11 @@ async def tasks_api_archive(task_id: int, request: Request, admin_id: int = Depe
     session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.ARCHIVED, payload=None))
     await session.flush()
     return {"ok": True}
+
+
+@app.post("/crm/api/tasks/{task_id}/archive")
+async def tasks_api_archive_crm(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    return await tasks_api_archive(task_id=int(task_id), request=request, admin_id=admin_id, session=session)
 
 
 @app.post("/api/tasks/{task_id}/unarchive")
@@ -4955,6 +5141,11 @@ async def tasks_api_unarchive(task_id: int, request: Request, admin_id: int = De
     session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.UNARCHIVED, payload=None))
     await session.flush()
     return {"ok": True}
+
+
+@app.post("/crm/api/tasks/{task_id}/unarchive")
+async def tasks_api_unarchive_crm(task_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    return await tasks_api_unarchive(task_id=int(task_id), request=request, admin_id=admin_id, session=session)
 
 
 # ========== Materials Admin ==========

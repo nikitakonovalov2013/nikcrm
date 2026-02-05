@@ -7,6 +7,8 @@ from shared.services.task_permissions import TaskPermissions, task_permissions, 
 from shared.utils import format_moscow, utc_now
 from shared.models import TaskComment, TaskEvent
 from shared.services.task_notifications import TaskNotificationService
+from shared.services.tasks_flow import add_task_comment as shared_add_task_comment
+from shared.services.tasks_flow import return_task_to_rework as shared_return_task_to_rework
 
 from bot.app.repository.tasks import TaskRepository
 from bot.app.utils.html import esc
@@ -152,65 +154,22 @@ class TasksService:
         task = await self.repo.get_task_full(task_id)
         if not task:
             return False
-
-        c = await self.repo.add_comment(
-            task_id=task_id,
-            author_user_id=int(actor.id),
-            text=text or None,
-            photo_file_ids=photo_file_ids,
-        )
-
-        self.repo.session.add(
-            TaskEvent(
-                task_id=int(task_id),
-                actor_user_id=int(actor.id),
-                type=TaskEventType.COMMENT_ADDED,
-                payload={"has_text": bool(text and text.strip()), "photos_count": int(len(photo_file_ids))},
-            )
-        )
-        await self.repo.session.flush()
-
+        actor_name = _user_name(actor)
         try:
-            # Notify the other side
-            assignees = list(getattr(task, "assignees", None) or [])
-            is_executor = any(int(u.id) == int(actor.id) for u in assignees) or (
-                (len(assignees) == 0) and (getattr(task, "started_by_user_id", None) is not None) and int(getattr(task, "started_by_user_id")) == int(actor.id)
+            await shared_add_task_comment(
+                session=self.repo.session,
+                task_id=int(task.id),
+                author_user_id=int(actor.id),
+                author_name=str(actor_name),
+                text=(text or None),
+                photo_file_ids=[str(x) for x in (photo_file_ids or []) if str(x).strip()],
+                notify=True,
+                notify_self=True,
+                hard_send_tg=False,
             )
-
-            recipients: list[int] = []
-            if is_executor:
-                recipients = [int(getattr(task, "created_by_user_id"))]
-            else:
-                if assignees:
-                    recipients = [int(u.id) for u in assignees]
-                else:
-                    sb = getattr(task, "started_by_user_id", None)
-                    if sb is not None:
-                        recipients = [int(sb)]
-
-            recipients = [r for r in recipients if int(r) != int(actor.id)]
-            if recipients:
-                ns = TaskNotificationService(self.repo.session)
-                actor_name = _user_name(actor)
-                for rid in recipients:
-                    await ns.enqueue(
-                        task_id=int(task.id),
-                        recipient_user_id=int(rid),
-                        type="comment",
-                        payload={
-                            "task_id": int(task.id),
-                            "comment_id": int(getattr(c, "id", 0) or 0),
-                            "text": (text or ""),
-                            "photos_count": int(len(photo_file_ids)),
-                            "actor_user_id": int(actor.id),
-                            "actor_name": actor_name,
-                        },
-                        dedupe_key=f"comment:{int(getattr(c, 'id', 0) or 0)}",
-                    )
+            return True
         except Exception:
-            # notifications must not break core flow
-            pass
-        return True
+            return False
 
     async def change_status(
         self,
@@ -220,6 +179,16 @@ class TasksService:
         to_status: str,
         comment: str | None = None,
     ) -> tuple[bool, str]:
+        try:
+            _logger.info(
+                "TASK_STATUS_CHANGE_REQUEST source=bot task_id=%s actor_tg_id=%s new_status=%s comment_len=%s",
+                int(task_id),
+                int(tg_id),
+                str(to_status),
+                int(len((comment or "").strip())),
+            )
+        except Exception:
+            pass
         actor = await self.get_actor_or_none(tg_id)
         if not actor:
             return False, "not_registered"
@@ -253,6 +222,21 @@ class TasksService:
             return False, "unsupported"
 
         if to_status == TaskStatus.IN_PROGRESS.value:
+            # Special-case 'return to rework' via shared flow to guarantee notification + comment.
+            if old_status == TaskStatus.REVIEW.value and perms.send_back and comment_str:
+                try:
+                    await shared_return_task_to_rework(
+                        session=self.repo.session,
+                        task_id=int(task.id),
+                        actor_user_id=int(actor.id),
+                        actor_name=_user_name(actor),
+                        comment=str(comment_str),
+                        hard_send_tg=False,
+                    )
+                    return True, TaskStatus.IN_PROGRESS.value
+                except Exception:
+                    return False, "failed"
+
             task.status = TaskStatus.IN_PROGRESS
             assignees = list(getattr(task, "assignees", None) or [])
             if len(assignees) == 0:
@@ -268,6 +252,16 @@ class TasksService:
             task.status = TaskStatus.DONE
 
         new_status = task.status.value if hasattr(task.status, "value") else str(task.status)
+        try:
+            _logger.info(
+                "TASK_STATUS_CHANGED source=bot task_id=%s old=%s new=%s actor_user_id=%s",
+                int(task.id),
+                str(old_status),
+                str(new_status),
+                int(actor.id),
+            )
+        except Exception:
+            pass
         ev = TaskEvent(
             task_id=int(task.id),
             actor_user_id=int(actor.id),
@@ -278,7 +272,7 @@ class TasksService:
         await self.repo.session.flush()
 
         try:
-            recipients: list[int] = []
+            # status notifications -> notify executor(s) (assignees or started_by for common tasks)
             assignees = list(getattr(task, "assignees", None) or [])
             executor_ids: list[int] = [int(u.id) for u in assignees]
             if not executor_ids:
@@ -286,37 +280,64 @@ class TasksService:
                 if sb is not None:
                     executor_ids = [int(sb)]
 
-            if old_status == TaskStatus.NEW.value and new_status == TaskStatus.IN_PROGRESS.value:
-                recipients = [int(getattr(task, "created_by_user_id"))]
-            elif old_status == TaskStatus.IN_PROGRESS.value and new_status == TaskStatus.REVIEW.value:
-                recipients = [int(getattr(task, "created_by_user_id"))]
-            elif old_status == TaskStatus.REVIEW.value and new_status == TaskStatus.DONE.value:
-                recipients = list(executor_ids)
-            elif old_status == TaskStatus.REVIEW.value and new_status == TaskStatus.IN_PROGRESS.value:
-                recipients = list(executor_ids)
-
-            recipients = [r for r in recipients if r and int(r) != int(actor.id)]
+            recipients = [int(r) for r in executor_ids if int(r) != int(actor.id)]
             if recipients:
                 ns = TaskNotificationService(self.repo.session)
-                actor_name = _user_name(actor)
+                tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+                filtered: list[int] = []
                 for rid in recipients:
-                    await ns.enqueue(
-                        task_id=int(task.id),
-                        recipient_user_id=int(rid),
-                        type="status_changed",
-                        payload={
-                            "task_id": int(task.id),
-                            "from": str(old_status),
-                            "to": str(new_status),
-                            "comment": comment_str or None,
-                            "actor_user_id": int(actor.id),
-                            "actor_name": actor_name,
-                            "event_id": int(getattr(ev, "id", 0) or 0),
-                        },
-                        dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
-                    )
+                    if int(tg_map.get(int(rid), 0) or 0) <= 0:
+                        try:
+                            _logger.info(
+                                "TASK_NOTIFY_SKIP reason=no_tg_id source=bot type=status_changed task_id=%s assignee_id=%s",
+                                int(task.id),
+                                int(rid),
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    filtered.append(int(rid))
+                recipients = filtered
+                if recipients:
+                    actor_name = _user_name(actor)
+                    for rid in recipients:
+                        try:
+                            _logger.info(
+                                "TASK_NOTIFY_ATTEMPT source=bot type=status_changed task_id=%s to_assignee_id=%s tg_id=%s from=%s to=%s event_id=%s",
+                                int(task.id),
+                                int(rid),
+                                int(tg_map.get(int(rid), 0) or 0),
+                                str(old_status),
+                                str(new_status),
+                                int(getattr(ev, "id", 0) or 0),
+                            )
+                        except Exception:
+                            pass
+                        await ns.enqueue(
+                            task_id=int(task.id),
+                            recipient_user_id=int(rid),
+                            type="status_changed",
+                            payload={
+                                "task_id": int(task.id),
+                                "from": str(old_status),
+                                "to": str(new_status),
+                                "comment": comment_str or None,
+                                "action": (
+                                    "return_to_rework"
+                                    if str(old_status) == TaskStatus.REVIEW.value and str(new_status) == TaskStatus.IN_PROGRESS.value and comment_str
+                                    else None
+                                ),
+                                "actor_user_id": int(actor.id),
+                                "actor_name": actor_name,
+                                "event_id": int(getattr(ev, "id", 0) or 0),
+                            },
+                            dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
+                        )
         except Exception:
-            pass
+            try:
+                _logger.exception("TASK_NOTIFY_FAILED source=bot type=status_changed task_id=%s", int(getattr(task, "id", task_id) or task_id))
+            except Exception:
+                pass
         return True, new_status
 
     def render_task_list_title(self, kind: str) -> str:
