@@ -299,7 +299,7 @@ async def profile(message: Message):
         base = _public_base_url()
         url = (base + "/crm/about") if base else "/crm/about"
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="О нас", url=str(url))]]
+            inline_keyboard=[[InlineKeyboardButton(text="Миссия и цель", url=str(url))]]
         )
     except Exception:
         kb = None
