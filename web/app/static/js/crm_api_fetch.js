@@ -19,6 +19,29 @@
     try { return new URL(String(input || ''), window.location.origin); } catch (_){ return null; }
   }
 
+  function _needsCrmPrefix(){
+    try {
+      return String(window.location && window.location.pathname ? window.location.pathname : '').startsWith('/crm');
+    } catch (_){
+      return false;
+    }
+  }
+
+  function _rewriteApiUrl(input){
+    const urlObj = _asUrl(input);
+    if (!urlObj) return { input: input, urlObj: urlObj };
+    try {
+      if (urlObj.origin !== window.location.origin) return { input: input, urlObj: urlObj };
+      const p = String(urlObj.pathname || '');
+      if (_needsCrmPrefix() && p.startsWith('/api/')) {
+        const next = new URL(String(urlObj), window.location.origin);
+        next.pathname = '/crm' + p;
+        return { input: String(next), urlObj: next };
+      }
+    } catch (_){ }
+    return { input: input, urlObj: urlObj };
+  }
+
   function scopeFromUrl(urlObj){
     try {
       const p = String(urlObj && urlObj.pathname ? urlObj.pathname : '');
@@ -51,11 +74,12 @@
 
   async function crmFetch(input, init){
     const method = _methodFromInit(init);
-    const urlObj = _asUrl(input);
+    const rewritten = _rewriteApiUrl(input);
+    const urlObj = rewritten.urlObj;
     const isMutation = _isMutation(method);
     const isWatched = isMutation && _isSameOriginApi(urlObj);
 
-    const resp = await originalFetch(input, init);
+    const resp = await originalFetch(rewritten.input, init);
 
     try {
       if (isWatched && resp && resp.ok) {
@@ -81,7 +105,8 @@
   }
 
   async function crmFetchNoCache(input, init){
-    const urlObj = _asUrl(input);
+    const rewritten = _rewriteApiUrl(input);
+    const urlObj = rewritten.urlObj;
     if (!urlObj) return originalFetch(input, init);
 
     const method = _methodFromInit(init);

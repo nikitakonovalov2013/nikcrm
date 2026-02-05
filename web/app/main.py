@@ -3981,6 +3981,7 @@ async def sm_mold_page(
 
 
 @app.get("/about", response_class=HTMLResponse, name="about_page")
+@app.get("/crm/about", response_class=HTMLResponse)
 async def about_page(request: Request):
     # Public page (no auth). Telegram may prefetch links for preview.
     return templates.TemplateResponse(
