@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from bot.app.repository.users import UserRepository
 from bot.app.repository.purchases import PurchaseRepository
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
 from shared.services.purchases_render import purchases_chat_message_text, purchase_created_user_message
+from bot.app.services.telegram_outbox import enqueue_purchase_notify, telegram_outbox_job
 
 router = Router()
 
@@ -268,7 +270,19 @@ def _caption_safe_payload(full_html: str, limit: int = 1024) -> tuple[str, str |
 
 async def _notify_admins_about_purchase(user, purchase) -> None:
     # Deprecated: purchases notifications must go ONLY to PURCHASES_CHAT_ID.
-    await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
+    try:
+        pid = int(getattr(purchase, "id", 0) or 0)
+        if pid > 0:
+            await enqueue_purchase_notify(purchase_id=int(pid))
+            try:
+                asyncio.create_task(telegram_outbox_job())
+            except Exception:
+                pass
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "failed to enqueue purchase notify",
+            extra={"purchase_id": int(getattr(purchase, "id", 0) or 0)},
+        )
 
 
 async def _notify_purchase_creator_status(*, purchase_id: int) -> None:
@@ -473,10 +487,14 @@ async def purchases_receive_input(message: Message, state: FSMContext):
             purchase_created_user_message(purchase_id=int(purchase.id))
         )
         try:
-            await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
+            await enqueue_purchase_notify(purchase_id=int(purchase.id))
+            try:
+                asyncio.create_task(telegram_outbox_job())
+            except Exception:
+                pass
         except Exception:
             logging.getLogger(__name__).exception(
-                "failed to notify purchases chat about purchase",
+                "failed to enqueue purchases chat notify",
                 extra={"purchase_id": int(getattr(purchase, "id", 0) or 0)},
             )
     except Exception:
@@ -557,10 +575,14 @@ async def purchases_receive_text_after_photo(message: Message, state: FSMContext
             purchase_created_user_message(purchase_id=int(purchase.id))
         )
         try:
-            await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
+            await enqueue_purchase_notify(purchase_id=int(purchase.id))
+            try:
+                asyncio.create_task(telegram_outbox_job())
+            except Exception:
+                pass
         except Exception:
             logging.getLogger(__name__).exception(
-                "failed to notify purchases chat about purchase",
+                "failed to enqueue purchases chat notify",
                 extra={"purchase_id": int(getattr(purchase, "id", 0) or 0)},
             )
     except Exception:
@@ -648,10 +670,14 @@ async def purchases_admin_actions(cb: CallbackQuery):
 
         # After commit: send NEW message to purchases chat (no edits)
         try:
-            await _send_purchase_status_to_purchases_chat(user=user, purchase=purchase)
+            await enqueue_purchase_notify(purchase_id=int(purchase_id))
+            try:
+                asyncio.create_task(telegram_outbox_job())
+            except Exception:
+                pass
         except Exception:
             logging.getLogger(__name__).exception(
-                "failed to send purchase status to purchases chat",
+                "failed to enqueue purchases chat notify",
                 extra={"purchase_id": int(purchase_id)},
             )
 

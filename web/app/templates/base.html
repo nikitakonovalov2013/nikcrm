@@ -28,7 +28,7 @@
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body class="bg">
+<body class="bg" {% block body_attrs %}{% endblock %}>
   <div class="container py" x-data="{sidebarOpen:false}" x-effect="document.body.classList.toggle('no-scroll', sidebarOpen)">
     <div class="layout">
       <aside class="sidebar" :class="{'open': sidebarOpen}">
@@ -43,6 +43,7 @@
           <a class="menu-link {{ 'active' if path.startswith('/crm/tasks') else '' }}" href="{{ request.url_for('tasks_board') }}">Задачи</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/purchases') else '' }}" href="{{ request.url_for('purchases_board') }}">Закупки</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/schedule') else '' }}" href="{{ request.url_for('schedule_page') }}">График работы</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/about') else '' }}" href="{{ request.url_for('about_page') }}">О нас</a>
           <div class="menu-section">Остатки</div>
           <a class="menu-link {{ 'active' if path.startswith('/crm/stocks') else '' }}" href="{{ request.url_for('stocks_dashboard') }}">Дашборд</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/materials/types') else '' }}" href="/crm/materials/types">Типы материалов</a>
@@ -261,6 +262,12 @@
       if (target) applyTableDataLabels(target);
     });
   </script>
+
+  <script defer src="{{ url_for('static', path='js/crm_refresh_bus.js') }}"></script>
+  <script defer src="{{ url_for('static', path='js/crm_api_fetch.js') }}"></script>
+  <script defer src="{{ url_for('static', path='js/crm_poller.js') }}"></script>
+  <script defer src="{{ url_for('static', path='js/crm_live_updates.js') }}"></script>
+  <script defer src="{{ url_for('static', path='js/crm_live_init.js') }}"></script>
 
   <script defer src="{{ url_for('static', path='js/ui_dialogs.js') }}"></script>
 </body>

@@ -3964,6 +3964,33 @@ async def broadcast_modal(request: Request, admin_id: int = Depends(require_admi
     return templates.TemplateResponse("partials/broadcast_modal.html", {"request": request, "users": users})
 
 
+@app.get("/sm-mold", response_class=HTMLResponse, name="sm_mold_page")
+async def sm_mold_page(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    # Access policy: same auth as CRM (cookie session). No extra role restrictions.
+    await load_staff_user(session, admin_id)
+    return templates.TemplateResponse(
+        "crm/sm_mold.html",
+        {
+            "request": request,
+        },
+    )
+
+
+@app.get("/about", response_class=HTMLResponse, name="about_page")
+async def about_page(request: Request):
+    # Public page (no auth). Telegram may prefetch links for preview.
+    return templates.TemplateResponse(
+        "crm/sm_mold.html",
+        {
+            "request": request,
+        },
+    )
+
+
 @app.post("/broadcast")
 async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None), admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
     ids: Optional[List[int]] = None

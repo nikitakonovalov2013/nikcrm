@@ -318,7 +318,12 @@
     if (!ok) return;
     try {
       await apiJson('/crm/api/tasks/' + String(taskId) + '/unarchive', { method: 'POST' });
-      window.location.reload();
+      try {
+        if (window.crmRefreshBus && window.crmRefreshBus.emit) {
+          window.crmRefreshBus.emit('tasks');
+          window.crmRefreshBus.emit('global');
+        }
+      } catch (_){ }
     } catch (e) {
       await window.crmAlert((e && e.message) || 'Не удалось разархивировать');
     }

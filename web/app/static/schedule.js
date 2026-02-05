@@ -330,7 +330,10 @@
 
   async function apiJson(url, opts){
     const o = Object.assign({ credentials: 'include' }, (opts || {}));
-    const r = await fetch(url, o);
+    const doFetch = (window.crmFetchNoCache && typeof window.crmFetchNoCache === 'function')
+      ? window.crmFetchNoCache
+      : fetch;
+    const r = await doFetch(url, o);
     if (r.status === 401) {
       try { window.location.href = '/crm/auth/tg'; } catch (_){ }
       throw new Error('Сессия истекла. Откройте страницу ещё раз.');
@@ -355,6 +358,22 @@
     const data = await apiJson(url);
     renderMonth(data);
   }
+
+  const _debouncedScheduleReload = (window.crmDebounce ? window.crmDebounce(loadMonth, 700) : loadMonth);
+
+  try {
+    if (window.crmRefreshBus && window.crmRefreshBus.on) {
+      window.crmRefreshBus.on('shifts', _debouncedScheduleReload);
+      window.crmRefreshBus.on('global', _debouncedScheduleReload);
+    }
+  } catch (_){ }
+
+  try {
+    if (window.crmCreatePoller) {
+      const poller = window.crmCreatePoller();
+      poller.start({ intervalMs: 15000, onTick: loadMonth, scope: 'shifts' });
+    }
+  } catch (_){ }
 
   function dayClass(info){
     if (!info || !info.kind) return 'none';

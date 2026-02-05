@@ -43,6 +43,8 @@
 .btn-danger{background:#ef4444;color:#fff}.btn-danger:hover{background:#dc2626}
 .btn-success{background:#16a34a;color:#fff}.btn-success:hover{background:#15803d}
 .btn:disabled,.btn-outline:disabled,.btn-warn:disabled,.btn-danger:disabled,.btn-success:disabled{opacity:.6;cursor:not-allowed;filter:saturate(.9)}
+.task-remind-btn:focus,.task-remind-btn:focus-visible{outline:none;box-shadow:none}
+.task-remind-btn:active{outline:none;box-shadow:none}
 .input{border:1px solid #cbd5e1;border-radius:12px;padding:10px 12px;outline:none;background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:#0f172a}
 .input:focus{border-color:#93c5fd;box-shadow:0 0 0 4px rgba(59,130,246,.18)}
 .input:hover{border-color:#94a3b8}
@@ -193,7 +195,7 @@ img, canvas, svg{max-width:100%}
 
 /* Layout with sidebar */
 .layout{display:flex;gap:16px;width:100%;min-height:100vh}
-.sidebar{position:sticky;top:0;flex:0 0 260px;width:260px;min-width:260px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(2,6,23,.06);height:100vh;padding:12px;overflow:auto}
+.sidebar{position:sticky;top:0;flex:0 0 260px;width:260px;min-width:260px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(2,6,23,.06);height:100vh;padding:12px;overflow:visible}
 .sidebar-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
 .sidebar-title{font-weight:700;color:#0f172a}
 .sidebar-close{display:none;background:#f1f5f9;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px;cursor:pointer}
@@ -215,7 +217,7 @@ img, canvas, svg{max-width:100%}
   .py{padding-top:12px;padding-bottom:12px}
   .card{padding:14px;border-radius:14px}
   .layout{gap:0}
-  .sidebar{position:fixed;left:0;top:0;bottom:0;width:min(320px,86vw);max-width:86vw;transform:translateX(-100%);transition:transform .2s ease;z-index:60;border-radius:0;height:100vh}
+  .sidebar{position:fixed;left:0;top:0;bottom:0;width:min(320px,86vw);max-width:86vw;transform:translateX(-100%);transition:transform .2s ease;z-index:60;border-radius:0;height:100vh;overflow:auto}
   .sidebar.open{transform:translateX(0)}
   .sidebar-close{display:inline-block}
   .sidebar-overlay{display:block;position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:55}
@@ -469,6 +471,9 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 
 .btn-remind{background:#db2777;color:#fff}
 .btn-remind:hover{background:#be185d}
+
+.task-remind-btn{background:#eef2ff;color:#1e3a8a}
+.task-remind-btn:hover{background:#e0e7ff}
 
 @media (max-width: 480px){
   .task-quick-actions .btn-success,.task-quick-actions .btn-outline,.task-quick-actions .btn-warn,.task-quick-actions .btn-remind{flex:1 1 100%;width:100%}

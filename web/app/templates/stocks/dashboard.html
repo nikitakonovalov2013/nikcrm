@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block body_attrs %}data-crm-page="stocks_dashboard"{% endblock %}
 {% block title %}Остатки — Дашборд{% endblock %}
 {% block content %}
 <h2 class="subtitle">Остатки · Дашборд</h2>
@@ -146,6 +147,28 @@
     }
   }
 
+  function _getFetchNoCache(){
+    try {
+      if (window.crmFetchNoCache && typeof window.crmFetchNoCache === 'function') return window.crmFetchNoCache;
+    } catch (_){ }
+    return fetch;
+  }
+
+  function _ensureStocksState(){
+    try {
+      if (!window.__crmStocksDashboard) window.__crmStocksDashboard = {};
+      return window.__crmStocksDashboard;
+    } catch (_){
+      return {};
+    }
+  }
+
+  function _charts(){
+    const st = _ensureStocksState();
+    if (!st.charts) st.charts = { bar: null, pie: null, masters: null };
+    return st.charts;
+  }
+
   function initCharts() {
     const chartRows = parseJsonScript('chart-data');
     const pieRows = parseJsonScript('pie-data');
@@ -160,7 +183,13 @@
     const mastersEmptyEl = document.getElementById('mastersEmpty');
     if (!barEl || !pieEl || !window.Chart) return;
 
-    const barChart = new Chart(barEl, {
+    const ch = _charts();
+    try {
+      if (ch.bar) { ch.bar.destroy(); ch.bar = null; }
+      if (ch.pie) { ch.pie.destroy(); ch.pie = null; }
+    } catch (_){ }
+
+    ch.bar = new Chart(barEl, {
       type: 'bar',
       data: {
         labels,
@@ -183,7 +212,7 @@
     const pieLabels = pieRows.map(r => r.label);
     const pieValues = pieRows.map(r => Number(r.value));
 
-    const pieChart = new Chart(pieEl, {
+    ch.pie = new Chart(pieEl, {
       type: 'doughnut',
       data: {
         labels: pieLabels,
@@ -204,10 +233,8 @@
     // After flex/grid layout settles, force Chart.js to measure containers.
     requestAnimationFrame(() => {
       try {
-        barChart.resize();
-        barChart.update();
-        pieChart.resize();
-        pieChart.update();
+        if (ch.bar) { ch.bar.resize(); ch.bar.update(); }
+        if (ch.pie) { ch.pie.resize(); ch.pie.update(); }
       } catch (_) {}
       try { window.dispatchEvent(new Event('resize')); } catch (_) {}
     });
@@ -220,7 +247,8 @@
         const path = (window.location && window.location.pathname) ? String(window.location.pathname) : '';
         const basePrefix = path.startsWith('/crm/') ? '/crm' : '';
         const url = basePrefix + '/api/stocks/cast-by-masters?date_from=' + encodeURIComponent(df) + '&date_to=' + encodeURIComponent(dt);
-        const resp = await fetch(url, { credentials: 'same-origin' });
+        const doFetch = _getFetchNoCache();
+        const resp = await doFetch(url, { credentials: 'same-origin' });
         const ct = (resp.headers && resp.headers.get) ? (resp.headers.get('content-type') || '') : '';
         if (!resp.ok) {
           const txt = await resp.text();
@@ -250,7 +278,11 @@
         const values = rows.map(r => Number(r.total || 0));
         const colors = rows.map(r => String(r.color || '#64748b'));
 
-        const mastersChart = new Chart(mastersEl, {
+        try {
+          if (ch.masters) { ch.masters.destroy(); ch.masters = null; }
+        } catch (_){ }
+
+        ch.masters = new Chart(mastersEl, {
           type: 'bar',
           data: {
             labels,
@@ -289,7 +321,7 @@
         });
 
         requestAnimationFrame(() => {
-          try { mastersChart.resize(); mastersChart.update(); } catch (_) {}
+          try { if (ch.masters) { ch.masters.resize(); ch.masters.update(); } } catch (_) {}
         });
       } catch (e) {
         if (mastersEmptyEl) {
@@ -302,7 +334,103 @@
     }
 
     loadMastersChart();
+
+    try {
+      const st = _ensureStocksState();
+      st.reloadMastersChart = loadMastersChart;
+    } catch (_){ }
   }
+
+  async function reloadStocksDashboard(){
+    // Safe live reload: update only data blocks; do NOT swap the whole card (would kill Chart.js state).
+    try {
+      if (document.hidden) return;
+    } catch (_){ }
+    try {
+      if (window.crmIsModalOpen && window.crmIsModalOpen()) {
+        // poller will retry after close-modal
+        return;
+      }
+    } catch (_){ }
+
+    const doFetch = _getFetchNoCache();
+    const url = window.location.href;
+    const r = await doFetch(url, { method: 'GET', credentials: 'include' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const html = await r.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    // Update embedded json sources for charts
+    try {
+      const nextChart = doc.getElementById('chart-data');
+      const nextPie = doc.getElementById('pie-data');
+      const curChart = document.getElementById('chart-data');
+      const curPie = document.getElementById('pie-data');
+      if (nextChart && curChart) curChart.textContent = nextChart.textContent || '[]';
+      if (nextPie && curPie) curPie.textContent = nextPie.textContent || '[]';
+    } catch (_){ }
+
+    // Update forecast table body
+    try {
+      const nextTbody = doc.querySelector('#stocks-forecast-table tbody');
+      const curTbody = document.querySelector('#stocks-forecast-table tbody');
+      if (nextTbody && curTbody) {
+        const nextHtml = String(nextTbody.innerHTML || '');
+        const curHtml = String(curTbody.innerHTML || '');
+        if (nextHtml !== curHtml) curTbody.innerHTML = nextHtml;
+      }
+    } catch (_){ }
+
+    // Update history list
+    try {
+      const nextHistory = doc.querySelector('.history');
+      const curHistory = document.querySelector('.history');
+      if (nextHistory && curHistory) {
+        const nextHtml = String(nextHistory.innerHTML || '');
+        const curHtml = String(curHistory.innerHTML || '');
+        if (nextHtml !== curHtml) curHistory.innerHTML = nextHtml;
+      }
+    } catch (_){ }
+
+    // Re-apply responsive labels
+    try {
+      if (window.applyTableDataLabels) window.applyTableDataLabels(document);
+    } catch (_){ }
+
+    // Update charts from updated json scripts
+    try {
+      const chartRows = parseJsonScript('chart-data');
+      const pieRows = parseJsonScript('pie-data');
+      const ch = _charts();
+      if (ch.bar) {
+        ch.bar.data.labels = chartRows.map(r => r.material_name);
+        if (ch.bar.data.datasets && ch.bar.data.datasets[0]) ch.bar.data.datasets[0].data = chartRows.map(r => Number(r.total_in));
+        if (ch.bar.data.datasets && ch.bar.data.datasets[1]) ch.bar.data.datasets[1].data = chartRows.map(r => Number(r.total_out));
+        ch.bar.update();
+      }
+      if (ch.pie) {
+        ch.pie.data.labels = pieRows.map(r => r.label);
+        if (ch.pie.data.datasets && ch.pie.data.datasets[0]) ch.pie.data.datasets[0].data = pieRows.map(r => Number(r.value));
+        ch.pie.update();
+      }
+    } catch (_){ }
+
+    try {
+      const st = _ensureStocksState();
+      if (st.reloadMastersChart) {
+        await st.reloadMastersChart();
+      }
+    } catch (_){ }
+  }
+
+  try {
+    window.reloadStocksDashboard = reloadStocksDashboard;
+  } catch (_){ }
+
+  try {
+    window.CRM = window.CRM || {};
+    window.CRM.reloadStocksDashboard = reloadStocksDashboard;
+  } catch (_){ }
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initCharts, { once: true });

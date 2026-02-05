@@ -22,6 +22,7 @@ from bot.app.utils.urls import get_schedule_url
 from bot.app.repository.reminders_settings import ReminderSettingsRepository
 from bot.app.services.stocks_reports import build_report
 from bot.app.services.stocks_reports_format import format_report_html
+from bot.app.services.telegram_outbox import telegram_outbox_job
 
 
 _logger = logging.getLogger(__name__)
@@ -444,6 +445,14 @@ def schedule_jobs() -> None:
         shift_time_notifications_job,
         IntervalTrigger(minutes=1, timezone=tz),
         id="shift_time_notifications",
+        replace_existing=True,
+    )
+
+    # Telegram outbox retry (best-effort) for network/DNS issues
+    sched.add_job(
+        telegram_outbox_job,
+        IntervalTrigger(seconds=30, timezone=tz),
+        id="telegram_outbox",
         replace_existing=True,
     )
 

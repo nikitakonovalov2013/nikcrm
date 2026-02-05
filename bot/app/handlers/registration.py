@@ -15,6 +15,8 @@ from bot.app.utils.parsing import parse_birth_date
 from bot.app.repository.users import UserRepository, UserAlreadyRegisteredError
 from shared.utils import format_date
 from bot.app.utils.bot_commands import sync_commands_for_chat
+from bot.app.utils.urls import _public_base_url
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router()
 
@@ -291,7 +293,18 @@ async def profile(message: Message):
         f"👔 Должность: {user.position}\n"
         f"🟢 Статус: {status_ru}"
     )
-    await message.answer(text, reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
+
+    kb = None
+    try:
+        base = _public_base_url()
+        url = (base + "/about") if base else "/about"
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="О нас", url=str(url))]]
+        )
+    except Exception:
+        kb = None
+
+    await message.answer(text, reply_markup=kb)
 
     try:
         from shared.config import settings

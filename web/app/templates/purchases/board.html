@@ -1,4 +1,5 @@
 {% extends base_template %}
+{% block body_attrs %}data-crm-page="purchases"{% endblock %}
 {% block title %}Закупки{% endblock %}
 {% block content %}
 <div class="crm-purchases-page">
@@ -135,6 +136,87 @@
     if (r.status === 204) return null;
     return isJson ? await r.json() : await r.text();
   }
+
+  function _captureKanbanScroll(){
+    const m = {};
+    try {
+      document.querySelectorAll('.kanban-col-body').forEach(el => {
+        const id = el && el.id ? String(el.id) : '';
+        if (!id) return;
+        m[id] = Number(el.scrollTop || 0);
+      });
+    } catch (_){ }
+    return m;
+  }
+
+  function _restoreKanbanScroll(map){
+    try {
+      const m = map || {};
+      document.querySelectorAll('.kanban-col-body').forEach(el => {
+        const id = el && el.id ? String(el.id) : '';
+        if (!id) return;
+        const v = m[id];
+        if (v === undefined || v === null) return;
+        el.scrollTop = Number(v) || 0;
+      });
+    } catch (_){ }
+  }
+
+  async function reloadPurchasesBoardKanban(){
+    const prevScroll = _captureKanbanScroll();
+    const q = (document.querySelector('input[name="q"]') || {}).value || '';
+    const mine = !!((document.querySelector('input[name="mine"]') || {}).checked);
+
+    const params = new URLSearchParams();
+    if (String(q || '').trim()) params.set('q', String(q || '').trim());
+    if (mine) params.set('mine', '1');
+
+    const url = '/crm/api/purchases' + (String(params) ? ('?' + String(params)) : '');
+    const doFetch = (window.crmFetchNoCache && typeof window.crmFetchNoCache === 'function')
+      ? window.crmFetchNoCache
+      : fetch;
+    const r = await doFetch(url, { method: 'GET', credentials: 'same-origin' });
+    if (r.status === 401) {
+      try { window.location.href = '/crm/login'; } catch (_){ }
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json().catch(() => ({}));
+    const items = (data && Array.isArray(data.items)) ? data.items : [];
+
+    const cols = { new: [], in_progress: [], archived: [] };
+    items.forEach(p => {
+      const col = kanbanColFromItem(p);
+      if (col === 'in_progress') cols.in_progress.push(p);
+      else if (col === 'archived') cols.archived.push(p);
+      else cols.new.push(p);
+    });
+
+    function _renderCol(colKey){
+      const body = document.getElementById(statusColumnId(colKey));
+      if (!body) return;
+      const arr = cols[colKey] || [];
+      if (!arr.length) {
+        body.innerHTML = '<div class="kanban-empty muted">Нет закупок</div>';
+        return;
+      }
+      body.innerHTML = arr.map(renderPurchaseCard).join('');
+    }
+
+    _renderCol('new');
+    _renderCol('in_progress');
+    _renderCol('archived');
+
+    try { applyCollapsedFromStorage(); } catch (_){ }
+    try { bindCollapseHandlers(); } catch (_){ }
+    try { updateColumnCounts(); } catch (_){ }
+    _restoreKanbanScroll(prevScroll);
+  }
+
+  try {
+    window.CRM = window.CRM || {};
+    window.CRM.reloadPurchasesBoard = reloadPurchasesBoardKanban;
+  } catch (_){ }
 
   function openModal(html){
     const b = document.getElementById('modal-body');
@@ -517,7 +599,7 @@
       const id = resp && resp.id ? resp.id : null;
       if (!id) {
         window.dispatchEvent(new CustomEvent('close-modal'));
-        try { window.location.reload(); } catch (_) {}
+        try { await reloadPurchasesBoardKanban(); } catch (_){ }
         return false;
       }
 
@@ -533,9 +615,9 @@
           target.insertBefore(el, target.firstChild);
           updateColumnCounts();
         } else {
-          window.location.reload();
+          try { await reloadPurchasesBoardKanban(); } catch (_){ }
         }
-      } catch (_){ try { window.location.reload(); } catch (__){ } }
+      } catch (_){ try { await reloadPurchasesBoardKanban(); } catch (__){ } }
       return false;
     } catch (e) {
       await window.crmAlert((e && e.message) || 'Не удалось создать закупку');

@@ -537,6 +537,27 @@ class PurchaseEvent(Base):
     )
 
 
+class TelegramOutbox(Base):
+    __tablename__ = "telegram_outbox"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (
+        Index("ix_telegram_outbox_kind", "kind"),
+        Index("ix_telegram_outbox_status", "status"),
+        Index("ix_telegram_outbox_next_retry_at", "next_retry_at"),
+        Index("ix_telegram_outbox_status_next_retry_at", "status", "next_retry_at"),
+    )
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
