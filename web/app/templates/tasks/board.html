@@ -83,7 +83,7 @@
           {% set st = t.status or '' %}
           {% set a0 = (t.assignees[0] if t.assignees and (t.assignees|length > 0) else None) %}
           {% set a0_color = (a0.get('color') if a0 else '') or '#cbd5e1' %}
-          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" style="--assignee-color: {{ a0_color }}" data-task-id="{{ t.id }}" data-status="{{ st }}" data-priority="{{ t.priority or 'normal' }}" data-due-at-ts="{{ t.due_at_ts or '' }}" data-created-at-ts="{{ t.created_at_ts or '' }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
+          <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %} {% if t.is_overdue %}overdue{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" style="--assignee-color: {{ a0_color }}" data-task-id="{{ t.id }}" data-status="{{ st }}" data-priority="{{ t.priority or 'normal' }}" data-due-at-ts="{{ t.due_at_ts or '' }}" data-created-at-ts="{{ t.created_at_ts or '' }}">
             <div class="task-card-strip" aria-hidden="true"></div>
             <div class="task-card-inner">
               <div class="task-card-top">
@@ -414,6 +414,49 @@
   const IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
   const IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
 
+  function _tasksDebug(){
+    try {
+      if (!window.CRM_DEBUG_TASKS) return;
+      const args = Array.from(arguments || []);
+      console.log.apply(console, ['[tasks]'].concat(args));
+    } catch (_){ }
+  }
+
+  function bindTaskCardOpenDelegation(){
+    const root = kanbanRoot();
+    if (!root) return;
+    if (root.dataset.boundTaskCardOpen === '1') return;
+    root.dataset.boundTaskCardOpen = '1';
+    _tasksDebug('bind delegated open handler');
+
+    root.addEventListener('click', async (ev) => {
+      try {
+        if (!ev) return;
+        if (ev.defaultPrevented) return;
+
+        const target = ev.target;
+        const card = target && target.closest ? target.closest('.task-card[data-task-id]') : null;
+        if (!card) return;
+
+        // Do not open modal when user clicks on explicit interactive controls inside card.
+        if (target && target.closest) {
+          if (target.closest('[data-action]')) return;
+          if (target.closest('a,button,input,textarea,select,label')) return;
+          if (target.closest('.task-quick-actions')) return;
+        }
+
+        const taskId = String(card.dataset.taskId || '').trim();
+        if (!taskId) return;
+        _tasksDebug('click card', { taskId: taskId, tag: (target && target.tagName) ? String(target.tagName) : '' });
+
+        try { ev.preventDefault(); } catch (_){ }
+        await window.tasksOpenDetail(taskId);
+      } catch (e) {
+        _tasksDebug('delegated open failed', (e && e.message) ? e.message : String(e || ''));
+      }
+    }, { passive: false });
+  }
+
   function openModal(html){
     const b = modalBody();
     if (!b) return;
@@ -664,6 +707,7 @@
   try {
     document.querySelectorAll('.kanban-col-body').forEach(sortColumnCards);
   } catch (_){ }
+  try { bindTaskCardOpenDelegation(); } catch (_){ }
   setInterval(refreshElapsedNodes, 60 * 1000);
 
   async function apiJson(url, opts){
@@ -813,10 +857,13 @@
   };
 
   window.tasksOpenDetail = async function(taskId){
+    _tasksDebug('open modal', { taskId: String(taskId || '') });
     try {
       const task = await apiJson('/api/tasks/' + String(taskId));
+      _tasksDebug('task loaded ok', { taskId: String(taskId || ''), status: String(task && task.status ? task.status : '') });
       openModal(renderDetailModal(task));
     } catch (e) {
+      _tasksDebug('open modal failed', { taskId: String(taskId || ''), error: (e && e.message) ? e.message : String(e || '') });
       await window.crmAlert((e && e.message) || 'Не удалось загрузить задачу');
     }
   };
