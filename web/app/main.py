@@ -41,6 +41,8 @@ from shared.services.material_stock import (
     update_stock_on_new_supply,
 )
 
+from shared.services.materials_remains import set_material_remains
+
 from shared.db import add_after_commit_callback
 from shared.services.stock_events_notify import notify_reports_chat_about_stock_event, StockEventActor
 
@@ -81,6 +83,8 @@ from shared.services.purchases_domain import purchase_take_in_work, purchase_can
 from shared.services.purchases_render import purchases_chat_message_text, purchases_chat_kb_dict, purchase_created_user_message
 from shared.services.tasks_flow import add_task_comment as shared_add_task_comment
 from shared.services.tasks_flow import return_task_to_rework as shared_return_task_to_rework
+from shared.services.tasks_flow import enqueue_task_taken_in_work_notifications, enqueue_task_sent_to_review_notifications
+from shared.services.tasks_flow import enqueue_task_status_changed_notifications
 
 from shared.services.shifts_domain import (
     calc_int_hours_from_times,
@@ -4961,6 +4965,47 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
 
     await session.flush()
 
+    # Shared TG notifications with strict rules.
+    try:
+        actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+        if str(new_status_val) == TaskStatus.IN_PROGRESS.value and str(old_status) != TaskStatus.IN_PROGRESS.value:
+            await enqueue_task_taken_in_work_notifications(
+                session=session,
+                task=t,
+                actor_user_id=int(actor.id),
+                actor_name=str(actor_name),
+                event_id=int(getattr(ev, "id", 0) or 0),
+            )
+        if str(new_status_val) == TaskStatus.REVIEW.value and str(old_status) != TaskStatus.REVIEW.value:
+            await enqueue_task_sent_to_review_notifications(
+                session=session,
+                task=t,
+                actor_user_id=int(actor.id),
+                actor_name=str(actor_name),
+                event_id=int(getattr(ev, "id", 0) or 0),
+            )
+
+        # Keep legacy status_changed notifications for other transitions.
+        if not (
+            (str(new_status_val) == TaskStatus.IN_PROGRESS.value and str(old_status) != TaskStatus.IN_PROGRESS.value)
+            or (str(new_status_val) == TaskStatus.REVIEW.value and str(old_status) != TaskStatus.REVIEW.value)
+        ):
+            await enqueue_task_status_changed_notifications(
+                session=session,
+                task=t,
+                actor_user_id=int(actor.id),
+                actor_name=str(actor_name),
+                from_status=str(old_status),
+                to_status=str(new_status_val),
+                comment=(comment or None),
+                event_id=int(getattr(ev, "id", 0) or 0),
+            )
+    except Exception:
+        try:
+            logger.exception("TASK_NOTIFY_FAILED type=shared_status_rules task_id=%s", int(getattr(t, "id", task_id) or task_id))
+        except Exception:
+            pass
+
     try:
         logger.info(
             "TASK_STATUS_CHANGED task_id=%s old=%s new=%s actor_user_id=%s",
@@ -4972,74 +5017,6 @@ async def tasks_api_change_status(task_id: int, request: Request, admin_id: int 
     except Exception:
         pass
 
-    try:
-        # status notifications -> notify executor(s) (assignees or started_by for common tasks)
-        assignees = list(getattr(t, "assignees", None) or [])
-        executor_ids: list[int] = [int(u.id) for u in assignees]
-        if not executor_ids:
-            sb = getattr(t, "started_by_user_id", None)
-            if sb is not None:
-                executor_ids = [int(sb)]
-
-        recipients = [int(r) for r in executor_ids if int(r) != int(actor.id)]
-        if recipients:
-            ns = TaskNotificationService(session)
-            tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
-            filtered: list[int] = []
-            for rid in recipients:
-                tg_id = int(tg_map.get(int(rid), 0) or 0)
-                if tg_id <= 0:
-                    try:
-                        _logger.info(
-                            "TASK_NOTIFY_SKIP reason=no_tg_id type=status_changed task_id=%s assignee_id=%s",
-                            int(t.id),
-                            int(rid),
-                        )
-                    except Exception:
-                        pass
-                    continue
-                filtered.append(int(rid))
-            recipients = filtered
-            if recipients:
-                actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
-                for rid in recipients:
-                    try:
-                        logger.info(
-                            "TASK_NOTIFY_ATTEMPT type=status_changed task_id=%s to_assignee_id=%s tg_id=%s from=%s to=%s event_id=%s",
-                            int(t.id),
-                            int(rid),
-                            int(tg_map.get(int(rid), 0) or 0),
-                            str(old_status),
-                            str(new_status_val),
-                            int(getattr(ev, "id", 0) or 0),
-                        )
-                    except Exception:
-                        pass
-                    await ns.enqueue(
-                        task_id=int(t.id),
-                        recipient_user_id=int(rid),
-                        type="status_changed",
-                        payload={
-                            "task_id": int(t.id),
-                            "from": str(old_status),
-                            "to": str(new_status_val),
-                            "comment": comment or None,
-                            "action": (
-                                "return_to_rework"
-                                if str(old_status) == TaskStatus.REVIEW.value and str(new_status_val) == TaskStatus.IN_PROGRESS.value and (comment or "").strip()
-                                else None
-                            ),
-                            "actor_user_id": int(actor.id),
-                            "actor_name": actor_name,
-                            "event_id": int(getattr(ev, "id", 0) or 0),
-                        },
-                        dedupe_key=f"status:{int(getattr(ev, 'id', 0) or 0)}",
-                    )
-    except Exception:
-        try:
-            logger.exception("TASK_NOTIFY_FAILED type=status_changed task_id=%s", int(getattr(t, "id", task_id) or task_id))
-        except Exception:
-            pass
     return {"ok": True, "id": int(t.id), "status": new_status_val}
 
 
@@ -5522,6 +5499,124 @@ async def materials_modal_delete(material_id: int, request: Request, admin_id: i
     cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).where(MaterialConsumption.material_id == material_id))).scalar_one()
     sups = (await session.execute(select(func.count()).select_from(MaterialSupply).where(MaterialSupply.material_id == material_id))).scalar_one()
     return templates.TemplateResponse("materials/partials/materials_delete_modal.html", {"request": request, "material_id": material_id, "cons": cons, "sups": sups})
+
+
+@app.get("/materials/{material_id}/modal/set-remains", response_class=HTMLResponse, name="materials_modal_set_remains")
+async def materials_modal_set_remains(material_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    res = await session.execute(select(Material).where(Material.id == material_id).options(selectinload(Material.material_type)))
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(404)
+    return templates.TemplateResponse("materials/partials/materials_set_remains_modal.html", {"request": request, "m": m})
+
+
+@app.post("/materials/{material_id}/set-remains", name="materials_set_remains")
+async def materials_set_remains(
+    material_id: int,
+    request: Request,
+    new_remains: str = Form(...),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    res = await session.execute(select(Material).where(Material.id == material_id).options(selectinload(Material.material_type), selectinload(Material.allowed_masters)))
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(404)
+
+    try:
+        from decimal import Decimal
+
+        v = Decimal(str(new_remains).strip())
+    except Exception:
+        return templates.TemplateResponse(
+            "materials/partials/materials_set_remains_modal.html",
+            {"request": request, "m": m, "new_remains": new_remains, "errors": {"new_remains": "Некорректное число"}},
+            status_code=400,
+        )
+
+    try:
+        result = await set_material_remains(session=session, material_id=int(material_id), new_remains=v)
+    except ValueError as e:
+        code = str(e)
+        msg = "Ошибка"
+        if "negative" in code:
+            msg = "Значение не может быть отрицательным"
+        elif "invalid" in code:
+            msg = "Некорректное число"
+        elif "not_found" in code:
+            raise HTTPException(404)
+        return templates.TemplateResponse(
+            "materials/partials/materials_set_remains_modal.html",
+            {"request": request, "m": m, "new_remains": str(v), "errors": {"new_remains": msg}},
+            status_code=400,
+        )
+
+    try:
+        arepo = AdminLogRepo(session)
+        await arepo.log(
+            admin_tg_id=int(admin_id),
+            user_id=None,
+            action=AdminActionType.EDIT,
+            payload={
+                "entity": "material",
+                "material_id": int(material_id),
+                "action": "set_remains",
+                "old": str(result.old_remains),
+                "new": str(result.new_remains),
+                "delta": str(result.delta),
+            },
+        )
+    except Exception:
+        pass
+
+    # Optional: notify reports chat (best-effort) so history reflects correction.
+    try:
+        from decimal import Decimal
+
+        res_u = await session.execute(select(User).where(User.tg_id == admin_id).where(User.is_deleted == False))
+        admin_user = res_u.scalar_one_or_none()
+        full_name = ""
+        if admin_user is not None:
+            full_name = str(getattr(admin_user, "full_name", "") or "").strip()
+            if not full_name:
+                first = str(getattr(admin_user, "first_name", "") or "").strip()
+                last = str(getattr(admin_user, "last_name", "") or "").strip()
+                full_name = (first + " " + last).strip()
+        if not full_name:
+            full_name = f"Staff {admin_id}"
+        actor = StockEventActor(name=full_name, tg_id=admin_id)
+        happened_at = None
+        stock_after = Decimal(getattr(m, "current_stock", 0) or 0)
+        add_after_commit_callback(
+            session,
+            lambda: notify_reports_chat_about_stock_event(
+                kind="adjustment",
+                material_name=str(getattr(m, "name", "") or "—"),
+                amount=Decimal(result.delta),
+                unit=str(getattr(m, "unit", "") or ""),
+                actor=actor,
+                happened_at=happened_at,
+                stock_after=stock_after,
+            ),
+        )
+    except Exception:
+        pass
+
+    res2 = await session.execute(
+        select(Material)
+        .options(selectinload(Material.material_type), selectinload(Material.allowed_masters))
+        .order_by(Material.name)
+    )
+    materials = res2.scalars().all()
+    res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
+    types = res_t.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/materials_table.html",
+        {"request": request, "materials": materials, "types": types, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
 
 
 @app.post("/materials/create")

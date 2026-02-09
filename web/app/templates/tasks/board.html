@@ -155,7 +155,7 @@
                   </div>
                 </div>
 
-                <div class="task-quick-actions" data-role="task-quick-actions" onclick="event.stopPropagation()">
+                <div class="task-quick-actions" data-role="task-quick-actions">
                   {% if (is_admin or is_manager) and (st == 'new' or st == 'in_progress') %}
                     {% if not (st == 'in_progress' and t.is_assigned_to_me) %}
                       <button class="btn-outline task-remind-btn" type="button" onclick="window.tasksQuickRemind(event, {{ t.id }})">Напомнить</button>

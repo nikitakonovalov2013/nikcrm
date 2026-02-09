@@ -19,6 +19,7 @@ from shared.utils import MOSCOW_TZ, utc_now
 from shared.models import User, WorkShiftDay, ShiftInstance, ShiftInstanceEvent
 
 from shared.services.shifts_domain import is_shift_active_status, is_shift_final_status
+from shared.services.shifts_service import get_today_working_staff_with_open_state
 
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.keyboards.main import main_menu_kb
@@ -60,6 +61,30 @@ def _fmt_plan_interval(*, day: date | None, start_time, end_time, is_emergency: 
     if is_emergency:
         return f"{ds} • ⚡ экстренная смена"
     return f"{ds} • вне расписания"
+
+
+def _fmt_hhmm(t: object | None) -> str:
+    try:
+        if t is None:
+            return ""
+        if hasattr(t, "strftime"):
+            return t.strftime("%H:%M")
+    except Exception:
+        return ""
+    return ""
+
+
+def _fmt_work_line(*, name: str, start_time: object | None, end_time: object | None, planned_hours: int | None, is_opened: bool) -> str:
+    dot = "🟢" if is_opened else "🔴"
+    st = _fmt_hhmm(start_time)
+    en = _fmt_hhmm(end_time)
+    if st and en:
+        interval = f"{st}–{en}"
+    elif planned_hours is not None:
+        interval = f"{int(planned_hours)} ч."
+    else:
+        interval = "—"
+    return f"{dot} {esc(name)} — {esc(interval)}"
 
 
 async def _notify_admins_and_managers_about_shift_event(
@@ -293,7 +318,8 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
-    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+    r = role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if user.status != UserStatus.APPROVED and not (bool(r.is_admin) or bool(r.is_manager)):
         await edit_html(cb, "⛔ Нет доступа.")
         return
 
@@ -374,10 +400,35 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
 
         add_after_commit_callback(session, _after_commit)
 
+        today_staff = await get_today_working_staff_with_open_state(session=session, day=d)
+
     await state.clear()
+
+    lines: list[str] = [
+        "✅ Смена открыта",
+        "",
+    ]
+    if not today_staff:
+        lines.append("Сегодня кроме вас смен нет")
+    else:
+        lines.append("Сегодня работают:")
+        for row in today_staff:
+            try:
+                lines.append(
+                    _fmt_work_line(
+                        name=str(getattr(row, "full_name", "") or "—"),
+                        start_time=getattr(row, "start_time", None),
+                        end_time=getattr(row, "end_time", None),
+                        planned_hours=getattr(row, "planned_hours", None),
+                        is_opened=bool(getattr(row, "is_opened", False)),
+                    )
+                )
+            except Exception:
+                continue
+
     await edit_html(
         cb,
-        "✅ Смена открыта. Когда закончите — нажмите «Закрыть смену» в меню графика.",
+        "\n".join(lines),
         reply_markup=_kb_schedule_return(),
     )
 
@@ -493,7 +544,8 @@ async def shift_close_by_day(cb: CallbackQuery, state: FSMContext):
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
-    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+    r = role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if user.status != UserStatus.APPROVED and not (bool(r.is_admin) or bool(r.is_manager)):
         await edit_html(cb, "⛔ Нет доступа.")
         return
 
@@ -533,7 +585,8 @@ async def shift_end_snooze(cb: CallbackQuery, state: FSMContext):
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
-    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+    r = role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if user.status != UserStatus.APPROVED and not (bool(r.is_admin) or bool(r.is_manager)):
         await edit_html(cb, "⛔ Нет доступа.")
         return
 

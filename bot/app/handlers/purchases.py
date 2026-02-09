@@ -27,12 +27,19 @@ from bot.app.repository.purchases import PurchaseRepository
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
 from shared.services.purchases_render import purchases_chat_message_text, purchase_created_user_message
 from bot.app.services.telegram_outbox import enqueue_purchase_notify, telegram_outbox_job
+from shared.permissions import role_flags
+from bot.app.utils.access import is_admin_or_manager
 
 router = Router()
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
+
+
+def _can_manage_purchases(*, tg_id: int, status: UserStatus | None, position) -> bool:
+    r = role_flags(tg_id=int(tg_id), admin_ids=settings.admin_ids, status=status, position=position)
+    return is_admin_or_manager(r=r)
 
 
 def _purchase_priority_human(priority: str | None) -> str:
@@ -336,7 +343,7 @@ async def purchases_entry(message: Message, state: FSMContext):
             reply_markup=main_menu_kb(None, message.from_user.id),
         )
         return
-    if not (user.status == UserStatus.APPROVED or is_admin(message.from_user.id)):
+    if not (user.status == UserStatus.APPROVED or _can_manage_purchases(tg_id=message.from_user.id, status=user.status, position=user.position)):
         await message.answer(
             "⏳ Доступ к разделу \"Закупки\" доступен только одобренным пользователям.",
             reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
@@ -607,7 +614,10 @@ async def purchases_admin_actions(cb: CallbackQuery):
         pass
     if cb.data == "purchase:cancel":
         return
-    if not is_admin(cb.from_user.id):
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+    if not _can_manage_purchases(tg_id=cb.from_user.id, status=getattr(user, 'status', None), position=getattr(user, 'position', None)):
         await cb.answer("Недостаточно прав", show_alert=True)
         return
     try:

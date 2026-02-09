@@ -32,6 +32,9 @@
         <td data-label="Активен" class="crm-field"><span class="crm-value crm-nowrap">{{ 'Да' if m.is_active else 'Нет' }}</span></td>
         <td data-label="Остаток" class="crm-field"><span class="crm-value crm-nowrap">{{ m.current_stock }} {{ m.unit }}</span></td>
         <td data-label="Действия" class="actions-cell crm-actions">
+          <button class="icon-btn has-tooltip" data-tooltip="Корректировка остатка"
+                  hx-get="{{ url_for('materials_modal_set_remains', material_id=m.id) }}"
+                  hx-target="#modal-body" hx-swap="innerHTML">🧮</button>
           <button class="icon-btn has-tooltip" data-tooltip="Редактировать"
                   hx-get="{{ url_for('materials_modal_edit', material_id=m.id) }}"
                   hx-target="#modal-body" hx-swap="innerHTML">✏️</button>

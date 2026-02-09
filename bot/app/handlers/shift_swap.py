@@ -139,7 +139,8 @@ async def swap_need(cb: CallbackQuery, state: FSMContext):
     user = await ensure_registered_or_reply(cb)
     if not user:
         return
-    if user.status != UserStatus.APPROVED and int(cb.from_user.id) not in settings.admin_ids:
+    r = role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if user.status != UserStatus.APPROVED and not (bool(r.is_admin) or bool(r.is_manager)):
         await edit_html(cb, "⛔ Нет доступа.")
         return
 

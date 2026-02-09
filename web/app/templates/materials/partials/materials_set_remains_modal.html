@@ -1,0 +1,27 @@
+<div class="modal-header">Корректировка остатка</div>
+<form hx-post="{{ url_for('materials_set_remains', material_id=m.id) }}"
+      hx-target="#modal-body"
+      hx-swap="innerHTML"
+      class="form-grid">
+
+  <div style="grid-column: 1 / -1;">
+    <div class="muted">Материал: <b>{{ m.name }}</b></div>
+  </div>
+
+  <div>
+    <label>Новый остаток ({{ m.unit }})</label>
+    <input type="number" name="new_remains" step="0.001" min="0" value="{{ new_remains if new_remains is defined else m.current_stock }}" required />
+    {% if errors and errors.get('new_remains') %}
+      <div class="field-error">{{ errors.get('new_remains') }}</div>
+    {% endif %}
+  </div>
+
+  <div style="grid-column: 1 / -1;">
+    <div class="muted">Это не приход/расход, а установка текущего остатка (корректировка).</div>
+  </div>
+
+  <div class="modal-actions" style="grid-column: 1 / -1;">
+    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <button type="submit" class="btn">Сохранить</button>
+  </div>
+</form>

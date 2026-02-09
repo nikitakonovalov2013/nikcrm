@@ -14,6 +14,7 @@ def _commands_for(*, is_admin: bool, status: UserStatus | None, position: Positi
     if status in (None, UserStatus.PENDING, UserStatus.REJECTED):
         cmds.insert(1, BotCommand(command="register", description="Зарегистрироваться"))
 
+    # is_admin here is effectively "admin or manager" for full bot functionality.
     if is_admin or status == UserStatus.APPROVED:
         cmds.append(BotCommand(command="purchases", description="Закупки"))
 

@@ -246,19 +246,19 @@ async def schedule_entry(message: Message, state: FSMContext):
         )
         return
 
-    if not (user.status == UserStatus.APPROVED or (int(message.from_user.id) in settings.admin_ids)):
-        await message.answer(
-            "⏳ Раздел «График работы» доступен только одобренным сотрудникам.",
-            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
-        )
-        return
-
     r = role_flags(
         tg_id=int(message.from_user.id),
         admin_ids=settings.admin_ids,
         status=user.status,
         position=user.position,
     )
+    if not (user.status == UserStatus.APPROVED or (bool(r.is_admin) or bool(r.is_manager))):
+        await message.answer(
+            "⏳ Раздел «График работы» доступен только одобренным сотрудникам.",
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
+        )
+        return
+
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
 
@@ -283,16 +283,15 @@ async def schedule_menu_open(cb: CallbackQuery, state: FSMContext):
         await edit_html(cb, "🚫 Доступ ограничен.")
         return
 
-    if not (user.status == UserStatus.APPROVED or (int(cb.from_user.id) in settings.admin_ids)):
-        await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
-        return
-
     r = role_flags(
         tg_id=int(cb.from_user.id),
         admin_ids=settings.admin_ids,
         status=user.status,
         position=user.position,
     )
+    if not (user.status == UserStatus.APPROVED or (bool(r.is_admin) or bool(r.is_manager))):
+        await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
+        return
 
     async with get_async_session() as session:
         text, kb = await _render_schedule_menu(session=session, user=user, is_admin=bool(r.is_admin), is_manager=bool(r.is_manager))
@@ -482,16 +481,15 @@ async def schedule_emergency_start(cb: CallbackQuery, state: FSMContext):
     if user.status == UserStatus.BLACKLISTED:
         await edit_html(cb, "🚫 Доступ ограничен.")
         return
-    if not (user.status == UserStatus.APPROVED or (int(cb.from_user.id) in settings.admin_ids)):
-        await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
-        return
-
     r = role_flags(
         tg_id=int(cb.from_user.id),
         admin_ids=settings.admin_ids,
         status=user.status,
         position=user.position,
     )
+    if not (user.status == UserStatus.APPROVED or (bool(r.is_admin) or bool(r.is_manager))):
+        await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
+        return
     await state.clear()
     await state.update_data(
         actor_tg_id=int(cb.from_user.id),

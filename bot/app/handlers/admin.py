@@ -12,6 +12,8 @@ import logging
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from bot.app.utils.bot_commands import sync_commands_for_chat
+from shared.permissions import role_flags
+from bot.app.utils.access import is_admin_or_manager
 
 router = Router()
 
@@ -56,7 +58,8 @@ async def employees_link(message: Message):
 
 @router.callback_query(F.data.startswith("approve:"))
 async def cb_approve(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
+    r = role_flags(tg_id=int(call.from_user.id), admin_ids=settings.admin_ids, status=None, position=None)
+    if not is_admin_or_manager(r=r):
         await call.answer("Недостаточно прав", show_alert=True)
         return
     user_id = int(call.data.split(":", 1)[1])
@@ -78,7 +81,8 @@ async def cb_approve(call: CallbackQuery):
             await sync_commands_for_chat(
                 bot=bot,
                 chat_id=int(user.tg_id),
-                is_admin=int(user.tg_id) in settings.admin_ids,
+                is_admin=bool(role_flags(tg_id=int(user.tg_id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_admin
+                            or role_flags(tg_id=int(user.tg_id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_manager),
                 status=user.status,
                 position=user.position,
             )
@@ -93,7 +97,8 @@ async def cb_approve(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reject:"))
 async def cb_reject(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
+    r = role_flags(tg_id=int(call.from_user.id), admin_ids=settings.admin_ids, status=None, position=None)
+    if not is_admin_or_manager(r=r):
         await call.answer("Недостаточно прав", show_alert=True)
         return
     user_id = int(call.data.split(":", 1)[1])
@@ -115,7 +120,8 @@ async def cb_reject(call: CallbackQuery):
             await sync_commands_for_chat(
                 bot=bot,
                 chat_id=int(user.tg_id),
-                is_admin=int(user.tg_id) in settings.admin_ids,
+                is_admin=bool(role_flags(tg_id=int(user.tg_id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_admin
+                            or role_flags(tg_id=int(user.tg_id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_manager),
                 status=user.status,
                 position=user.position,
             )

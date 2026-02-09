@@ -17,6 +17,7 @@ from shared.utils import format_date
 from bot.app.utils.bot_commands import sync_commands_for_chat
 from bot.app.utils.urls import _public_base_url
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from shared.permissions import role_flags
 
 router = Router()
 
@@ -44,7 +45,8 @@ async def cmd_start(message: Message, state: FSMContext):
         await sync_commands_for_chat(
             bot=message.bot,
             chat_id=message.chat.id,
-            is_admin=message.from_user.id in settings.admin_ids,
+            is_admin=bool(role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=(user.status if user else None), position=(user.position if user else None)).is_admin
+                        or role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=(user.status if user else None), position=(user.position if user else None)).is_manager),
             status=user.status if user else None,
             position=user.position if user else None,
         )
@@ -198,7 +200,8 @@ async def reg_position_cb(cb: CallbackQuery, state: FSMContext):
         await sync_commands_for_chat(
             bot=cb.bot,
             chat_id=cb.message.chat.id,
-            is_admin=cb.from_user.id in settings.admin_ids,
+            is_admin=bool(role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_admin
+                        or role_flags(tg_id=int(cb.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_manager),
             status=user.status,
             position=user.position,
         )
@@ -312,7 +315,8 @@ async def profile(message: Message):
         await sync_commands_for_chat(
             bot=message.bot,
             chat_id=message.chat.id,
-            is_admin=message.from_user.id in settings.admin_ids,
+            is_admin=bool(role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_admin
+                        or role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position).is_manager),
             status=user.status,
             position=user.position,
         )

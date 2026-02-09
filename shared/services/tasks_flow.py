@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from urllib.parse import urlencode
 
@@ -78,6 +79,229 @@ async def _tg_send_message_http(*, chat_id: int, text: str) -> bool:
         r.raise_for_status()
         data = r.json()
         return bool(data.get("ok"))
+
+
+def _task_title_plain(task: Task) -> str:
+    return (str(getattr(task, "title", "") or "").strip())
+
+
+def _task_title_html(task: Task) -> str:
+    # Keep notifications safe under parse_mode=HTML
+    return html.escape(_task_title_plain(task))
+
+
+async def enqueue_task_taken_in_work_notifications(
+    *,
+    session: AsyncSession,
+    task: Task,
+    actor_user_id: int,
+    actor_name: str | None,
+    event_id: int,
+) -> None:
+    """Notify on NEW/REVIEW -> IN_PROGRESS ('Взять в работу') transition.
+
+    Rules:
+    - Actor: gets base text.
+    - Other executors (assignees excluding actor): get base text.
+    - Creator: gets creator-formatted text with actor name (unless creator == actor).
+      If creator is also in executors list, they must receive ONLY creator text.
+    - No duplicates.
+    - Skip users without tg_id with warning.
+    """
+
+    task_id = int(getattr(task, "id", 0) or 0)
+    title_h = _task_title_html(task)
+
+    base_text = f"✅ Задача взята в работу: #{task_id} {title_h}"
+
+    created_by_id = int(getattr(task, "created_by_user_id", 0) or 0) or 0
+    executor_ids = [int(x) for x in _executor_user_ids(task) if int(x) > 0]
+
+    actor_id = int(actor_user_id)
+    executors_without_actor = sorted({int(x) for x in executor_ids if int(x) > 0 and int(x) != actor_id})
+
+    creator_id = int(created_by_id) if int(created_by_id) > 0 else 0
+    actor_name_str = (str(actor_name).strip() if actor_name else "")
+    actor_name_h = html.escape(actor_name_str) if actor_name_str else f"#{int(actor_id)}"
+    creator_text = f"✅ Задача #{task_id} {title_h} взята в работу: {actor_name_h}"
+
+    recipient_to_text: dict[int, str] = {}
+
+    # Actor
+    if actor_id > 0:
+        recipient_to_text[int(actor_id)] = str(base_text)
+
+    # Other executors
+    for rid in executors_without_actor:
+        recipient_to_text[int(rid)] = str(base_text)
+
+    # Creator (priority)
+    if creator_id > 0 and creator_id != actor_id:
+        recipient_to_text[int(creator_id)] = str(creator_text)
+
+    recipients = sorted(recipient_to_text.keys())
+    try:
+        logger.info(
+            "TASK_NOTIFY_TAKEN task_id=%s actor_id=%s creator_id=%s executors=%s sent_to=%s",
+            int(task_id),
+            int(actor_id),
+            int(creator_id or 0),
+            ",".join([str(int(x)) for x in executor_ids]) if executor_ids else "",
+            ",".join([str(int(x)) for x in recipients]) if recipients else "",
+        )
+    except Exception:
+        pass
+
+    if not recipients:
+        return
+
+    ns = TaskNotificationService(session)
+    tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+
+    for rid in recipients:
+        tg_id = int(tg_map.get(int(rid), 0) or 0)
+        if tg_id <= 0:
+            try:
+                logger.warning(
+                    "TASK_NOTIFY_SKIP reason=no_tg_id type=taken_in_work task_id=%s user_id=%s",
+                    int(task_id),
+                    int(rid),
+                )
+            except Exception:
+                pass
+            continue
+
+        await ns.enqueue(
+            task_id=int(task_id),
+            recipient_user_id=int(rid),
+            type="taken_in_work",
+            payload={
+                "task_id": int(task_id),
+                "text": str(recipient_to_text.get(int(rid)) or base_text),
+                "actor_user_id": int(actor_id),
+                "actor_name": (actor_name_str or None),
+                "event_id": int(event_id),
+            },
+            dedupe_key=f"taken_in_work:{int(event_id)}",
+        )
+
+
+async def enqueue_task_sent_to_review_notifications(
+    *,
+    session: AsyncSession,
+    task: Task,
+    actor_user_id: int,
+    actor_name: str | None,
+    event_id: int,
+) -> None:
+    """Notify creator when task is moved to REVIEW ('На проверку')."""
+
+    task_id = int(getattr(task, "id", 0) or 0)
+    title_h = _task_title_html(task)
+
+    actor_id = int(actor_user_id)
+    creator_id = int(getattr(task, "created_by_user_id", 0) or 0) or 0
+    if creator_id <= 0 or creator_id == actor_id:
+        return
+
+    actor_name_str = (str(actor_name).strip() if actor_name else "")
+    actor_name_h = html.escape(actor_name_str) if actor_name_str else f"#{int(actor_id)}"
+    text = f"🟡 Задача #{task_id} {title_h} передана на проверку: {actor_name_h}"
+
+    ns = TaskNotificationService(session)
+    tg_map = await ns.resolve_recipients_tg_ids(user_ids=[int(creator_id)])
+    tg_id = int(tg_map.get(int(creator_id), 0) or 0)
+    if tg_id <= 0:
+        try:
+            logger.warning(
+                "TASK_NOTIFY_SKIP reason=no_tg_id type=sent_to_review task_id=%s user_id=%s",
+                int(task_id),
+                int(creator_id),
+            )
+        except Exception:
+            pass
+        return
+
+    await ns.enqueue(
+        task_id=int(task_id),
+        recipient_user_id=int(creator_id),
+        type="sent_to_review",
+        payload={
+            "task_id": int(task_id),
+            "text": str(text),
+            "actor_user_id": int(actor_id),
+            "actor_name": (actor_name_str or None),
+            "event_id": int(event_id),
+        },
+        dedupe_key=f"sent_to_review:{int(event_id)}",
+    )
+
+
+async def enqueue_task_status_changed_notifications(
+    *,
+    session: AsyncSession,
+    task: Task,
+    actor_user_id: int,
+    actor_name: str | None,
+    from_status: str,
+    to_status: str,
+    comment: str | None,
+    event_id: int,
+) -> None:
+    """Generic status_changed notification (legacy behavior).
+
+    Recipients: all assignees + started_by + created_by, without duplicates, excluding actor.
+    Skip users without tg_id with warning.
+    """
+
+    task_id = int(getattr(task, "id", 0) or 0)
+    recipients, meta = _notification_recipients_for_task(task)
+    actor_id = int(actor_user_id)
+    recipients = [int(rid) for rid in recipients if int(rid) > 0 and int(rid) != actor_id]
+    meta["recipients"] = [int(x) for x in recipients]
+
+    if not recipients:
+        return
+
+    ns = TaskNotificationService(session)
+    tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+
+    filtered: list[int] = []
+    for rid in recipients:
+        tg_id = int(tg_map.get(int(rid), 0) or 0)
+        if tg_id <= 0:
+            try:
+                logger.warning(
+                    "TASK_NOTIFY_SKIP reason=no_tg_id type=status_changed task_id=%s user_id=%s",
+                    int(task_id),
+                    int(rid),
+                )
+            except Exception:
+                pass
+            continue
+        filtered.append(int(rid))
+    recipients = filtered
+    if not recipients:
+        return
+
+    actor_name_str = (str(actor_name).strip() if actor_name else "")
+    for rid in recipients:
+        await ns.enqueue(
+            task_id=int(task_id),
+            recipient_user_id=int(rid),
+            type="status_changed",
+            payload={
+                "task_id": int(task_id),
+                "from": str(from_status),
+                "to": str(to_status),
+                "comment": (str(comment).strip() if comment else None),
+                "action": None,
+                "actor_user_id": int(actor_id),
+                "actor_name": (actor_name_str or None),
+                "event_id": int(event_id),
+            },
+            dedupe_key=f"status:{int(event_id)}",
+        )
 
 
 async def return_task_to_rework(

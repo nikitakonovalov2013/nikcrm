@@ -158,6 +158,13 @@ def render_notification_html(*, n) -> str:
 
     base = _format_task_short(task) if task else f"<b>Задача #{payload.get('task_id')}</b>"
 
+    if typ in {"taken_in_work", "sent_to_review"}:
+        # Strict business text comes from shared flow; keep it intact.
+        txt = str(payload.get("text") or "").strip()
+        if txt:
+            return txt
+        return base
+
     if typ == "created":
         return f"🆕 <b>Новая задача</b>\n\n{base}\n\n<b>Инициатор:</b> {esc(actor_name)}"
     if typ == "status_changed":
@@ -380,6 +387,8 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                             typ = str(getattr(n, "type", ""))
                             force_new = False
                             if typ == "created":
+                                force_new = True
+                            if typ in {"taken_in_work", "sent_to_review"}:
                                 force_new = True
                             if typ == "status_changed":
                                 try:

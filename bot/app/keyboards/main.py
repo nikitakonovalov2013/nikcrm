@@ -2,6 +2,7 @@ from typing import Optional
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from shared.enums import Position, UserStatus
 from shared.config import settings
+from shared.permissions import role_flags
 
 
 def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Position] = None) -> ReplyKeyboardMarkup:
@@ -19,20 +20,21 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Po
         buttons.append(KeyboardButton(text="📝 Зарегистрироваться"))
 
     try:
-        is_admin = tg_id in settings.admin_ids
-        if is_admin:
+        r = role_flags(tg_id=int(tg_id), admin_ids=settings.admin_ids, status=status, position=position)
+        is_admin_or_manager = bool(r.is_admin or r.is_manager)
+        if is_admin_or_manager:
             buttons.append(KeyboardButton(text="🛠 Админ-панель"))
 
-        if is_admin or status == UserStatus.APPROVED:
+        if is_admin_or_manager or status == UserStatus.APPROVED:
             buttons.append(KeyboardButton(text="🛒 Закупки"))
             buttons.append(KeyboardButton(text="✅ Задачи"))
             buttons.append(KeyboardButton(text="📅 График работы"))
 
-        can_stocks = is_admin or (status == UserStatus.APPROVED and position in {Position.MANAGER, Position.MASTER})
+        can_stocks = is_admin_or_manager or (status == UserStatus.APPROVED and position in {Position.MASTER})
         if can_stocks:
             buttons.append(KeyboardButton(text="📦 Остатки"))
 
-        can_reports = is_admin or (status == UserStatus.APPROVED and position == Position.MANAGER)
+        can_reports = is_admin_or_manager
         if can_reports:
             buttons.append(KeyboardButton(text="📊 Отчёты и напоминания"))
     except Exception:
