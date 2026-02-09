@@ -22,13 +22,16 @@
   </div>
 
   <div class="tasks-filters-row">
+    {% if not (is_admin or is_manager) %}
     <label class="tasks-filter tasks-filter-checkbox">
       <span class="tasks-filter-label">&nbsp;</span>
       <span class="checkbox-row">
+        <input type="hidden" name="mine" value="0" />
         <input type="checkbox" name="mine" value="1" {% if mine %}checked{% endif %} />
         <span>Мои задачи</span>
       </span>
     </label>
+    {% endif %}
 
     {% if is_admin or is_manager %}
     <label class="tasks-filter tasks-filter-assignee">

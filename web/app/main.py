@@ -4079,7 +4079,10 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
         )
         query = query.where(has_selected)
     if mine:
-        pass
+        has_actor = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+        )
+        query = query.where(has_actor)
 
     res = await session.execute(query)
     tasks = list(res.scalars().unique().all())
@@ -4147,25 +4150,14 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
 async def tasks_board_public(request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)):
     actor = await load_staff_user(session, admin_id)
 
-    # Default for public board: show "Мои задачи" only on the very first visit.
-    # After that the user must be able to disable the filter (URL without mine).
-    seen = (request.cookies.get("public_board_seen") or "").strip() == "1"
-    if (not request.query_params) and (not seen):
-        url = str(request.url)
-        resp = RedirectResponse(url + "?mine=1", status_code=302)
-        resp.set_cookie(
-            "public_board_seen",
-            "1",
-            httponly=False,
-            secure=False,
-            samesite="lax",
-            max_age=60 * 60 * 24 * 30,
-        )
-        return resp
-
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+
+    mine_param_present = "mine" in dict(request.query_params)
+    if not mine_param_present and not (is_admin or is_manager):
+        # Hard default: for non-admin/manager always open board with mine=1 unless explicitly set.
+        return RedirectResponse(url=str(request.url.include_query_params(mine="1")), status_code=302)
 
     q = (request.query_params.get("q") or "").strip()
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
@@ -4260,16 +4252,6 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             "archive_url": request.url_for("tasks_archive_public"),
         },
     )
-
-    if not seen:
-        resp.set_cookie(
-            "public_board_seen",
-            "1",
-            httponly=False,
-            secure=False,
-            samesite="lax",
-            max_age=60 * 60 * 24 * 30,
-        )
 
     return resp
 
