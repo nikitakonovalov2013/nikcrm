@@ -24,7 +24,7 @@ def schedule_kb() -> InlineKeyboardMarkup:
 def position_kb() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=val.value, callback_data=f"position:{val.value}")]
-        for val in (Position.MANAGER, Position.PICKER, Position.PACKER, Position.MASTER)
+        for val in (Position.MANAGER, Position.PICKER, Position.PACKER, Position.MASTER, Position.DESIGNER)
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

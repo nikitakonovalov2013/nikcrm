@@ -75,7 +75,7 @@ from .dependencies import (
 from shared.utils import format_number
 from shared.utils import MOSCOW_TZ, utc_now, format_moscow
 from shared.services.task_notifications import TaskNotificationService
-from shared.permissions import role_flags
+from shared.permissions import role_flags, can_use_tasks_archive
 from shared.services.task_permissions import task_permissions, validate_status_transition
 from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
@@ -265,6 +265,75 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Register Jinja helper(s)
 from shared.utils import format_date  # noqa: E402
 templates.env.globals["format_date"] = format_date
+
+
+@app.middleware("http")
+async def restrict_designer_access_middleware(request: Request, call_next):
+    """Hard access restriction for designers.
+
+    Policy:
+    - Designers may use only Tasks (board + task APIs) and About page.
+    - Everything else must be blocked server-side (even via direct URL/API).
+    """
+
+    path = str(getattr(request.url, "path", "") or "")
+    # Always allow static/assets and auth endpoints.
+    if path.startswith("/crm/static") or path.startswith("/static"):
+        return await call_next(request)
+    if path.startswith("/auth") or path.startswith("/crm/auth"):
+        return await call_next(request)
+    if path.startswith("/openapi") or path.startswith("/crm/openapi"):
+        return await call_next(request)
+
+    token = request.cookies.get("admin_token")
+    if not token:
+        return await call_next(request)
+
+    try:
+        data = jwt.decode(token, settings.WEB_JWT_SECRET, algorithms=["HS256"])
+        sub = int(data.get("sub"))
+        role = str(data.get("role") or "")
+    except Exception:
+        return await call_next(request)
+
+    # Admin/manager override designer restrictions.
+    if role in {"admin", "manager"}:
+        return await call_next(request)
+
+    try:
+        async with get_async_session() as session:
+            actor = (
+                (await session.execute(select(User).where(User.tg_id == int(sub)).where(User.is_deleted == False)))
+            ).scalar_one_or_none()
+    except Exception:
+        actor = None
+
+    if not actor:
+        return await call_next(request)
+
+    if actor.status != UserStatus.APPROVED or actor.position != Position.DESIGNER:
+        return await call_next(request)
+
+    # Allow only tasks + about.
+    allowed_prefixes = (
+        "/tasks/public",
+        "/crm/tasks",
+        "/tasks/public/archive",
+        "/api/public/tasks",
+        "/api/tasks",
+        "/crm/api/tasks",
+        "/tasks/",  # photo proxy: /tasks/{id}/photo
+        "/crm/tasks/",  # photo proxy alias
+        "/about",
+        "/crm/about",
+    )
+    if any(path.startswith(p) for p in allowed_prefixes):
+        return await call_next(request)
+
+    # Block everything else.
+    if path.startswith("/api") or path.startswith("/crm/api"):
+        return Response(status_code=status.HTTP_403_FORBIDDEN)
+    return RedirectResponse(url=request.url_for("tasks_board_public"), status_code=302)
 
 
 def _favicon_path(filename: str) -> Path:
@@ -1128,6 +1197,10 @@ def _ensure_task_visible_to_actor(*, t: Task, actor: User, is_admin: bool, is_ma
     is_assignee = any(int(getattr(u, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) for u in assignees)
     if is_assignee:
         return
+
+    # Designers must only see tasks where they are explicitly assigned.
+    if actor.status == UserStatus.APPROVED and actor.position == Position.DESIGNER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     st = t.status.value if hasattr(t.status, "value") else str(t.status)
     if len(assignees) == 0 and st == TaskStatus.NEW.value:
@@ -2995,6 +3068,7 @@ async def schedule_page_public(
     request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)
 ):
     actor = await load_staff_user(session, admin_id)
+
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
@@ -4028,11 +4102,16 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+    is_designer = bool(getattr(r, "is_designer", False))
+    can_use_archive = can_use_tasks_archive(r=r)
 
     q = (request.query_params.get("q") or "").strip()
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
+
+    if is_designer:
+        mine = True
     assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
     assignee_id: int | None = None
     if assignee_id_raw:
@@ -4078,7 +4157,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
         )
         query = query.where(has_selected)
-    if mine:
+    if mine or is_designer:
         has_actor = exists(
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
         )
@@ -4139,6 +4218,8 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             "users": users,
             "is_admin": is_admin,
             "is_manager": is_manager,
+            "is_designer": is_designer,
+            "can_use_archive": bool(can_use_archive),
             "users_json": users_json,
             "base_template": "base.html",
             "archive_url": request.url_for("tasks_archive"),
@@ -4147,15 +4228,18 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
 
 
 @app.get("/tasks/public", response_class=HTMLResponse, name="tasks_board_public")
+@app.get("/crm/tasks", response_class=HTMLResponse)
 async def tasks_board_public(request: Request, admin_id: int = Depends(require_authenticated_user), session: AsyncSession = Depends(get_db)):
     actor = await load_staff_user(session, admin_id)
 
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+    is_designer = bool(getattr(r, "is_designer", False))
+    can_use_archive = can_use_tasks_archive(r=r)
 
     mine_param_present = "mine" in dict(request.query_params)
-    if not mine_param_present and not (is_admin or is_manager):
+    if not mine_param_present and not (is_admin or is_manager) and not is_designer:
         # Hard default: for non-admin/manager always open board with mine=1 unless explicitly set.
         return RedirectResponse(url=str(request.url.include_query_params(mine="1")), status_code=302)
 
@@ -4191,7 +4275,7 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     elif due == "overdue":
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
-    if mine:
+    if mine or is_designer:
         has_actor = exists(
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
         )
@@ -4247,6 +4331,8 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             "users": users,
             "is_admin": is_admin,
             "is_manager": is_manager,
+            "is_designer": is_designer,
+            "can_use_archive": bool(can_use_archive),
             "users_json": users_json,
             "base_template": "base_public.html",
             "archive_url": request.url_for("tasks_archive_public"),
@@ -4264,11 +4350,17 @@ async def tasks_api_public_list(
 ):
     actor = await load_staff_user(session, admin_id)
 
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_designer = bool(getattr(r, "is_designer", False))
+
     q = (request.query_params.get("q") or "").strip()
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
     status_q = (request.query_params.get("status") or "").strip()
+
+    if is_designer:
+        mine = True
 
     from shared.models import task_assignees
     from sqlalchemy import or_ as _or, exists, and_
@@ -4316,6 +4408,10 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+    is_designer = bool(getattr(r, "is_designer", False))
+
+    if not can_use_tasks_archive(r=r):
+        return RedirectResponse(url="/crm/tasks", status_code=302)
 
     q = (request.query_params.get("q") or "").strip()
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
@@ -4362,6 +4458,12 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
 
     if mine:
         pass
+
+    if is_designer:
+        has_actor_only = exists(
+            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
+        )
+        query = query.where(has_actor_only)
 
     if assignee_id is not None:
         has_selected = exists(
@@ -4421,6 +4523,9 @@ async def tasks_archive_public(request: Request, admin_id: int = Depends(require
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+
+    if not can_use_tasks_archive(r=r):
+        return RedirectResponse(url="/crm/tasks", status_code=302)
 
     q = (request.query_params.get("q") or "").strip()
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
@@ -4633,7 +4738,7 @@ async def tasks_api_detail(task_id: int, request: Request, admin_id: int = Depen
     is_admin = int(admin_id) in settings.admin_ids
     is_manager = bool(actor.position == Position.MANAGER)
 
-    # Visibility is not restricted; permissions control actions.
+    _ensure_task_visible_to_actor(t=t, actor=actor, is_admin=bool(is_admin), is_manager=bool(is_manager))
 
     assignees = list(getattr(t, "assignees", None) or [])
     comments = list(getattr(t, "comments", None) or [])

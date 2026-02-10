@@ -24,6 +24,7 @@ from bot.app.utils.telegram import edit_html, edit_html_by_id_from_message
 from bot.app.utils.datetime_fmt import format_date_ru
 from shared.permissions import can_access_reports
 from bot.app.guards.user_guard import ensure_registered_or_reply
+from shared.permissions import role_flags
 
 
 router = Router()
@@ -99,6 +100,13 @@ async def rr_entry(message: Message, state: FSMContext):
     user = await ensure_registered_or_reply(message)
     if not user:
         return
+    try:
+        r = role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+        if getattr(r, "is_designer", False) and not (getattr(r, "is_admin", False) or getattr(r, "is_manager", False)):
+            await message.answer("Недоступно для вашей должности.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
+            return
+    except Exception:
+        pass
     if not _can_open_menu(user):
         await message.answer("⛔ Нет доступа.", reply_markup=main_menu_kb(user.status, message.from_user.id, user.position))
         return

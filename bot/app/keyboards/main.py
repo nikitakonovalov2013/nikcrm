@@ -2,7 +2,7 @@ from typing import Optional
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from shared.enums import Position, UserStatus
 from shared.config import settings
-from shared.permissions import role_flags
+from shared.permissions import role_flags, can_use_purchases, can_access_shifts, can_access_stocks, can_access_reports_module
 
 
 def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Position] = None) -> ReplyKeyboardMarkup:
@@ -25,17 +25,20 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Po
         if is_admin_or_manager:
             buttons.append(KeyboardButton(text="🛠 Админ-панель"))
 
+        # Tasks are allowed for everyone who can reach the main menu (approved).
         if is_admin_or_manager or status == UserStatus.APPROVED:
-            buttons.append(KeyboardButton(text="🛒 Закупки"))
             buttons.append(KeyboardButton(text="✅ Задачи"))
+
+        if (is_admin_or_manager or status == UserStatus.APPROVED) and can_use_purchases(r=r, status=status):
+            buttons.append(KeyboardButton(text="🛒 Закупки"))
+
+        if (is_admin_or_manager or status == UserStatus.APPROVED) and can_access_shifts(r=r, status=status):
             buttons.append(KeyboardButton(text="📅 График работы"))
 
-        can_stocks = is_admin_or_manager or (status == UserStatus.APPROVED and position in {Position.MASTER})
-        if can_stocks:
+        if can_access_stocks(r=r):
             buttons.append(KeyboardButton(text="📦 Остатки"))
 
-        can_reports = is_admin_or_manager
-        if can_reports:
+        if can_access_reports_module(r=r):
             buttons.append(KeyboardButton(text="📊 Отчёты и напоминания"))
     except Exception:
         pass

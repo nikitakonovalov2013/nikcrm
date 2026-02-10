@@ -15,6 +15,7 @@ from shared.db import get_async_session
 from shared.db import add_after_commit_callback
 from shared.enums import UserStatus
 from shared.permissions import role_flags
+from shared.permissions import can_access_shifts
 from sqlalchemy import select
 
 from bot.app.guards.user_guard import ensure_registered_or_reply
@@ -252,6 +253,12 @@ async def schedule_entry(message: Message, state: FSMContext):
         status=user.status,
         position=user.position,
     )
+    if not can_access_shifts(r=r, status=user.status):
+        await message.answer(
+            "Недоступно для вашей должности.",
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
+        )
+        return
     if not (user.status == UserStatus.APPROVED or (bool(r.is_admin) or bool(r.is_manager))):
         await message.answer(
             "⏳ Раздел «График работы» доступен только одобренным сотрудникам.",

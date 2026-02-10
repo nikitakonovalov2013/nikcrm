@@ -19,6 +19,7 @@ class Position(StrEnum):
     PICKER = "Сборщик заказов"
     PACKER = "Упаковщик"
     MASTER = "Мастер"
+    DESIGNER = "Дизайнер"
 
 
 class AdminActionType(StrEnum):

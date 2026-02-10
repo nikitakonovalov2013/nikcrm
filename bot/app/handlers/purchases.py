@@ -27,7 +27,7 @@ from bot.app.repository.purchases import PurchaseRepository
 from shared.services.purchases_domain import purchase_take_in_work, purchase_cancel, purchase_mark_bought
 from shared.services.purchases_render import purchases_chat_message_text, purchase_created_user_message
 from bot.app.services.telegram_outbox import enqueue_purchase_notify, telegram_outbox_job
-from shared.permissions import role_flags
+from shared.permissions import role_flags, can_use_purchases
 from bot.app.utils.access import is_admin_or_manager
 
 router = Router()
@@ -341,6 +341,14 @@ async def purchases_entry(message: Message, state: FSMContext):
         await message.answer(
             "🚫 Доступ ограничен. Вы не можете отправлять заявки на закупку.",
             reply_markup=main_menu_kb(None, message.from_user.id),
+        )
+        return
+
+    r = role_flags(tg_id=int(message.from_user.id), admin_ids=settings.admin_ids, status=user.status, position=user.position)
+    if not can_use_purchases(r=r, status=user.status):
+        await message.answer(
+            "Недоступно для вашей должности.",
+            reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
         )
         return
     if not (user.status == UserStatus.APPROVED or _can_manage_purchases(tg_id=message.from_user.id, status=user.status, position=user.position)):

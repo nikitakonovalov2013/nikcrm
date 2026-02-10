@@ -47,12 +47,40 @@ async def send_admin_panel_link(message: Message) -> None:
 @router.message(F.text.in_({"🛠 Админ-панель"}))
 @router.message(Command("admin"))
 async def admin_panel_entry(message: Message):
+    async with get_async_session() as session:
+        urepo = UserRepository(session)
+        user = await urepo.get_by_tg_id(message.from_user.id)
+
+    r = role_flags(
+        tg_id=int(message.from_user.id),
+        admin_ids=settings.admin_ids,
+        status=(user.status if user else None),
+        position=(user.position if user else None),
+    )
+    if getattr(r, "is_designer", False) and not (getattr(r, "is_admin", False) or getattr(r, "is_manager", False)):
+        await message.answer("Недоступно для вашей должности.")
+        return
+
     await send_admin_panel_link(message)
 
 
 @router.message(F.text.in_({"Сотрудники", "👥 Сотрудники"}))
 @router.message(Command("staff"))
 async def employees_link(message: Message):
+    async with get_async_session() as session:
+        urepo = UserRepository(session)
+        user = await urepo.get_by_tg_id(message.from_user.id)
+
+    r = role_flags(
+        tg_id=int(message.from_user.id),
+        admin_ids=settings.admin_ids,
+        status=(user.status if user else None),
+        position=(user.position if user else None),
+    )
+    if getattr(r, "is_designer", False) and not (getattr(r, "is_admin", False) or getattr(r, "is_manager", False)):
+        await message.answer("Недоступно для вашей должности.")
+        return
+
     await send_admin_panel_link(message)
 
 

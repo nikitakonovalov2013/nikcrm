@@ -166,6 +166,21 @@ async def stocks_entry(message: Message, state: FSMContext):
     if not ok:
         return
     user = await _get_user_for_ops(message.from_user.id)
+    try:
+        r = role_flags(
+            tg_id=message.from_user.id,
+            admin_ids=settings.admin_ids,
+            status=user.status if user else status,
+            position=user.position if user else None,
+        )
+        if getattr(r, "is_designer", False) and not (getattr(r, "is_admin", False) or getattr(r, "is_manager", False)):
+            await message.answer(
+                "Недоступно для вашей должности.",
+                reply_markup=main_menu_kb(status, message.from_user.id, user.position if user else None),
+            )
+            return
+    except Exception:
+        pass
     if not can_view_stocks(
         tg_id=message.from_user.id,
         admin_ids=settings.admin_ids,

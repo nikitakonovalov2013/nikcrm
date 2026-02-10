@@ -8,7 +8,9 @@
     <div class="muted">Канбан-доска</div>
   </div>
   <div class="tasks-header-actions">
+    {% if can_use_archive %}
     <a class="btn-outline" href="{{ archive_url }}">Архив</a>
+    {% endif %}
     <button class="btn" type="button" onclick="window.tasksOpenCreate()">+ Создать задачу</button>
   </div>
 </div>
@@ -22,7 +24,7 @@
   </div>
 
   <div class="tasks-filters-row">
-    {% if not (is_admin or is_manager) %}
+    {% if not (is_admin or is_manager or is_designer) %}
     <label class="tasks-filter tasks-filter-checkbox">
       <span class="tasks-filter-label">&nbsp;</span>
       <span class="checkbox-row">
