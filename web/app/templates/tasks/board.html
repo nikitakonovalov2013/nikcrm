@@ -296,14 +296,14 @@
   async function refreshCardQuickActions(taskId){
     const el = document.querySelector('.task-card[data-task-id="' + String(taskId) + '"]');
     if (!el) return;
-    const task = await apiJson('/api/tasks/' + String(taskId));
+    const task = await apiJson(apiUrl('/tasks/' + String(taskId)));
     try { el.setAttribute('data-status', String(task.status || '')); } catch (_){ }
     const qa = el.querySelector('[data-role="task-quick-actions"]');
     if (qa) qa.innerHTML = renderQuickActions(task);
   }
 
   window.tasksQuickChangeStatus = async function(taskId, status){
-    const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
+    const resp = await apiJson(apiUrl('/tasks/' + String(taskId) + '/status'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: status })
@@ -418,6 +418,21 @@
 
   const IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
   const IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
+
+  const API_BASE = (function(){
+    try {
+      const meta = document.querySelector('meta[name="crm-api-base"]');
+      const v = meta ? String(meta.getAttribute('content') || '').trim() : '';
+      if (v) return v.replace(/\/$/, '');
+    } catch (_){ }
+    return '/crm/api';
+  })();
+  function apiUrl(path){
+    const p = String(path || '');
+    if (p.startsWith('http://') || p.startsWith('https://')) return p;
+    if (!p.startsWith('/')) return API_BASE + '/' + p;
+    return API_BASE + p;
+  }
 
   function _tasksDebug(){
     try {
@@ -851,7 +866,7 @@
     const form = ev.target;
     const fd = new FormData(form);
     try {
-      await apiJson('/api/tasks', { method: 'POST', body: fd });
+      await apiJson(apiUrl('/tasks'), { method: 'POST', body: fd });
       try { window.dispatchEvent(new CustomEvent('close-modal')); } catch (_){ }
       try { await reloadTasksBoardKanban(); } catch (_){ }
       return false;
@@ -864,7 +879,7 @@
   window.tasksOpenDetail = async function(taskId){
     _tasksDebug('open modal', { taskId: String(taskId || '') });
     try {
-      const task = await apiJson('/api/tasks/' + String(taskId));
+      const task = await apiJson(apiUrl('/tasks/' + String(taskId)));
       _tasksDebug('task loaded ok', { taskId: String(taskId || ''), status: String(task && task.status ? task.status : '') });
       openModal(renderDetailModal(task));
     } catch (e) {
@@ -892,7 +907,7 @@
 
   window.tasksOpenEdit = async function(taskId){
     try {
-      const task = await apiJson('/api/tasks/' + String(taskId));
+      const task = await apiJson(apiUrl('/tasks/' + String(taskId)));
       const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
       const visibleUsers = (users || []).filter(u => {
         if (IS_ADMIN || IS_MANAGER) return true;
@@ -990,10 +1005,10 @@
 
     try {
       if (removePhoto) {
-        await apiJson('/api/tasks/' + String(taskId) + '/photo', { method: 'DELETE' });
+        await apiJson(apiUrl('/tasks/' + String(taskId) + '/photo'), { method: 'DELETE' });
       }
 
-      await apiJson('/api/tasks/' + String(taskId), {
+      await apiJson(apiUrl('/tasks/' + String(taskId)), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1008,7 +1023,7 @@
       if (photo && typeof photo === 'object' && photo.size) {
         const up = new FormData();
         up.append('photo', photo);
-        await apiJson('/api/tasks/' + String(taskId) + '/photo_web', { method: 'POST', body: up });
+        await apiJson(apiUrl('/tasks/' + String(taskId) + '/photo_web'), { method: 'POST', body: up });
       }
 
       await window.tasksOpenDetail(taskId);
@@ -1021,7 +1036,7 @@
 
   window.tasksChangeStatus = async function(taskId, status){
     try {
-      const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
+      const resp = await apiJson(apiUrl('/tasks/' + String(taskId) + '/status'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: status })
@@ -1046,7 +1061,7 @@
     });
     if (txt === null) return;
     try {
-      const resp = await apiJson('/api/tasks/' + String(taskId) + '/status', {
+      const resp = await apiJson(apiUrl('/tasks/' + String(taskId) + '/status'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'in_progress', comment: String(txt) })
@@ -1063,7 +1078,7 @@
     const ok = await window.crmConfirm('Отправить задачу в архив?', { title: 'Подтвердите действие', danger: true, okText: 'В архив' });
     if (!ok) return;
     try {
-      await apiJson('/api/tasks/' + String(taskId) + '/archive', { method: 'POST' });
+      await apiJson(apiUrl('/tasks/' + String(taskId) + '/archive'), { method: 'POST' });
       window.tasksRemoveCard(taskId);
       window.dispatchEvent(new CustomEvent('close-modal'));
     } catch (e) {
@@ -1170,7 +1185,7 @@
           return false;
         }
       }
-      const task = await apiJson('/api/tasks/' + String(taskId) + '/comments', { method: 'POST', body: fd });
+      const task = await apiJson(apiUrl('/tasks/' + String(taskId) + '/comments'), { method: 'POST', body: fd });
       // refresh comments in modal without closing
       const list = document.getElementById('task-comments-list');
       if (list) list.innerHTML = renderComments(task.comments);
