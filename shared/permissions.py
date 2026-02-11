@@ -7,6 +7,7 @@ from shared.enums import UserStatus, Position
 
 if TYPE_CHECKING:
     from shared.models import User
+    from shared.models import Task
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,21 @@ def can_use_tasks_archive(*, r: UserRoleFlags) -> bool:
     # Designer (non-admin/manager): forbidden.
     if getattr(r, "is_designer", False):
         return False
+    return True
+
+
+def can_view_task(*, actor: User, t: Task, r: UserRoleFlags) -> bool:
+    if getattr(r, "is_admin", False) or getattr(r, "is_manager", False):
+        return True
+
+    assignees = list(getattr(t, "assignees", None) or [])
+    is_assignee = any(int(getattr(u, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) for u in assignees)
+
+    # Designers must only see tasks where they are explicitly assigned.
+    if getattr(r, "is_designer", False):
+        return bool(is_assignee)
+
+    # For non-designer staff, viewing tasks is allowed (actions are still restricted by task_permissions).
     return True
 
 

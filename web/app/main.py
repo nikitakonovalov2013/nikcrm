@@ -75,7 +75,7 @@ from .dependencies import (
 from shared.utils import format_number
 from shared.utils import MOSCOW_TZ, utc_now, format_moscow
 from shared.services.task_notifications import TaskNotificationService
-from shared.permissions import role_flags, can_use_tasks_archive
+from shared.permissions import role_flags, can_use_tasks_archive, can_view_task
 from shared.services.task_permissions import task_permissions, validate_status_transition
 from shared.services.task_audit import diff_task_for_audit
 from shared.services.task_edit import update_task_with_audit
@@ -1190,25 +1190,14 @@ async def load_staff_user(session: AsyncSession, staff_tg_id: int) -> User:
 
 
 def _ensure_task_visible_to_actor(*, t: Task, actor: User, is_admin: bool, is_manager: bool) -> None:
-    if is_admin or is_manager:
+    r = role_flags(
+        tg_id=int(getattr(actor, "tg_id", 0) or 0),
+        admin_ids=settings.admin_ids,
+        status=actor.status,
+        position=actor.position,
+    )
+    if can_view_task(actor=actor, t=t, r=r):
         return
-
-    assignees = list(getattr(t, "assignees", None) or [])
-    is_assignee = any(int(getattr(u, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) for u in assignees)
-    if is_assignee:
-        return
-
-    # Designers must only see tasks where they are explicitly assigned.
-    if actor.status == UserStatus.APPROVED and actor.position == Position.DESIGNER:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-
-    st = t.status.value if hasattr(t.status, "value") else str(t.status)
-    if len(assignees) == 0 and st == TaskStatus.NEW.value:
-        return
-
-    if len(assignees) == 0 and int(getattr(t, "started_by_user_id", 0) or 0) == int(getattr(actor, "id", 0) or 0):
-        return
-
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
 
