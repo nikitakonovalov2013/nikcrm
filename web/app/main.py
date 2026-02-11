@@ -4286,7 +4286,12 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
 
     items_by = {TaskStatus.NEW.value: [], TaskStatus.IN_PROGRESS.value: [], TaskStatus.REVIEW.value: [], TaskStatus.DONE.value: []}
     for t in tasks:
-        items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(_task_card_view(t, actor_id=int(actor.id)))
+        view = _task_card_view(t, actor_id=int(actor.id))
+        try:
+            view["permissions"] = _task_permissions(t=t, actor=actor, is_admin=is_admin, is_manager=is_manager)
+        except Exception:
+            view["permissions"] = None
+        items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(view)
 
     columns = [
         {"status": TaskStatus.NEW.value, "title": "Новые", "items": items_by[TaskStatus.NEW.value]},
@@ -4351,6 +4356,8 @@ async def tasks_api_public_list(
     actor = await load_staff_user(session, admin_id)
 
     r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(getattr(r, "is_admin", False))
+    is_manager = bool(getattr(r, "is_manager", False))
     is_designer = bool(getattr(r, "is_designer", False))
 
     q = (request.query_params.get("q") or "").strip()
@@ -4394,7 +4401,17 @@ async def tasks_api_public_list(
     res = await session.execute(query)
     tasks = list(res.scalars().unique().all())
     return {
-        "items": [_task_card_view(t, actor_id=int(actor.id)) for t in tasks],
+        "items": [
+            {
+                **_task_card_view(t, actor_id=int(actor.id)),
+                "permissions": (
+                    _task_permissions(t=t, actor=actor, is_admin=is_admin, is_manager=is_manager)
+                    if True
+                    else None
+                ),
+            }
+            for t in tasks
+        ],
         "mine": bool(mine),
     }
 
