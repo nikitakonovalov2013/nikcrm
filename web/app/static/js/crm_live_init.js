@@ -12,6 +12,15 @@
       ? window.crmFetchNoCache
       : fetch;
     const r = await doFetch(url, { method: 'GET', credentials: 'include' });
+    if (r && r.status === 401) {
+      try {
+        if (window.crmAlert) {
+          await window.crmAlert('Сессия истекла. Обновите страницу.', { title: 'Авторизация' });
+        }
+      } catch (_){ }
+      try { window.location.reload(); } catch (_){ }
+      throw new Error('HTTP 401');
+    }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return await r.text();
   }

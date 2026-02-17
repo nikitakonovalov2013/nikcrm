@@ -24,8 +24,10 @@
   <meta name="msapplication-config" content="/crm/browserconfig.xml">
   <link rel="manifest" href="/crm/manifest.json">
   <meta name="theme-color" content="#ffffff">
+  <meta name="crm-page-base" content="/crm" />
   <meta name="crm-api-base" content="/crm/api" />
   <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
+  {% block head_extra %}{% endblock %}
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -43,6 +45,7 @@
           <a class="menu-link {{ 'active' if path.startswith('/crm/broadcast') else '' }}" href="{{ request.url_for('broadcast_page') }}">Рассылка</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/tasks') else '' }}" href="{{ request.url_for('tasks_board') }}">Задачи</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/purchases') else '' }}" href="{{ request.url_for('purchases_board') }}">Закупки</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/salaries') else '' }}" href="{{ request.url_for('salaries_page') }}">Зарплаты</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/schedule') else '' }}" href="{{ request.url_for('schedule_page') }}">График работы</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/about') else '' }}" href="{{ request.url_for('about_page') }}">Миссия и цель</a>
           <div class="menu-section">Остатки</div>

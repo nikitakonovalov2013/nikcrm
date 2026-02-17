@@ -1,0 +1,1831 @@
+{% extends base_template %}
+
+{% block title %}Зарплаты{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', path='salaries.css') }}" />
+{% endblock %}
+
+{% block content %}
+
+<div class="salaries-page">
+  <div class="sal-header">
+    <h2 class="sal-title">Зарплаты</h2>
+
+    {% if is_admin %}
+    <div class="sal-header-actions">
+      <button id="sal-pin-admin" class="btn-outline" type="button">Сбросить пин-код</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="sal-tabs" role="tablist" aria-label="Зарплаты">
+    <button id="sal-tab-dash" class="sal-tab is-active" type="button" role="tab" aria-selected="true">Дашборды</button>
+    <button id="sal-tab-employees" class="sal-tab" type="button" role="tab" aria-selected="false">Сотрудники</button>
+    <button id="sal-tab-payouts" class="sal-tab" type="button" role="tab" aria-selected="false">История выплат</button>
+  </div>
+
+  <div class="sal-tab-panels">
+    <div id="sal-panel-dash" class="sal-panel is-active" role="tabpanel">
+      <div class="sal-controls" id="sal-dash-filters">
+        <div class="sal-field">
+          <div class="sal-label">Месяц</div>
+          <div class="sal-month-wrap">
+            <input id="sal-dash-month" class="sal-month" type="month" />
+            <svg class="sal-month-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M16 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 21h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </div>
+        </div>
+        <div class="sal-actions">
+          <button id="sal-dash-reset" class="btn-outline" type="button">Сбросить</button>
+        </div>
+      </div>
+
+      <div class="sal-dash" id="salary-dashboard" style="display:none;">
+        <div class="sal-dash-head">
+          <div>
+            <div class="sal-dash-title">Дашборды</div>
+            <div class="sal-dash-sub" id="salary-dashboard-period">Период: —</div>
+          </div>
+        </div>
+
+        <div class="sal-kpi-grid">
+          <div class="sal-kpi-card">
+            <div class="sal-k">Начислено за месяц</div>
+            <div class="sal-v" id="sal-kpi-accrued">—</div>
+          </div>
+          <div class="sal-kpi-card">
+            <div class="sal-k">Выплачено за месяц</div>
+            <div class="sal-v" id="sal-kpi-paid">—</div>
+          </div>
+          <div class="sal-kpi-card">
+            <div class="sal-k">Долг команде</div>
+            <div class="sal-v" id="sal-kpi-pos">—</div>
+          </div>
+          <div class="sal-kpi-card">
+            <div class="sal-k">Переплаты</div>
+            <div class="sal-v" id="sal-kpi-neg">—</div>
+          </div>
+          <div class="sal-kpi-card">
+            <div class="sal-k">Требуют подтверждения</div>
+            <div class="sal-v" id="sal-kpi-review">—</div>
+          </div>
+          <div class="sal-kpi-card">
+            <div class="sal-k">Корректировки</div>
+            <div class="sal-v" id="sal-kpi-adj">—</div>
+            <div class="sal-h" id="sal-kpi-adj-sub">—</div>
+          </div>
+        </div>
+
+        <div class="sal-charts">
+          <div class="sal-chart">
+            <div class="sal-chart-head">
+              <div class="sal-chart-title">Начисления по дням</div>
+              <div class="sal-chart-legend">
+                <span class="sal-lg"><span class="sal-lg-dot blue"></span>Начислено</span>
+              </div>
+            </div>
+            <div class="sal-chart-body" id="sal-chart-accrued">—</div>
+          </div>
+          <div class="sal-chart">
+            <div class="sal-chart-head">
+              <div class="sal-chart-title">Выплаты по дням</div>
+              <div class="sal-chart-legend">
+                <span class="sal-lg"><span class="sal-lg-dot green"></span>Выплачено</span>
+              </div>
+            </div>
+            <div class="sal-chart-body" id="sal-chart-paid">—</div>
+          </div>
+        </div>
+
+        <div class="sal-attn">
+          <div class="sal-attn-col">
+            <div class="sal-attn-title">Требует внимания</div>
+            <div class="sal-attn-list" id="sal-attn-top-dev"></div>
+            <div class="sal-attn-title" style="margin-top:14px;">Ставка не задана</div>
+            <div class="sal-attn-list" id="sal-attn-no-rate"></div>
+          </div>
+          <div class="sal-attn-col">
+            <div class="sal-attn-title">ТОП по долгу</div>
+            <div class="sal-attn-list" id="sal-attn-top-balance"></div>
+            <div class="sal-attn-title" style="margin-top:14px;">Переплаты</div>
+            <div class="sal-attn-list" id="sal-attn-negative"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="sal-panel-employees" class="sal-panel" role="tabpanel">
+      <div class="sal-controls" id="sal-employees-filters">
+        <div class="sal-field">
+          <div class="sal-label">Месяц</div>
+          <div class="sal-month-wrap">
+            <input id="salary-month" class="sal-month" type="month" />
+            <svg class="sal-month-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M16 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 21h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </div>
+        </div>
+        <div class="sal-field">
+          <div class="sal-label">Сотрудник</div>
+          <input id="salary-q" class="sal-input" type="text" placeholder="Поиск по ФИО" />
+        </div>
+        <div class="sal-field sal-field-filters">
+          <div class="sal-label">Фильтры</div>
+          <label class="sal-check"><input id="salary-filter-balance" type="checkbox" /> Баланс &gt; 0</label>
+          <label class="sal-check"><input id="salary-filter-dev" type="checkbox" /> Отклонения</label>
+        </div>
+        <div class="sal-actions">
+          <button id="salary-reset" class="btn-outline" type="button">Сбросить</button>
+        </div>
+      </div>
+
+  <div class="sal-summary" id="salary-totals" style="display:none;">
+    <div class="sal-summary-card">
+      <div class="sal-summary-k">Итого начислено</div>
+      <div class="sal-summary-v" id="salary-totals-accrued">—</div>
+    </div>
+    <div class="sal-summary-card">
+      <div class="sal-summary-k">Итого выплачено</div>
+      <div class="sal-summary-v" id="salary-totals-paid">—</div>
+    </div>
+    <div class="sal-summary-card">
+      <div class="sal-summary-k">Итого баланс</div>
+      <div class="sal-summary-v" id="salary-totals-balance">—</div>
+    </div>
+    <div class="sal-summary-card">
+      <div class="sal-summary-k">Сотрудников</div>
+      <div class="sal-summary-v" id="salary-totals-count">—</div>
+    </div>
+  </div>
+
+  <div class="sal-card sal-table-wrap">
+    <table class="sal-table">
+      <thead>
+        <tr>
+          <th data-sal-sort="name">Сотрудник</th>
+          <th data-sal-sort="hour_rate">Ставка/час</th>
+          <th data-sal-sort="accrued">Начислено</th>
+          <th data-sal-sort="paid">Выплачено</th>
+          <th data-sal-sort="balance">Баланс</th>
+          <th style="text-align:right;">Действия</th>
+        </tr>
+      </thead>
+      <tbody id="salary-grid-body">
+        <tr><td colspan="6" style="color:#667085; padding:14px;">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+    </div>
+
+    <div id="sal-panel-payouts" class="sal-panel" role="tabpanel">
+      <div class="sal-controls" id="sal-payouts-filters">
+        <div class="sal-field">
+          <div class="sal-label">Месяц</div>
+          <div class="sal-month-wrap">
+            <input id="sal-pj-month" class="sal-month" type="month" />
+            <svg class="sal-month-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M8 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M16 3v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 11h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M14 15h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M6 21h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z" stroke="currentColor" stroke-width="2"/>
+            </svg>
+          </div>
+        </div>
+        <div class="sal-field">
+          <div class="sal-label">Сотрудник</div>
+          <input id="sal-pj-user" class="sal-input" type="text" placeholder="ФИО сотрудника" />
+        </div>
+        <div class="sal-field">
+          <div class="sal-label">Комментарий</div>
+          <input id="sal-pj-q" class="sal-input" type="text" placeholder="Поиск по комментарию" />
+        </div>
+        <div class="sal-field" style="min-width:120px;">
+          <div class="sal-label">Лимит</div>
+          <select id="sal-pj-limit" class="sal-select">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+        <div class="sal-actions">
+          <button id="sal-pj-reset" class="btn-outline" type="button">Сбросить</button>
+        </div>
+      </div>
+
+      <div class="sal-journal" id="salary-payouts-journal">
+        <div class="sal-journal-head">
+          <div>
+            <div class="sal-journal-title">История выплат</div>
+            <div class="sal-journal-sub" id="sal-pj-period">Период: —</div>
+          </div>
+        </div>
+
+      <div class="sal-card sal-table-wrap sal-journal-table">
+      <table class="sal-table">
+        <thead>
+          <tr>
+            <th data-pj-sort="created_at">Дата</th>
+            <th data-pj-sort="user">Сотрудник</th>
+            <th>Период</th>
+            <th data-pj-sort="amount">Сумма</th>
+            <th>Кто создал</th>
+            <th>Комментарий</th>
+            <th style="text-align:right;">Детали</th>
+          </tr>
+        </thead>
+        <tbody id="sal-pj-body">
+          <tr><td colspan="7" style="color:#667085; padding:14px;">Выберите месяц</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sal-journal-pager">
+      <div class="sal-journal-meta" id="sal-pj-meta">—</div>
+      <div class="sal-journal-nav">
+        <button id="sal-pj-prev" class="btn-outline" type="button">Назад</button>
+        <button id="sal-pj-next" class="btn-outline" type="button">Вперёд</button>
+      </div>
+    </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const monthEl = document.getElementById('salary-month');
+  const applyBtn = document.getElementById('salary-apply');
+  const resetBtn = document.getElementById('salary-reset');
+  const body = document.getElementById('salary-grid-body');
+  const qEl = document.getElementById('salary-q');
+  const filterBalEl = document.getElementById('salary-filter-balance');
+  const filterDevEl = document.getElementById('salary-filter-dev');
+
+  const dashMonthEl = document.getElementById('sal-dash-month');
+  const dashApplyBtn = document.getElementById('sal-dash-apply');
+  const dashResetBtn = document.getElementById('sal-dash-reset');
+
+  const tabDashBtn = document.getElementById('sal-tab-dash');
+  const tabEmployeesBtn = document.getElementById('sal-tab-employees');
+  const tabPayoutsBtn = document.getElementById('sal-tab-payouts');
+  const panelDashEl = document.getElementById('sal-panel-dash');
+  const panelEmployeesEl = document.getElementById('sal-panel-employees');
+  const panelPayoutsEl = document.getElementById('sal-panel-payouts');
+
+  const pinAdminBtn = document.getElementById('sal-pin-admin');
+
+  const dashRoot = document.getElementById('salary-dashboard');
+  const dashPeriodEl = document.getElementById('salary-dashboard-period');
+  const kpiAccruedEl = document.getElementById('sal-kpi-accrued');
+  const kpiPaidEl = document.getElementById('sal-kpi-paid');
+  const kpiPosEl = document.getElementById('sal-kpi-pos');
+  const kpiNegEl = document.getElementById('sal-kpi-neg');
+  const kpiReviewEl = document.getElementById('sal-kpi-review');
+  const kpiAdjEl = document.getElementById('sal-kpi-adj');
+  const kpiAdjSubEl = document.getElementById('sal-kpi-adj-sub');
+  const chartAccruedEl = document.getElementById('sal-chart-accrued');
+  const chartPaidEl = document.getElementById('sal-chart-paid');
+
+  const attnTopBalEl = document.getElementById('sal-attn-top-balance');
+  const attnTopDevEl = document.getElementById('sal-attn-top-dev');
+  const attnNoRateEl = document.getElementById('sal-attn-no-rate');
+  const attnNegEl = document.getElementById('sal-attn-negative');
+
+  const totalsRoot = document.getElementById('salary-totals');
+  const totalsAccruedEl = document.getElementById('salary-totals-accrued');
+  const totalsPaidEl = document.getElementById('salary-totals-paid');
+  const totalsBalanceEl = document.getElementById('salary-totals-balance');
+  const totalsCountEl = document.getElementById('salary-totals-count');
+
+  const pjRoot = document.getElementById('salary-payouts-journal');
+  const pjPeriodEl = document.getElementById('sal-pj-period');
+  const pjMonthEl = document.getElementById('sal-pj-month');
+  const pjUserEl = document.getElementById('sal-pj-user');
+  const pjQEl = document.getElementById('sal-pj-q');
+  const pjLimitEl = document.getElementById('sal-pj-limit');
+  const pjApplyBtn = document.getElementById('sal-pj-apply');
+  const pjResetBtn = document.getElementById('sal-pj-reset');
+  const pjBodyEl = document.getElementById('sal-pj-body');
+  const pjMetaEl = document.getElementById('sal-pj-meta');
+  const pjPrevBtn = document.getElementById('sal-pj-prev');
+  const pjNextBtn = document.getElementById('sal-pj-next');
+
+  let pjSort = 'created_at';
+  let pjDir = 'desc';
+  let pjOffset = 0;
+  let pjTotal = null;
+
+  let lastItems = [];
+  let rawItems = [];
+  let sortKey = 'name';
+  let sortDir = 'asc';
+
+  function fmtDateTimeShort(s){
+    try {
+      const raw = String(s || '').trim();
+      if(!raw) return '—';
+      const dt = new Date(raw);
+      if(!dt || !Number.isFinite(dt.getTime())){
+        const x = raw.replace('T', ' ').replace('Z', '').trim();
+        return x || '—';
+      }
+      const dd = String(dt.getDate()).padStart(2,'0');
+      const mm = String(dt.getMonth()+1).padStart(2,'0');
+      const yy = String(dt.getFullYear());
+      const hh = String(dt.getHours()).padStart(2,'0');
+      const mi = String(dt.getMinutes()).padStart(2,'0');
+      return dd + '.' + mm + '.' + yy + ' ' + hh + ':' + mi;
+    } catch(_){
+      return String(s || '');
+    }
+  }
+
+  function jsonPretty(v){
+    try {
+      if(v === null || v === undefined) return '—';
+      if(typeof v === 'string') return v;
+      return JSON.stringify(v, null, 2);
+    } catch(_){
+      return String(v || '');
+    }
+  }
+
+  function setPjLoading(msg){
+    if(!pjBodyEl) return;
+    pjBodyEl.innerHTML = '<tr><td colspan="7" style="color:#667085; padding:14px;">' + String(msg || 'Загрузка…') + '</td></tr>';
+  }
+
+  function setPjError(msg){
+    if(!pjBodyEl) return;
+    pjBodyEl.innerHTML = '<tr><td colspan="7" style="color:#b42318; padding:14px;">' + String(msg || 'Ошибка') + '</td></tr>';
+  }
+
+  function updatePjSortHeaders(){
+    try {
+      document.querySelectorAll('th[data-pj-sort]').forEach((th)=>{
+        const k = String(th.getAttribute('data-pj-sort') || '');
+        const baseText = th.dataset.baseText || th.textContent || '';
+        if(!th.dataset.baseText) th.dataset.baseText = baseText;
+        const active = (k === pjSort);
+        const arrow = active ? (pjDir === 'asc' ? ' ↑' : ' ↓') : '';
+        th.textContent = (th.dataset.baseText || '') + arrow;
+        if(active) th.classList.add('sal-th-sort-active');
+        else th.classList.remove('sal-th-sort-active');
+      });
+    } catch(_){ }
+  }
+
+  async function openPayoutDetailModal(payoutId){
+    const pid = Number(payoutId || 0);
+    if(!pid) return;
+    try {
+      setDashLoading();
+    } catch(_){ }
+    try {
+      const url = apiBase() + '/salaries/payouts/' + encodeURIComponent(String(pid));
+      const r = await apiFetch(url);
+      if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      if(r.status === 404){
+        try { window.crmAlert && window.crmAlert('Выплата не найдена'); } catch(_){ }
+        return;
+      }
+      const data = await r.json().catch(()=> ({}));
+      if(!data || !data.ok){
+        try { window.crmAlert && window.crmAlert('Не удалось загрузить выплату'); } catch(_){ }
+        return;
+      }
+      const p = data.payout || {};
+      const title = 'Выплата #' + String(p.id || pid);
+      const ucolor = String(p.user_color || '').trim();
+      const safeColor = (/^#[0-9a-fA-F]{6}$/.test(ucolor)) ? ucolor : '';
+      const amtNum = moneyNum(p.amount);
+      const amtCls = (amtNum < 0) ? 'neg' : 'pos';
+      openModal(
+        '<div class="salary-modal salary-pay-detail">' +
+          '<div class="spd-root">' +
+            '<div class="spd-head">' +
+              '<h3 class="spd-title">' + title + '</h3>' +
+            '</div>' +
+            '<div class="spd-grid">' +
+              '<div class="spd-card"><div class="spd-k">Дата</div><div class="spd-v">' + fmtDateTimeShort(p.created_at) + '</div></div>' +
+              '<div class="spd-card"><div class="spd-k">Сотрудник</div><div class="spd-v"><span' + (safeColor ? (' style="color:' + safeColor + '; font-weight:900;"') : ' style="font-weight:900;"') + '>' + String(p.user_name || ('#' + String(p.user_id || ''))).replace(/</g,'&lt;') + '</span></div></div>' +
+              '<div class="spd-card"><div class="spd-k">Период</div><div class="spd-v">' + fmtDateRu(p.period_start) + '—' + fmtDateRu(p.period_end) + '</div></div>' +
+              '<div class="spd-card"><div class="spd-k">Сумма</div><div class="spd-v"><span class="sal-pill ' + amtCls + '">' + fmtRubPretty(p.amount) + '</span></div></div>' +
+              '<div class="spd-card"><div class="spd-k">Кто создал</div><div class="spd-v">' + String(p.actor_name || p.actor_user_id || '—') + '</div></div>' +
+              '<div class="spd-card"><div class="spd-k">Комментарий</div><div class="spd-v">' + String(p.comment || '—') + '</div></div>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    } catch(_e){
+      try { window.crmAlert && window.crmAlert('Ошибка загрузки выплаты'); } catch(_){ }
+    }
+  }
+
+  async function loadPayoutsJournal(month){
+    if(!pjRoot) return;
+    const m = String(month || '').trim();
+    if(pjPeriodEl) pjPeriodEl.textContent = 'Период: ' + (m ? String(m) : '—');
+    if(!m){
+      try { if(pjBodyEl) pjBodyEl.innerHTML = '<tr><td colspan="7" style="color:#667085; padding:14px;">Выберите месяц</td></tr>'; } catch(_){ }
+      return;
+    }
+
+    const userQ = String(pjUserEl && pjUserEl.value ? pjUserEl.value : '').trim();
+    const q = String(pjQEl && pjQEl.value ? pjQEl.value : '').trim();
+    const limit = Number(pjLimitEl && pjLimitEl.value ? pjLimitEl.value : 50) || 50;
+    setPjLoading('Загрузка…');
+    try {
+      const url =
+        apiBase() + '/salaries/payouts' +
+        '?month=' + encodeURIComponent(m) +
+        (userQ ? ('&user_q=' + encodeURIComponent(userQ)) : '') +
+        (q ? ('&q=' + encodeURIComponent(q)) : '') +
+        '&sort=' + encodeURIComponent(pjSort) +
+        '&dir=' + encodeURIComponent(pjDir) +
+        '&limit=' + encodeURIComponent(String(limit)) +
+        '&offset=' + encodeURIComponent(String(pjOffset));
+      const r = await apiFetch(url);
+      if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      const data = await r.json().catch(()=> ({}));
+      if(!data || !data.ok){ setPjError('Не удалось загрузить журнал'); return; }
+      const items = Array.isArray(data.items) ? data.items : [];
+      pjTotal = (data.total === null || data.total === undefined) ? null : Number(data.total);
+      const off = Number(data.offset || 0) || 0;
+      const lim = Number(data.limit || limit) || limit;
+
+      if(pjMetaEl){
+        const a = off + 1;
+        const b = off + items.length;
+        const tail = (pjTotal !== null && Number.isFinite(pjTotal)) ? (' из ' + String(pjTotal)) : '';
+        pjMetaEl.textContent = items.length ? ('Показано ' + String(a) + '–' + String(b) + tail) : ('Нет данных' + tail);
+      }
+
+      if(pjPrevBtn) pjPrevBtn.disabled = (off <= 0);
+      if(pjNextBtn){
+        const hasMore = (pjTotal !== null && Number.isFinite(pjTotal)) ? ((off + lim) < pjTotal) : (items.length === lim);
+        pjNextBtn.disabled = !hasMore;
+      }
+
+      if(!pjBodyEl) return;
+      if(!items.length){
+        pjBodyEl.innerHTML = '<tr><td colspan="7" style="color:#667085; padding:14px;">Нет выплат</td></tr>';
+        return;
+      }
+
+      pjBodyEl.innerHTML = items.map((it)=>{
+        const id = Number(it.id || 0) || 0;
+        const when = fmtDateTimeShort(it.created_at);
+        const uname = String(it.user_name || ('#' + String(it.user_id || '')));
+        const ucolor = String(it.user_color || '').trim();
+        const safeColor = (/^#[0-9a-fA-F]{6}$/.test(ucolor)) ? ucolor : '';
+        const period = fmtDateRu(it.period_start) + '—' + fmtDateRu(it.period_end);
+        const amtNum = moneyNum(it.amount);
+        const amtCls = (amtNum < 0) ? 'neg' : 'pos';
+        const amt = fmtRubPretty(it.amount);
+        const actor = String(it.actor_name || it.actor_user_id || '—');
+        const comment = String(it.comment || '');
+        return (
+          '<tr class="sal-tr-click" data-pj-open-row="' + String(id) + '">' +
+            '<td data-label="Дата"><span class="sal-muted">' + when + '</span></td>' +
+            '<td data-label="Сотрудник"><b' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + '>' + uname.replace(/</g,'&lt;') + '</b></td>' +
+            '<td data-label="Период"><span class="sal-muted">' + period + '</span></td>' +
+            '<td data-label="Сумма"><span class="sal-pill ' + amtCls + '">' + amt + '</span></td>' +
+            '<td data-label="Кто создал"><span class="sal-muted">' + actor.replace(/</g,'&lt;') + '</span></td>' +
+            '<td data-label="Комментарий"><span class="sal-muted">' + (comment ? comment.replace(/</g,'&lt;') : '—') + '</span></td>' +
+            '<td data-label="Детали" style="text-align:right;">' +
+              '<button class="sal-btn-sec" type="button" data-pj-open="' + String(id) + '">Детали</button>' +
+            '</td>' +
+          '</tr>'
+        );
+      }).join('');
+
+      try {
+        document.querySelectorAll('[data-pj-open]').forEach((b)=>{
+          if(b.dataset.boundPjOpen === '1') return;
+          b.dataset.boundPjOpen = '1';
+          b.addEventListener('click', ()=>{
+            try { if(window.event && window.event.stopPropagation) window.event.stopPropagation(); } catch(_){ }
+            const pid = Number(b.getAttribute('data-pj-open') || 0);
+            openPayoutDetailModal(pid);
+          });
+        });
+      } catch(_){ }
+
+      try {
+        document.querySelectorAll('[data-pj-open-row]').forEach((tr)=>{
+          if(tr.dataset.boundPjRow === '1') return;
+          tr.dataset.boundPjRow = '1';
+          tr.addEventListener('click', ()=>{
+            const pid = Number(tr.getAttribute('data-pj-open-row') || 0);
+            openPayoutDetailModal(pid);
+          });
+        });
+      } catch(_){ }
+    } catch(_e){
+      setPjError('Ошибка загрузки журнала');
+    }
+  }
+
+  function applyFilters(items){
+    const list = Array.isArray(items) ? items.slice() : [];
+    const q = String(qEl && qEl.value ? qEl.value : '').trim().toLocaleLowerCase();
+    const onlyBal = !!(filterBalEl && filterBalEl.checked);
+    const onlyDev = !!(filterDevEl && filterDevEl.checked);
+    return list.filter((it)=>{
+      const name = String((it && it.name) || '').toLocaleLowerCase();
+      if(q && !name.includes(q)) return false;
+      if(onlyBal && !(parseNum(it && it.balance) > 0)) return false;
+      if(onlyDev && !((Number(it && it.needs_review_total || 0) || 0) > 0)) return false;
+      return true;
+    });
+  }
+
+  function setDashLoading(){
+    try {
+      if(dashRoot) dashRoot.style.display = '';
+      if(dashPeriodEl) dashPeriodEl.textContent = 'Период: —';
+      if(chartAccruedEl) chartAccruedEl.textContent = 'Загрузка…';
+      if(chartPaidEl) chartPaidEl.textContent = 'Загрузка…';
+    } catch(_){ }
+  }
+
+  function sparkline(points, opts){
+    const w = (opts && opts.w) ? Number(opts.w) : 360;
+    const h = (opts && opts.h) ? Number(opts.h) : 56;
+    const stroke = (opts && opts.stroke) ? String(opts.stroke) : '#2563eb';
+    const fill = (opts && opts.fill) ? String(opts.fill) : 'rgba(37,99,235,.10)';
+    const list = Array.isArray(points) ? points.map((x)=>Number(x)).filter((x)=>Number.isFinite(x)) : [];
+    if(list.length < 2) return '<div class="sal-spark-empty">Нет данных за период</div>';
+    let min = Math.min.apply(null, list);
+    let max = Math.max.apply(null, list);
+    if(!Number.isFinite(min) || !Number.isFinite(max)) return '<div class="sal-spark-empty">Нет данных за период</div>';
+    if(min === max){
+      min = min - 1;
+      max = max + 1;
+    }
+    const dx = w / (list.length - 1);
+    const toY = (v)=>{
+      const t = (v - min) / (max - min);
+      return (h - (t * h));
+    };
+    const pts = list.map((v,i)=>{
+      const x = (i * dx);
+      const y = toY(v);
+      return [x,y];
+    });
+    const d = pts.map((p,i)=> (i===0 ? ('M ' + p[0].toFixed(2) + ' ' + p[1].toFixed(2)) : ('L ' + p[0].toFixed(2) + ' ' + p[1].toFixed(2)))).join(' ');
+    const area = d + ' L ' + w.toFixed(2) + ' ' + h.toFixed(2) + ' L 0 ' + h.toFixed(2) + ' Z';
+    return (
+      '<svg class="sal-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+        '<path d="' + area + '" fill="' + fill + '" stroke="none" />' +
+        '<path d="' + d + '" fill="none" stroke="' + stroke + '" stroke-width="2" stroke-linecap="round" />' +
+      '</svg>'
+    );
+  }
+
+  function dayLabel(iso){
+    try {
+      const s = String(iso || '').trim();
+      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(!m) return s;
+      return m[3] + '.' + m[2];
+    } catch(_){
+      return String(iso || '');
+    }
+  }
+
+  function lineChart(points, labels, opts){
+    const w = (opts && opts.w) ? Number(opts.w) : 420;
+    const h = (opts && opts.h) ? Number(opts.h) : 140;
+    const stroke = (opts && opts.stroke) ? String(opts.stroke) : '#2563eb';
+    const fill = (opts && opts.fill) ? String(opts.fill) : 'rgba(37,99,235,.10)';
+    const list = Array.isArray(points) ? points.map((x)=>Number(x)).filter((x)=>Number.isFinite(x)) : [];
+    if(list.length < 2) return '<div class="sal-spark-empty">Нет данных за период</div>';
+    let min = Math.min.apply(null, list);
+    let max = Math.max.apply(null, list);
+    if(min === max){ min = min - 1; max = max + 1; }
+    const padX = 10;
+    const padY = 12;
+    const innerW = Math.max(10, w - padX * 2);
+    const innerH = Math.max(10, h - padY * 2);
+    const dx = innerW / (list.length - 1);
+    const toX = (i)=> padX + (i * dx);
+    const toY = (v)=>{
+      const t = (v - min) / (max - min);
+      return padY + (innerH - (t * innerH));
+    };
+    const pts = list.map((v,i)=> [toX(i), toY(v)]);
+    const d = pts.map((p,i)=> (i===0 ? ('M ' + p[0].toFixed(2) + ' ' + p[1].toFixed(2)) : ('L ' + p[0].toFixed(2) + ' ' + p[1].toFixed(2)))).join(' ');
+    const area = d + ' L ' + (padX + innerW).toFixed(2) + ' ' + (padY + innerH).toFixed(2) + ' L ' + padX.toFixed(2) + ' ' + (padY + innerH).toFixed(2) + ' Z';
+    const labs = Array.isArray(labels) ? labels : [];
+    const circles = pts.map((p,i)=>{
+      const lbl = String((labs[i] !== undefined && labs[i] !== null) ? labs[i] : (i+1));
+      const val = fmtRubPretty(list[i]);
+      return '<circle cx="' + p[0].toFixed(2) + '" cy="' + p[1].toFixed(2) + '" r="3.5" fill="#fff" stroke="' + stroke + '" stroke-width="2"><title>' + lbl.replace(/</g,'&lt;') + ' — ' + String(val).replace(/</g,'&lt;') + '</title></circle>';
+    }).join('');
+    return (
+      '<svg class="sal-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+        '<path d="' + area + '" fill="' + fill + '" stroke="none" />' +
+        '<path d="' + d + '" fill="none" stroke="' + stroke + '" stroke-width="2.2" stroke-linecap="round" />' +
+        circles +
+      '</svg>'
+    );
+  }
+
+  function barChart(points, labels, opts){
+    const w = (opts && opts.w) ? Number(opts.w) : 420;
+    const h = (opts && opts.h) ? Number(opts.h) : 140;
+    const fill = (opts && opts.fill) ? String(opts.fill) : 'rgba(37,99,235,.85)';
+    const list = Array.isArray(points) ? points.map((x)=>Number(x)).filter((x)=>Number.isFinite(x)) : [];
+    if(list.length < 1) return '<div class="sal-spark-empty">Нет данных за период</div>';
+    let max = Math.max.apply(null, list.map((x)=>Math.abs(x)));
+    if(!Number.isFinite(max) || max <= 0) return '<div class="sal-spark-empty">Нет данных за период</div>';
+    const padX = 8;
+    const padY = 12;
+    const innerW = Math.max(10, w - padX * 2);
+    const innerH = Math.max(10, h - padY * 2);
+    const bw = Math.max(2, Math.floor(innerW / list.length) - 2);
+    const gap = Math.max(2, Math.floor((innerW - (bw * list.length)) / Math.max(1, list.length - 1)));
+    const labs = Array.isArray(labels) ? labels : [];
+    const bars = list.map((v,i)=>{
+      const x = padX + i * (bw + gap);
+      const bh = Math.max(1, Math.round((Math.abs(v) / max) * innerH));
+      const y = padY + (innerH - bh);
+      const lbl = String((labs[i] !== undefined && labs[i] !== null) ? labs[i] : (i+1));
+      const val = fmtRubPretty(v);
+      return '<rect x="' + x + '" y="' + y + '" width="' + bw + '" height="' + bh + '" rx="4" fill="' + fill + '"><title>' + lbl.replace(/</g,'&lt;') + ' — ' + String(val).replace(/</g,'&lt;') + '</title></rect>';
+    }).join('');
+    return '<svg class="sal-spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' + bars + '</svg>';
+  }
+
+  function moneyNum(v){
+    try {
+      const s = String(v === null || v === undefined ? '' : v).trim().replace(/\s+/g,'').replace(',', '.');
+      const n = Number(s);
+      return Number.isFinite(n) ? n : 0;
+    } catch(_){
+      return 0;
+    }
+  }
+
+  function renderAttnList(targetEl, items, renderer){
+    if(!targetEl) return;
+    const list = Array.isArray(items) ? items : [];
+    if(!list.length){ targetEl.innerHTML = '<div class="sal-attn-empty">—</div>'; return; }
+    targetEl.innerHTML = list.map((it, idx)=>{
+      return renderer(it, idx);
+    }).join('');
+  }
+
+  function applyQuickFilter(kind, payload){
+    try {
+      if(kind === 'top_balance'){
+        if(filterBalEl) filterBalEl.checked = true;
+        if(filterDevEl) filterDevEl.checked = false;
+        if(qEl) qEl.value = payload && payload.name ? String(payload.name) : '';
+      }
+      if(kind === 'top_dev'){
+        if(filterDevEl) filterDevEl.checked = true;
+        if(filterBalEl) filterBalEl.checked = false;
+        if(qEl) qEl.value = payload && payload.name ? String(payload.name) : '';
+      }
+      if(kind === 'no_rate'){
+        if(filterBalEl) filterBalEl.checked = false;
+        if(filterDevEl) filterDevEl.checked = false;
+        if(qEl) qEl.value = payload && payload.name ? String(payload.name) : '';
+      }
+      if(kind === 'negative_balance'){
+        if(filterBalEl) filterBalEl.checked = false;
+        if(filterDevEl) filterDevEl.checked = false;
+        if(qEl) qEl.value = payload && payload.name ? String(payload.name) : '';
+      }
+    } catch(_){ }
+    try {
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      setRows(sorted);
+      const el = document.getElementById('salary-grid-body');
+      if(el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch(_){ }
+  }
+
+  async function loadDashboard(month){
+    setDashLoading();
+    try {
+      const url = apiBase() + '/salaries/dashboard?month=' + encodeURIComponent(String(month||''));
+      const r = await apiFetch(url);
+      if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      const data = await r.json().catch(()=> ({}));
+      if(!data || !data.ok){
+        if(dashRoot) dashRoot.style.display = 'none';
+        return;
+      }
+      if(dashRoot) dashRoot.style.display = '';
+      if(dashPeriodEl) dashPeriodEl.textContent = 'Период: ' + String(data.period_label || data.month || '');
+
+      const kpi = data.kpi || {};
+      const adj = (kpi && kpi.adjustments) ? kpi.adjustments : {};
+      if(kpiAccruedEl) kpiAccruedEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_accrued) + '</span>';
+      if(kpiPaidEl) kpiPaidEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_paid) + '</span>';
+      if(kpiPosEl) kpiPosEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_positive_balance) + '</span>';
+      if(kpiNegEl) kpiNegEl.innerHTML = '<span class="sal-pill neg">' + fmtRubPretty(kpi.sum_negative_balance_abs) + '</span>';
+      if(kpiReviewEl) kpiReviewEl.textContent = String(kpi.count_needs_review || 0);
+      if(kpiAdjEl) kpiAdjEl.textContent = String((adj && adj.count) || 0);
+      if(kpiAdjSubEl) kpiAdjSubEl.textContent = ' +' + fmtRubPretty((adj && adj.plus) || 0) + ' / -' + fmtRubPretty((adj && adj.minus) || 0);
+
+      const series = data.series || {};
+      const accSer = Array.isArray(series.accrued_by_day) ? series.accrued_by_day : [];
+      const paidSer = Array.isArray(series.paid_by_day) ? series.paid_by_day : [];
+      const accPts = accSer.map((x)=>moneyNum(x && x.amount));
+      const paidPts = paidSer.map((x)=>moneyNum(x && x.amount));
+      const accLbl = accSer.map((x)=>dayLabel(x && x.day));
+      const paidLbl = paidSer.map((x)=>dayLabel(x && x.day));
+      if(chartAccruedEl){
+        chartAccruedEl.innerHTML = (
+          (accPts.length >= 8)
+            ? barChart(accPts, accLbl, { fill:'rgba(37,99,235,.85)' })
+            : lineChart(accPts, accLbl, { stroke:'#2563eb', fill:'rgba(37,99,235,.10)' })
+        );
+      }
+      if(chartPaidEl){
+        chartPaidEl.innerHTML = (
+          (paidPts.length >= 8)
+            ? barChart(paidPts, paidLbl, { fill:'rgba(22,163,74,.85)' })
+            : lineChart(paidPts, paidLbl, { stroke:'#16a34a', fill:'rgba(22,163,74,.10)' })
+        );
+      }
+
+      const lists = data.lists || {};
+      renderAttnList(attnTopBalEl, lists.top_balance, (it)=>{
+        const name = String(it && it.name ? it.name : '—');
+        const color = String(it && it.color ? it.color : '').trim();
+        const safeColor = (/^#[0-9a-fA-F]{6}$/.test(color)) ? color : '';
+        const balNum = moneyNum(it && it.balance);
+        const balCls = (balNum < 0) ? 'neg' : 'pos';
+        const bal = fmtRubPretty(it && it.balance);
+        return '<button class="sal-attn-item" type="button" data-attn="top_balance" data-name="' + name.replace(/"/g,'&quot;') + '"><span' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + '>' + name + '</span><b><span class="sal-pill ' + balCls + '">' + bal + '</span></b></button>';
+      });
+      renderAttnList(attnTopDevEl, lists.top_needs_review, (it)=>{
+        const name = String(it && it.name ? it.name : '—');
+        const c = Number(it && it.needs_review_total || 0) || 0;
+        return '<button class="sal-attn-item" type="button" data-attn="top_dev" data-name="' + name.replace(/"/g,'&quot;') + '"><span>' + name + '</span><b>⚠️ ' + String(c) + '</b></button>';
+      });
+      renderAttnList(attnNoRateEl, lists.no_rate, (it)=>{
+        const name = String(it && it.name ? it.name : '—');
+        return '<button class="sal-attn-item" type="button" data-attn="no_rate" data-name="' + name.replace(/"/g,'&quot;') + '"><span>' + name + '</span><b>—</b></button>';
+      });
+      renderAttnList(attnNegEl, lists.negative_balance, (it)=>{
+        const name = String(it && it.name ? it.name : '—');
+        const color = String(it && it.color ? it.color : '').trim();
+        const safeColor = (/^#[0-9a-fA-F]{6}$/.test(color)) ? color : '';
+        const balNum = moneyNum(it && it.balance);
+        const balCls = (balNum < 0) ? 'neg' : 'pos';
+        const bal = fmtRubPretty(it && it.balance);
+        return '<button class="sal-attn-item" type="button" data-attn="negative_balance" data-name="' + name.replace(/"/g,'&quot;') + '"><span' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + '>' + name + '</span><b><span class="sal-pill ' + balCls + '">' + bal + '</span></b></button>';
+      });
+
+      try {
+        document.querySelectorAll('[data-attn]').forEach((b)=>{
+          if(b.dataset.boundAttn === '1') return;
+          b.dataset.boundAttn = '1';
+          b.addEventListener('click', ()=>{
+            const k = String(b.dataset.attn || '');
+            const n = String(b.dataset.name || '');
+            applyQuickFilter(k, { name: n });
+          });
+        });
+      } catch(_){ }
+    } catch(_e){
+      try { if(dashRoot) dashRoot.style.display = 'none'; } catch(_){ }
+    }
+  }
+
+  function pageBase(){
+    try {
+      const m = document.querySelector('meta[name="crm-page-base"]');
+      const v = (m && m.getAttribute('content')) ? String(m.getAttribute('content')) : '';
+      const s = v.trim();
+      return s ? s.replace(/\/$/, '') : '/crm';
+    } catch(_){
+      return '/crm';
+    }
+  }
+
+  function parseNum(v){
+    try {
+      const s = String(v === null || v === undefined ? '' : v).trim().replace(/\s+/g,'').replace(',', '.');
+      const n = Number(s);
+      return Number.isFinite(n) ? n : 0;
+    } catch(_){
+      return 0;
+    }
+  }
+
+  function updateTotals(items){
+    const list = Array.isArray(items) ? items : [];
+    let accrued = 0;
+    let paid = 0;
+    let balance = 0;
+    for(let i=0;i<list.length;i++){
+      const it = list[i] || {};
+      accrued += parseNum(it.accrued);
+      paid += parseNum(it.paid);
+      balance += parseNum(it.balance);
+    }
+    try {
+      if(totalsRoot) totalsRoot.style.display = list.length ? '' : 'none';
+      if(totalsAccruedEl) totalsAccruedEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(accrued) + '</span>';
+      if(totalsPaidEl) totalsPaidEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(paid) + '</span>';
+      if(totalsBalanceEl){
+        const cls = (balance < 0) ? 'neg' : 'pos';
+        totalsBalanceEl.innerHTML = '<span class="sal-pill ' + cls + '">' + fmtRubPretty(balance) + '</span>';
+      }
+      if(totalsCountEl) totalsCountEl.textContent = String(list.length);
+    } catch(_){ }
+  }
+
+  function sortItems(items){
+    const list = Array.isArray(items) ? items.slice() : [];
+    const dir = (sortDir === 'desc') ? -1 : 1;
+    const key = String(sortKey || 'name');
+    list.sort((a0,b0)=>{
+      const a = a0 || {};
+      const b = b0 || {};
+      if(key === 'name'){
+        const an = String(a.name || '').toLocaleLowerCase();
+        const bn = String(b.name || '').toLocaleLowerCase();
+        if(an < bn) return -1 * dir;
+        if(an > bn) return 1 * dir;
+        return 0;
+      }
+      if(key === 'hour_rate'){
+        return (parseNum(a.hour_rate) - parseNum(b.hour_rate)) * dir;
+      }
+      if(key === 'accrued') return (parseNum(a.accrued) - parseNum(b.accrued)) * dir;
+      if(key === 'paid') return (parseNum(a.paid) - parseNum(b.paid)) * dir;
+      if(key === 'balance') return (parseNum(a.balance) - parseNum(b.balance)) * dir;
+      return 0;
+    });
+    return list;
+  }
+
+  function updateSortHeaders(){
+    try {
+      document.querySelectorAll('th[data-sal-sort]').forEach((th)=>{
+        const k = String(th.getAttribute('data-sal-sort') || '');
+        const baseText = th.dataset.baseText || th.textContent || '';
+        if(!th.dataset.baseText) th.dataset.baseText = baseText;
+        const active = (k === sortKey);
+        const arrow = active ? (sortDir === 'desc' ? ' ↓' : ' ↑') : '';
+        th.textContent = (th.dataset.baseText || '') + arrow;
+        if(active) th.classList.add('sal-th-sort-active');
+        else th.classList.remove('sal-th-sort-active');
+      });
+    } catch(_){ }
+  }
+
+  function apiBase(){
+    const m = document.querySelector('meta[name="crm-api-base"]');
+    const v = (m && m.getAttribute('content')) ? m.getAttribute('content') : '';
+    if (v) return v;
+    return pageBase() + '/api';
+  }
+
+  function apiFetch(url, options){
+    try {
+      if (window.crmApiFetch) return window.crmApiFetch(url, options);
+    } catch(_){ }
+    const o = Object.assign({}, (options || {}));
+    if (o.credentials === undefined) o.credentials = 'include';
+    return fetch(url, o);
+  }
+
+  function openModal(html){
+    try {
+      const b = document.getElementById('modal-body');
+      if (!b) return;
+      b.innerHTML = String(html || '');
+      try {
+        const m = document.getElementById('modal');
+        if(m){
+          const s = String(html || '');
+          const isWide = s.includes('salary-pay-detail');
+          const isNarrow = s.includes('salary-pin-modal');
+          const isPinAdminWide = s.includes('spn-open-reset');
+          if(isWide) m.setAttribute('data-size', 'wide');
+          else if(isPinAdminWide) m.setAttribute('data-size', 'pinwide');
+          else if(isNarrow) m.setAttribute('data-size', 'narrow');
+          else m.removeAttribute('data-size');
+        }
+      } catch(_){ }
+      window.dispatchEvent(new CustomEvent('open-modal'));
+    } catch (_){ }
+  }
+
+  function closeModal(){
+    try {
+      const b = document.getElementById('modal-body');
+      if (b) b.innerHTML = '';
+    } catch (_){ }
+    try {
+      const m = document.getElementById('modal');
+      if(m) m.removeAttribute('data-size');
+    } catch(_){ }
+    try { window.dispatchEvent(new CustomEvent('close-modal')); } catch (_){ }
+  }
+
+  async function openPinChangeModal(){
+    openModal(
+      '<div class="salary-modal salary-pin-modal">' +
+        '<div class="spn-root">' +
+          '<div class="spn-head">' +
+            '<h3 class="spn-title">Задать новый PIN</h3>' +
+          '</div>' +
+          '<label class="spn-label" id="spn-label-a">' +
+            '<span class="spn-label-row"><span>Новый PIN</span><span class="spn-req">*</span></span>' +
+            '<input id="spn-a" class="input" type="password" inputmode="numeric" maxlength="6" placeholder="6 цифр" />' +
+          '</label>' +
+          '<label class="spn-label" id="spn-label-b">' +
+            '<span class="spn-label-row"><span>Повторите PIN</span><span class="spn-req">*</span></span>' +
+            '<input id="spn-b" class="input" type="password" inputmode="numeric" maxlength="6" placeholder="6 цифр" />' +
+          '</label>' +
+          '<div id="spn-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>' +
+          '<div class="spn-actions">' +
+            '<button id="spn-cancel" class="btn-outline" type="button">Отмена</button>' +
+            '<button id="spn-save" class="btn" type="button">Сохранить</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    const aEl = document.getElementById('spn-a');
+    const bEl = document.getElementById('spn-b');
+    const errEl = document.getElementById('spn-error');
+    const cancelBtn = document.getElementById('spn-cancel');
+    const saveBtn = document.getElementById('spn-save');
+    const labelA = document.getElementById('spn-label-a');
+    const labelB = document.getElementById('spn-label-b');
+
+    function setErr(msg){
+      if(!errEl) return;
+      if(!msg){ errEl.style.display = 'none'; errEl.textContent = ''; return; }
+      errEl.style.display = 'block';
+      errEl.textContent = String(msg);
+    }
+    function setFieldErr(label, on){
+      try { if(!label) return; if(on) label.classList.add('is-error'); else label.classList.remove('is-error'); } catch(_){ }
+    }
+    function validate(){
+      setErr(null);
+      setFieldErr(labelA, false);
+      setFieldErr(labelB, false);
+      const a = String(aEl && aEl.value ? aEl.value : '').trim();
+      const b = String(bEl && bEl.value ? bEl.value : '').trim();
+      if(!/^\d{6}$/.test(a)){
+        setFieldErr(labelA, true);
+        setErr('PIN должен быть строго 6 цифр');
+        return null;
+      }
+      if(a !== b){
+        setFieldErr(labelB, true);
+        setErr('PIN не совпадает');
+        return null;
+      }
+      return a;
+    }
+
+    async function onSave(){
+      const pin = validate();
+      if(!pin) return;
+      try {
+        if(saveBtn) saveBtn.disabled = true;
+        const r = await apiFetch(apiBase() + '/salaries/password/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pin }),
+        });
+        if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+        const d = await r.json().catch(()=> ({}));
+        if(!d || !d.ok){
+          setErr('Не удалось обновить PIN');
+          return;
+        }
+        closeModal();
+        try { window.crmAlert && window.crmAlert('PIN обновлён', { title: 'Готово' }); } catch(_){ }
+      } catch(_e){
+        setErr('Ошибка сохранения');
+      } finally {
+        try { if(saveBtn) saveBtn.disabled = false; } catch(_){ }
+      }
+    }
+
+    try {
+      if(cancelBtn) cancelBtn.addEventListener('click', closeModal);
+      if(saveBtn) saveBtn.addEventListener('click', onSave);
+      if(aEl) aEl.addEventListener('input', ()=>{ setErr(null); setFieldErr(labelA,false); });
+      if(bEl) bEl.addEventListener('input', ()=>{ setErr(null); setFieldErr(labelB,false); });
+      if(bEl) bEl.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ e.preventDefault(); onSave(); } });
+    } catch(_){ }
+  }
+
+  async function resetPin(){
+    try {
+      const ok = (window.crmConfirm)
+        ? await window.crmConfirm('Сбросить PIN на 000000? Это действие доступно только администратору.', { title: 'Подтвердите действие', okText: 'Сбросить', danger: true })
+        : window.confirm('Сбросить PIN на 000000? Это действие доступно только администратору.');
+      if(!ok) return;
+      if(pinAdminBtn) pinAdminBtn.disabled = true;
+      const r = await apiFetch(apiBase() + '/salaries/password/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        try { window.crmAlert && window.crmAlert('Не удалось сбросить PIN. Попробуйте ещё раз.'); } catch(_){ }
+        return;
+      }
+      try { window.crmAlert && window.crmAlert('PIN сброшен на 000000', { title: 'Готово' }); } catch(_){ }
+    } catch(_e){
+      try { window.crmAlert && window.crmAlert('Ошибка сброса'); } catch(_){ }
+    } finally {
+      try { if(pinAdminBtn) pinAdminBtn.disabled = false; } catch(_){ }
+    }
+  }
+
+  async function openPinAdminModal(){
+    // combined modal (change + reset) for admin
+    openModal(
+      '<div class="salary-modal salary-pin-modal">' +
+        '<div class="spn-root">' +
+          '<div class="spn-head">' +
+            '<h3 class="spn-title">PIN-код раздела</h3>' +
+          '</div>' +
+          '<div class="spn-note">PIN действует для всех, вводится 1 раз на сессию</div>' +
+          '<div class="spn-actions" style="margin-top:12px;">' +
+            '<button id="spn-open-change" class="btn" type="button">Задать новый PIN</button>' +
+            '<button id="spn-open-reset" class="btn-danger" type="button">Сбросить на 000000</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+    try {
+      const b1 = document.getElementById('spn-open-change');
+      if(b1) b1.addEventListener('click', ()=>{ closeModal(); openPinChangeModal(); });
+      const b2 = document.getElementById('spn-open-reset');
+      if(b2) b2.addEventListener('click', async ()=>{ await resetPin(); closeModal(); });
+    } catch(_){ }
+  }
+
+  async function applyDash(){
+    try {
+      const v0 = String((dashMonthEl && dashMonthEl.value) || '').trim();
+      const v = v0 || currentYm();
+      const m = v ? (v + '-01').slice(0,7) : '';
+      if(!m){
+        try { if(dashRoot) dashRoot.style.display = 'none'; } catch(_){ }
+        return;
+      }
+      await loadDashboard(m);
+    } catch(_){ }
+  }
+
+  async function resetDash(){
+    try {
+      syncYm(currentYm());
+    } catch(_){ }
+    await applyDash();
+  }
+
+  function fmtRubPretty(v){
+    try {
+      if(v === null || v === undefined) return '—';
+      const raw = String(v).trim();
+      if(!raw) return '—';
+      const num = Number(raw.replace(/\s+/g,'').replace(',', '.'));
+      if (!Number.isFinite(num)) return '—';
+      const fixed = num.toFixed(2);
+      const parts = fixed.split('.');
+      const intPart = parts[0] || '0';
+      const fracPart = parts[1] || '00';
+      const neg = intPart.startsWith('-');
+      const digits = neg ? intPart.slice(1) : intPart;
+      let out = '';
+      for(let i=0;i<digits.length;i++){
+        const idxFromEnd = digits.length - i;
+        out += digits[i];
+        if(idxFromEnd > 1 && idxFromEnd % 3 === 1) out += ' ';
+      }
+      const s = (neg ? '-' : '') + out + ',' + fracPart;
+      return s + ' ₽';
+    } catch(_){
+      return '—';
+    }
+  }
+
+  function fmtDateRu(iso){
+    try {
+      const s = String(iso || '').trim();
+      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return s;
+      return m[3] + '.' + m[2] + '.' + m[1];
+    } catch(_){
+      return String(iso || '');
+    }
+  }
+
+  async function openPayoutModal(userId, userName, month){
+    const p = monthPeriod(month);
+    const periodStart = (p && p.start) ? p.start : null;
+    const periodEnd = (p && p.end) ? p.end : null;
+
+    openModal(
+      '<div class="salary-modal salary-pay-modal">' +
+        '<div class="spm-root">' +
+          '<div class="spm-head">' +
+            '<div>' +
+              '<h3 class="spm-title">Выплата — ' + String(userName || ('#' + String(userId))).replace(/</g,'&lt;') + '</h3>' +
+              '<div class="spm-sub">Период: <b>' + fmtDateRu(periodStart) + '—' + fmtDateRu(periodEnd) + '</b></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="spm-grid">' +
+            '<div class="spm-card">' +
+              '<div class="spm-k">Начислено за период</div>' +
+              '<div class="spm-v" id="spm-accrued">—</div>' +
+            '</div>' +
+            '<div class="spm-card">' +
+              '<div class="spm-k">Выплачено за период</div>' +
+              '<div class="spm-v" id="spm-paid">—</div>' +
+            '</div>' +
+            '<div class="spm-card">' +
+              '<div class="spm-k">Баланс до выплаты</div>' +
+              '<div class="spm-v" id="spm-balance">—</div>' +
+            '</div>' +
+            '<div class="spm-card spm-card-wide">' +
+              '<div class="spm-k">Баланс после выплаты</div>' +
+              '<div class="spm-v" id="spm-balance-after">—</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="spm-form">' +
+            '<label class="spm-label" id="spm-label-amount">' +
+              '<span class="spm-label-row"><span>Сумма выплаты</span><span class="spm-req">*</span></span>' +
+              '<input id="spm-amount" class="input" type="text" inputmode="decimal" placeholder="Например, 15000" />' +
+              '<div class="spm-quick">' +
+                '<button id="spm-quick-balance" class="btn-outline" type="button">Весь баланс</button>' +
+                '<button id="spm-quick-accrued" class="btn-outline" type="button">Начислено</button>' +
+              '</div>' +
+              '<div class="spm-hint">Можно частично</div>' +
+            '</label>' +
+            '<label class="spm-label">' +
+              'Комментарий' +
+              '<input id="spm-comment" class="input" type="text" placeholder="Например, аванс" />' +
+            '</label>' +
+            '<div id="spm-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>' +
+            '<div class="spm-actions">' +
+              '<button id="spm-cancel" class="btn-outline" type="button">Отмена</button>' +
+              '<button id="spm-confirm" class="btn" type="button">Подтвердить выплату</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    const accruedEl = document.getElementById('spm-accrued');
+    const paidEl = document.getElementById('spm-paid');
+    const balanceEl = document.getElementById('spm-balance');
+    const balanceAfterEl = document.getElementById('spm-balance-after');
+    const amountEl = document.getElementById('spm-amount');
+    const commentEl = document.getElementById('spm-comment');
+    const errEl = document.getElementById('spm-error');
+    const cancelBtn = document.getElementById('spm-cancel');
+    const confirmBtn = document.getElementById('spm-confirm');
+    const labelAmountEl = document.getElementById('spm-label-amount');
+    const quickBalanceBtn = document.getElementById('spm-quick-balance');
+    const quickAccruedBtn = document.getElementById('spm-quick-accrued');
+
+    let lastSummary = { accrued: null, paid: null, balance: null };
+
+    function setErr(msg){
+      if(!errEl) return;
+      if(!msg){ errEl.style.display = 'none'; errEl.textContent = ''; return; }
+      errEl.style.display = 'block';
+      errEl.textContent = String(msg);
+    }
+
+    function setAmountError(on){
+      try {
+        if(!labelAmountEl) return;
+        if(on) labelAmountEl.classList.add('is-error');
+        else labelAmountEl.classList.remove('is-error');
+      } catch(_){ }
+    }
+
+    try {
+      if(cancelBtn) cancelBtn.addEventListener('click', closeModal);
+    } catch(_){ }
+
+    // Load summary (authoritative)
+    try {
+      const url = apiBase() + '/salaries/' + encodeURIComponent(String(userId)) + '/summary?month=' + encodeURIComponent(month);
+      const r = await apiFetch(url);
+      if(r.status === 403){
+        window.location.href = pageBase() + '/salaries';
+        return;
+      }
+      const data = await r.json().catch(()=> ({}));
+      if(data && data.ok){
+        lastSummary = {
+          accrued: (data.accrued !== undefined && data.accrued !== null) ? String(data.accrued) : null,
+          paid: (data.paid !== undefined && data.paid !== null) ? String(data.paid) : null,
+          balance: (data.balance !== undefined && data.balance !== null) ? String(data.balance) : null,
+        };
+        try {
+          const aNum = moneyNum(data.accrued);
+          const pNum = moneyNum(data.paid);
+          const bNum = moneyNum(data.balance);
+          const aCls = (aNum < 0) ? 'neg' : 'pos';
+          const pCls = (pNum < 0) ? 'neg' : 'pos';
+          const bCls = (bNum < 0) ? 'neg' : 'pos';
+          if(accruedEl) accruedEl.innerHTML = '<span class="sal-pill ' + aCls + '">' + fmtRubPretty(data.accrued) + '</span>';
+          if(paidEl) paidEl.innerHTML = '<span class="sal-pill ' + pCls + '">' + fmtRubPretty(data.paid) + '</span>';
+          if(balanceEl) balanceEl.innerHTML = '<span class="sal-pill ' + bCls + '">' + fmtRubPretty(data.balance) + '</span>';
+        } catch(_){
+          if(accruedEl) accruedEl.textContent = fmtRubPretty(data.accrued);
+          if(paidEl) paidEl.textContent = fmtRubPretty(data.paid);
+          if(balanceEl) balanceEl.textContent = fmtRubPretty(data.balance);
+        }
+      }
+    } catch(_){ }
+
+    function parseMoney(v){
+      try {
+        const raw = String(v === null || v === undefined ? '' : v).trim().replace(/\s+/g,'').replace(',', '.');
+        if(!raw) return NaN;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : NaN;
+      } catch(_){
+        return NaN;
+      }
+    }
+
+    function updateBalanceAfter(){
+      if(!balanceAfterEl) return;
+      const bal = parseMoney(lastSummary.balance);
+      const amt = parseMoney(String(amountEl && amountEl.value ? amountEl.value : ''));
+      if(!Number.isFinite(bal)){
+        balanceAfterEl.textContent = '—';
+        return;
+      }
+      if(!Number.isFinite(amt) || amt <= 0){
+        const cls0 = (bal < 0) ? 'neg' : 'pos';
+        balanceAfterEl.innerHTML = '<span class="sal-pill ' + cls0 + '">' + fmtRubPretty(bal) + '</span>';
+        return;
+      }
+      const v1 = (bal - amt);
+      const cls1 = (v1 < 0) ? 'neg' : 'pos';
+      balanceAfterEl.innerHTML = '<span class="sal-pill ' + cls1 + '">' + fmtRubPretty(v1) + '</span>';
+    }
+
+    updateBalanceAfter();
+
+    async function onConfirm(){
+      setErr(null);
+      setAmountError(false);
+      const rawAmount = String(amountEl && amountEl.value ? amountEl.value : '').trim().replace(',', '.');
+      const amountNum = Number(rawAmount);
+      if(!rawAmount || !Number.isFinite(amountNum) || amountNum <= 0){
+        setAmountError(true);
+        setErr('Введите корректную сумму выплаты');
+        return;
+      }
+      const comment = String(commentEl && commentEl.value ? commentEl.value : '').trim();
+
+      try {
+        if(confirmBtn) confirmBtn.disabled = true;
+        const r = await apiFetch(apiBase() + '/salaries/payouts/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: Number(userId || 0),
+            month: month,
+            period_start: periodStart,
+            period_end: periodEnd,
+            amount: rawAmount,
+            comment: comment,
+          })
+        });
+        if(r.status === 403){
+          window.location.href = pageBase() + '/salaries';
+          return;
+        }
+        const data = await r.json().catch(()=> ({}));
+        if(!data || !data.ok){
+          setErr('Не удалось создать выплату');
+          return;
+        }
+        closeModal();
+        try {
+          const bal0 = parseMoney(lastSummary.balance);
+          const bal1 = Number.isFinite(bal0) ? (bal0 - amountNum) : NaN;
+          const lines = [
+            'Сотрудник: ' + String(userName || ('#' + String(userId))),
+            'Период: ' + fmtDateRu(periodStart) + '—' + fmtDateRu(periodEnd),
+            'Сумма: ' + fmtRubPretty(amountNum),
+          ];
+          if(Number.isFinite(bal0) && Number.isFinite(bal1)){
+            lines.push('Баланс: ' + fmtRubPretty(bal0) + ' → ' + fmtRubPretty(bal1));
+          }
+          window.crmAlert && window.crmAlert(lines.join('\n'), { title: 'Готово' });
+        } catch(_){ }
+        try { await load(); } catch(_){ }
+      } catch(_e){
+        setErr('Ошибка при создании выплаты');
+      } finally {
+        try { if(confirmBtn) confirmBtn.disabled = false; } catch(_){ }
+      }
+    }
+
+    try {
+      if(confirmBtn) confirmBtn.addEventListener('click', onConfirm);
+      if(amountEl) amountEl.addEventListener('input', ()=>{ setAmountError(false); setErr(null); updateBalanceAfter(); });
+      if(amountEl) amountEl.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ e.preventDefault(); onConfirm(); } });
+      if(quickBalanceBtn) quickBalanceBtn.addEventListener('click', ()=>{
+        const bal = parseMoney(lastSummary.balance);
+        if(!Number.isFinite(bal) || bal <= 0) return;
+        try { if(amountEl) amountEl.value = String(Math.round(bal)); } catch(_){ }
+        updateBalanceAfter();
+      });
+      if(quickAccruedBtn) quickAccruedBtn.addEventListener('click', ()=>{
+        const a = parseMoney(lastSummary.accrued);
+        if(!Number.isFinite(a) || a <= 0) return;
+        try { if(amountEl) amountEl.value = String(Math.round(a)); } catch(_){ }
+        updateBalanceAfter();
+      });
+    } catch(_){ }
+  }
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+
+  function monthPeriod(ym){
+    // ym: YYYY-MM
+    try{
+      const m = String(ym||'').match(/^(\d{4})-(\d{2})$/);
+      if(!m) return null;
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      if(!Number.isFinite(y) || !Number.isFinite(mo) || mo < 1 || mo > 12) return null;
+      const last = new Date(y, mo, 0).getDate();
+      const ps = y + '-' + pad2(mo) + '-01';
+      const pe = y + '-' + pad2(mo) + '-' + pad2(last);
+      return { start: ps, end: pe };
+    }catch(e){ return null; }
+  }
+
+  function setLoading(msg){
+    if(!body) return;
+    body.innerHTML = '<tr><td colspan="6" style="color:#667085; padding:14px;">' + String(msg || 'Загрузка…') + '</td></tr>';
+  }
+
+  function setError(msg){
+    if(!body) return;
+    body.innerHTML = '<tr><td colspan="6" style="color:#b42318; padding:14px;">' + String(msg || 'Ошибка') + '</td></tr>';
+  }
+
+  function setRows(items){
+    if(!body) return;
+    lastItems = Array.isArray(items) ? items : [];
+    updateTotals(lastItems);
+    if(!items || !items.length){
+      body.innerHTML = '<tr><td colspan="6" style="color:#667085; padding:14px;">Нет данных</td></tr>';
+      return;
+    }
+
+    function initials(name){
+      try{
+        const parts = String(name||'').trim().split(/\s+/).filter(Boolean);
+        const a = (parts[0]||'').slice(0,1).toUpperCase();
+        const b = (parts[1]||'').slice(0,1).toUpperCase();
+        return (a + b) || 'U';
+      }catch(e){ return 'U'; }
+    }
+
+    body.innerHTML = items.map((it)=>{
+      const rateRaw = (it && it.hour_rate !== undefined && it.hour_rate !== null) ? String(it.hour_rate).trim() : '';
+      const rateNum = rateRaw ? Number(rateRaw.replace(',', '.')) : 0;
+      const hasRate = !!rateRaw && Number.isFinite(rateNum) && rateNum > 0;
+      const uid = Number(it.user_id || 0);
+      const uname = String(it.name || ('#' + String(uid)));
+      const dev = Number(it.needs_review_total || 0) || 0;
+      const avatar = initials(uname);
+      const color = String((it && it.color) || '').trim();
+      const safeColor = (/^#[0-9a-fA-F]{6}$/.test(color)) ? color : '';
+      const balNum = parseNum(it.balance);
+      const balCls = (balNum < 0) ? 'neg' : 'pos';
+      const rateHtml = hasRate
+        ? ('<span class="sal-money">' + rateNum.toFixed(2) + ' ₽/ч</span>')
+        : ('<span class="sal-rate-missing">— <span class="sal-rate-note">ставка не задана</span></span>');
+      const accNum = parseNum(it.accrued);
+      const paidNum = parseNum(it.paid);
+      const accCls = (accNum < 0) ? 'neg' : 'pos';
+      const paidCls = (paidNum < 0) ? 'neg' : 'pos';
+      return (
+        '<tr class="sal-row" data-salary-user-row="' + String(uid) + '">' +
+          '<td data-label="Сотрудник">' +
+            '<div class="sal-user">' +
+              '<div class="sal-avatar"' + (safeColor ? (' style="background:' + safeColor + '22; color:' + safeColor + '; border:1px solid ' + safeColor + '33;"') : '') + '>' + avatar + '</div>' +
+              '<div class="sal-user-name"' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + ' title="' + uname.replace(/"/g,'&quot;') + '">' + uname + (dev > 0 ? (' <span class="sal-dev">⚠️ ' + String(dev) + '</span>') : '') + '</div>' +
+            '</div>' +
+          '</td>' +
+          '<td data-label="Ставка/час">' + rateHtml + '</td>' +
+          '<td data-label="Начислено"><span class="sal-pill ' + accCls + '">' + fmtRubPretty(it.accrued) + '</span></td>' +
+          '<td data-label="Выплачено"><span class="sal-pill ' + paidCls + '">' + fmtRubPretty(it.paid) + '</span></td>' +
+          '<td data-label="Баланс"><span class="sal-pill ' + balCls + '">' + fmtRubPretty(it.balance) + '</span></td>' +
+          '<td data-label="Действия" style="text-align:right;">' +
+            '<div class="sal-actions">' +
+              '<button class="sal-btn-pay" type="button" data-salary-pay-user-id="' + String(uid) + '" data-salary-pay-user-name="' + uname.replace(/"/g,'&quot;') + '">Выплатить</button>' +
+              '<button class="sal-btn-sec" type="button" data-salary-payouts-user-id="' + String(uid) + '" data-salary-payouts-user-name="' + uname.replace(/"/g,'&quot;') + '">История</button>' +
+              '<button class="sal-btn-sec" type="button" data-salary-shifts-user-id="' + String(uid) + '" data-salary-shifts-user-name="' + uname.replace(/"/g,'&quot;') + '">Смены</button>' +
+            '</div>' +
+          '</td>' +
+        '</tr>'
+      );
+    }).join('');
+
+    // Row click => shifts page (except when clicking action buttons)
+    try {
+      document.querySelectorAll('[data-salary-user-row]').forEach((tr)=>{
+        if(tr.dataset.boundRow === '1') return;
+        tr.dataset.boundRow = '1';
+        tr.addEventListener('click', (ev)=>{
+          try {
+            const t = ev && ev.target;
+            if (t && (t.closest && t.closest('button'))) return;
+          } catch(_){ }
+          const userId = Number(tr.dataset.salaryUserRow || 0);
+          if(!userId) return;
+          const v = String((monthEl && monthEl.value) || '').trim();
+          const month = v ? (v + '-01').slice(0,7) : '';
+          const url = pageBase() + '/salaries/' + encodeURIComponent(String(userId)) + '/shifts' + (month ? ('?month=' + encodeURIComponent(month)) : '');
+          window.location.href = url;
+        });
+      });
+    } catch(e) {}
+
+    try {
+      const buttons = document.querySelectorAll('[data-salary-pay-user-id]');
+      buttons.forEach((b)=>{
+        if(b.dataset.bound === '1') return;
+        b.dataset.bound = '1';
+        b.addEventListener('click', async ()=>{
+          const userId = Number(b.dataset.salaryPayUserId || 0);
+          const userName = String(b.dataset.salaryPayUserName || ('#' + String(userId)));
+          if(!userId) return;
+
+          const v = String((monthEl && monthEl.value) || '').trim();
+          const month = v ? (v + '-01').slice(0,7) : '';
+          if(!month){
+            try { window.crmAlert && window.crmAlert('Выберите месяц'); } catch(_) {}
+            return;
+          }
+          try {
+            b.disabled = true;
+            await openPayoutModal(userId, userName, month);
+          } catch(_){
+          } finally {
+            b.disabled = false;
+          }
+        });
+      });
+    } catch(e) {}
+
+    try {
+      const buttons = document.querySelectorAll('[data-salary-payouts-user-id]');
+      buttons.forEach((b)=>{
+        if(b.dataset.bound === '1') return;
+        b.dataset.bound = '1';
+        b.addEventListener('click', async ()=>{
+          const userName = String(b.dataset.salaryPayoutsUserName || '').trim();
+          if(!userName) return;
+          try { if(b) b.disabled = true; } catch(_){ }
+          try {
+            if(pjUserEl) pjUserEl.value = userName;
+            pjOffset = 0;
+            payoutsAutoApplied = true;
+            setActiveTab('payouts');
+            await applyPayouts();
+          } catch(_){
+          } finally {
+            try { if(b) b.disabled = false; } catch(_){ }
+          }
+        });
+      });
+    } catch(e) {}
+
+    try {
+      const buttons = document.querySelectorAll('[data-salary-shifts-user-id]');
+      buttons.forEach((b)=>{
+        if(b.dataset.bound === '1') return;
+        b.dataset.bound = '1';
+        b.addEventListener('click', async (ev)=>{
+          try { if(ev && ev.preventDefault) ev.preventDefault(); if(ev && ev.stopPropagation) ev.stopPropagation(); } catch(_){ }
+          const userId = Number(b.dataset.salaryShiftsUserId || 0);
+          const userName = String(b.dataset.salaryShiftsUserName || ('#' + String(userId)));
+          if(!userId) return;
+          const v = String((monthEl && monthEl.value) || '').trim();
+          const month = v ? (v + '-01').slice(0,7) : '';
+          if(!month){
+            try { window.crmAlert && window.crmAlert('Выберите месяц'); } catch(_) {}
+            return;
+          }
+          const url = pageBase() + '/salaries/' + encodeURIComponent(String(userId)) + '/shifts?month=' + encodeURIComponent(month);
+          window.location.href = url;
+        });
+      });
+    } catch(e) {}
+  }
+
+  async function load(){
+    try{
+      const v0 = String((monthEl && monthEl.value) || '').trim();
+      const v = v0 || currentYm();
+      const month = v ? (v + '-01').slice(0,7) : '';
+      setLoading('Загрузка…');
+      if(applyBtn) applyBtn.disabled = true;
+      const url = apiBase() + '/salaries/grid' + (month ? ('?month=' + encodeURIComponent(month)) : '');
+      const r = await apiFetch(url);
+      if(r.status === 403){
+        window.location.href = pageBase() + '/salaries';
+        return;
+      }
+      const data = await r.json().catch(()=> ({}));
+      if(!data || !data.ok){
+        setError('Не удалось загрузить данные');
+        return;
+      }
+      rawItems = Array.isArray(data.items) ? data.items : [];
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      updateSortHeaders();
+      setRows(sorted);
+    }catch(e){
+      setError('Ошибка загрузки');
+    }finally{
+      if(applyBtn) applyBtn.disabled = false;
+    }
+  }
+
+  // Sorting
+  try {
+    document.querySelectorAll('th[data-sal-sort]').forEach((th)=>{
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', ()=>{
+        const k = String(th.getAttribute('data-sal-sort') || '');
+        if(!k) return;
+        if(k === sortKey){
+          sortDir = (sortDir === 'asc') ? 'desc' : 'asc';
+        } else {
+          sortKey = k;
+          sortDir = 'asc';
+        }
+        const filtered = applyFilters(rawItems);
+        const sorted = sortItems(filtered);
+        updateSortHeaders();
+        setRows(sorted);
+      });
+    });
+  } catch(_){ }
+
+  // Filters + search
+  try {
+    if(qEl) qEl.addEventListener('input', ()=>{
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      setRows(sorted);
+    });
+    if(filterBalEl) filterBalEl.addEventListener('change', ()=>{
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      setRows(sorted);
+    });
+    if(filterDevEl) filterDevEl.addEventListener('change', ()=>{
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      setRows(sorted);
+    });
+  } catch(_){ }
+
+  function currentYm(){
+    const d = new Date();
+    return d.getFullYear().toString().padStart(4,'0') + '-' + String(d.getMonth()+1).padStart(2,'0');
+  }
+
+  function syncYm(ym){
+    const v = String(ym || '').trim();
+    if(!v) return;
+    try { if(monthEl) monthEl.value = v; } catch(_){ }
+    try { if(pjMonthEl) pjMonthEl.value = v; } catch(_){ }
+    try { if(dashMonthEl) dashMonthEl.value = v; } catch(_){ }
+  }
+
+  // init month + deep link params
+  let initialTab = 'dash';
+  try {
+    const sp = new URLSearchParams(String(window.location && window.location.search ? window.location.search : ''));
+    const tab = String(sp.get('tab') || '').trim();
+    const m = String(sp.get('month') || '').trim();
+    const userQ = String(sp.get('user_q') || '').trim();
+    const ym = m ? m.slice(0,7) : '';
+    if(tab === 'employees' || tab === 'payouts' || tab === 'dash') initialTab = tab;
+    syncYm(ym || currentYm());
+    if(userQ && pjUserEl) pjUserEl.value = userQ;
+  } catch(_){
+    syncYm(currentYm());
+  }
+
+  let payoutsAutoApplied = false;
+
+  function setActiveTab(tab){
+    const t = String(tab || 'dash');
+    const isDash = (t === 'dash');
+    const isEmp = (t === 'employees');
+    const isPay = (t === 'payouts');
+    try {
+      if(tabDashBtn){ tabDashBtn.classList.toggle('is-active', isDash); tabDashBtn.setAttribute('aria-selected', isDash ? 'true' : 'false'); }
+      if(tabEmployeesBtn){ tabEmployeesBtn.classList.toggle('is-active', isEmp); tabEmployeesBtn.setAttribute('aria-selected', isEmp ? 'true' : 'false'); }
+      if(tabPayoutsBtn){ tabPayoutsBtn.classList.toggle('is-active', isPay); tabPayoutsBtn.setAttribute('aria-selected', isPay ? 'true' : 'false'); }
+      if(panelDashEl) panelDashEl.classList.toggle('is-active', isDash);
+      if(panelEmployeesEl) panelEmployeesEl.classList.toggle('is-active', isEmp);
+      if(panelPayoutsEl) panelPayoutsEl.classList.toggle('is-active', isPay);
+    } catch(_){ }
+
+    // keep month synced across tabs
+    try {
+      let ym = '';
+      if(isDash) ym = String((dashMonthEl && dashMonthEl.value) || '').trim();
+      else if(isEmp) ym = String((monthEl && monthEl.value) || '').trim();
+      else if(isPay) ym = String((pjMonthEl && pjMonthEl.value) || '').trim();
+      if(ym) syncYm(ym);
+    } catch(_){ }
+
+    // update URL state (shareable)
+    try {
+      const ym = String((monthEl && monthEl.value) || '').trim();
+      const u = String((pjUserEl && pjUserEl.value) || '').trim();
+      const sp = new URLSearchParams();
+      sp.set('tab', t);
+      if(ym) sp.set('month', ym);
+      if(u) sp.set('user_q', u);
+      const qs = sp.toString();
+      const path = String(window.location && window.location.pathname ? window.location.pathname : '/crm/salaries');
+      if(window.history && window.history.replaceState) window.history.replaceState({}, '', path + (qs ? ('?' + qs) : ''));
+    } catch(_){ }
+
+    if(isPay){
+      try {
+        if(!payoutsAutoApplied){
+          payoutsAutoApplied = true;
+          applyPayouts();
+        }
+      } catch(_){ }
+    }
+  }
+
+  async function applyEmployees(){
+    try { await load(); } catch(_){ }
+  }
+
+  function rerenderEmployees(){
+    try {
+      const filtered = applyFilters(rawItems);
+      const sorted = sortItems(filtered);
+      setRows(sorted);
+    } catch(_){ }
+  }
+
+  function debounce(fn, ms){
+    let t = 0;
+    return function(){
+      try { if(t) clearTimeout(t); } catch(_){ }
+      const args = arguments;
+      t = setTimeout(()=>{ try { fn.apply(null, args); } catch(_){ } }, Number(ms||0) || 0);
+    };
+  }
+
+  async function resetEmployees(){
+    try {
+      syncYm(currentYm());
+      if(qEl) qEl.value = '';
+      if(filterBalEl) filterBalEl.checked = false;
+      if(filterDevEl) filterDevEl.checked = false;
+    } catch(_){ }
+    try { await load(); } catch(_){ }
+  }
+
+  async function applyPayouts(){
+    try {
+      pjOffset = 0;
+      const v0 = String((pjMonthEl && pjMonthEl.value) || '').trim();
+      const v = v0 || currentYm();
+      const m = v ? (v + '-01').slice(0,7) : '';
+      await loadPayoutsJournal(m);
+    } catch(_){ }
+  }
+
+  async function resetPayouts(){
+    try {
+      syncYm(currentYm());
+      if(pjUserEl) pjUserEl.value = '';
+      if(pjQEl) pjQEl.value = '';
+      if(pjLimitEl) pjLimitEl.value = '50';
+      pjOffset = 0;
+    } catch(_){ }
+    await applyPayouts();
+  }
+
+  // tabs
+  try {
+    if(tabDashBtn) tabDashBtn.addEventListener('click', ()=>setActiveTab('dash'));
+    if(tabEmployeesBtn) tabEmployeesBtn.addEventListener('click', ()=>setActiveTab('employees'));
+    if(tabPayoutsBtn) tabPayoutsBtn.addEventListener('click', ()=>setActiveTab('payouts'));
+  } catch(_){ }
+
+  // dashboards filters
+  try {
+    if(dashResetBtn) dashResetBtn.addEventListener('click', resetDash);
+    if(dashMonthEl) dashMonthEl.addEventListener('change', async ()=>{ await applyDash(); });
+  } catch(_){ }
+
+  // employees filters
+  try {
+    if(resetBtn) resetBtn.addEventListener('click', resetEmployees);
+    if(monthEl) monthEl.addEventListener('change', async ()=>{ await load(); });
+    const qDeb = debounce(()=>{ rerenderEmployees(); }, 350);
+    if(qEl) qEl.addEventListener('input', qDeb);
+    if(filterBalEl) filterBalEl.addEventListener('change', rerenderEmployees);
+    if(filterDevEl) filterDevEl.addEventListener('change', rerenderEmployees);
+  } catch(_){ }
+
+  // payouts controls
+  try {
+    if(pjResetBtn) pjResetBtn.addEventListener('click', resetPayouts);
+    if(pjLimitEl) pjLimitEl.addEventListener('change', async ()=>{ pjOffset = 0; await applyPayouts(); });
+    if(pjMonthEl) pjMonthEl.addEventListener('change', async ()=>{ pjOffset = 0; await applyPayouts(); });
+    const pjDeb = debounce(async ()=>{ pjOffset = 0; await applyPayouts(); }, 450);
+    if(pjUserEl) pjUserEl.addEventListener('input', pjDeb);
+    if(pjQEl) pjQEl.addEventListener('input', pjDeb);
+    if(pjPrevBtn) pjPrevBtn.addEventListener('click', async ()=>{ const lim = Number(pjLimitEl && pjLimitEl.value ? pjLimitEl.value : 50) || 50; pjOffset = Math.max(0, (pjOffset||0) - lim); await applyPayouts(); });
+    if(pjNextBtn) pjNextBtn.addEventListener('click', async ()=>{ const lim = Number(pjLimitEl && pjLimitEl.value ? pjLimitEl.value : 50) || 50; pjOffset = (pjOffset||0) + lim; await applyPayouts(); });
+    document.querySelectorAll('th[data-pj-sort]').forEach((th)=>{
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', async ()=>{
+        const k = String(th.getAttribute('data-pj-sort') || '');
+        if(!k) return;
+        if(k === pjSort) pjDir = (pjDir === 'asc') ? 'desc' : 'asc';
+        else { pjSort = k; pjDir = 'desc'; }
+        pjOffset = 0;
+        updatePjSortHeaders();
+        await applyPayouts();
+      });
+    });
+    updatePjSortHeaders();
+  } catch(_){ }
+
+  // PIN admin controls
+  try {
+    if(pinAdminBtn) pinAdminBtn.addEventListener('click', openPinAdminModal);
+  } catch(_){ }
+
+  try {
+    window.addEventListener('salary-grid-refresh', () => {
+      try { applyEmployees(); } catch(_) {}
+    });
+  } catch(_) {}
+
+  setActiveTab(initialTab);
+  // default current month is applied in all tabs
+  try { applyDash(); } catch(_){ }
+  try { applyEmployees(); } catch(_){ }
+  try { if(initialTab === 'payouts') applyPayouts(); } catch(_){ }
+})();
+</script>
+{% endblock %}

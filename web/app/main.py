@@ -4,11 +4,11 @@ import asyncio
 
 from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form, UploadFile, File, Header
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, FileResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jose import jwt, JWTError
-from datetime import datetime, timezone, timedelta, time
+from datetime import datetime, timezone, timedelta, time, date
 from typing import Optional, List
 import json
 import logging
@@ -16,16 +16,20 @@ import httpx
 import re
 import calendar
 
+from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
+
 from shared.config import settings
 from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus, PurchaseStatus
+from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus, PurchaseStatus, SalaryShiftState
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
 from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
 from shared.models import Purchase, PurchaseEvent
 from shared.models import WorkShiftDay
 from shared.models import ShiftInstance
+from shared.models import SalaryShiftStateRow
+from shared.models import SalaryAdjustment
 from shared.models import ShiftInstanceEvent
 from shared.models import ShiftSwapRequest
 from shared.models import Broadcast, BroadcastDelivery, BroadcastRating
@@ -92,6 +96,17 @@ from shared.services.shifts_domain import (
     normalize_shift_times as shared_normalize_shift_times,
 )
 
+from shared.services.salaries_pin import verify_salary_pin
+from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
+from shared.services.salaries_service import calc_user_period_totals
+from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
+from shared.services.salaries_service import calc_user_shifts, update_salary_shift_state, create_salary_adjustment
+from shared.services.salaries_calc import q2
+
+from shared.models import SalaryPayout
+from shared.models import SalaryPayoutAudit
+from shared.models import SalaryShiftAudit
+
 
 DEFAULT_SHIFT_START = time(10, 0)
 DEFAULT_SHIFT_END = time(18, 0)
@@ -103,6 +118,9 @@ MAX_PURCHASE_PHOTO_MB = 20
 MAX_PURCHASE_PHOTO_BYTES = MAX_PURCHASE_PHOTO_MB * 1024 * 1024
 
 MAX_TG_TEXT = 4096
+
+SALARY_PIN_COOKIE = "salary_pin_ok"
+SALARY_PIN_TTL_SECONDS = 72 * 60 * 60
 
 _TASK_REMIND_LAST_TS: dict[int, float] = {}
 
@@ -129,6 +147,36 @@ def _dt_msk_for_day_time(day, t: time) -> datetime:
         second=0,
         microsecond=0,
         tzinfo=MOSCOW_TZ,
+    )
+
+
+def _salary_pin_signer() -> TimestampSigner:
+    # Cookie contains only a signed marker. No PIN is stored client-side.
+    return TimestampSigner(str(getattr(settings, "WEB_JWT_SECRET", "") or ""))
+
+
+def _salary_pin_cookie_is_valid(request: Request) -> bool:
+    token = str(request.cookies.get(SALARY_PIN_COOKIE) or "").strip()
+    if not token:
+        return False
+    try:
+        val = _salary_pin_signer().unsign(token, max_age=int(SALARY_PIN_TTL_SECONDS))
+        return str(val.decode("utf-8")).strip() == "1"
+    except (BadSignature, SignatureExpired):
+        return False
+    except Exception:
+        return False
+
+
+def _salary_pin_set_cookie(resp: Response) -> None:
+    token = _salary_pin_signer().sign("1").decode("utf-8")
+    resp.set_cookie(
+        SALARY_PIN_COOKIE,
+        token,
+        max_age=int(SALARY_PIN_TTL_SECONDS),
+        httponly=True,
+        secure=False,
+        samesite="lax",
     )
 
 
@@ -2395,6 +2443,1630 @@ async def purchases_board(request: Request, admin_id: int = Depends(require_admi
     )
 
 
+# ========== Salaries (CRM) ==========
+
+
+@app.get("/salaries", response_class=HTMLResponse, name="salaries_page")
+@app.get("/crm/salaries", response_class=HTMLResponse)
+async def salaries_page(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+
+    if not _salary_pin_cookie_is_valid(request):
+        return templates.TemplateResponse(
+            "salaries/pin.html",
+            {
+                "request": request,
+                "actor": actor,
+                "base_template": "base.html",
+                "is_admin": is_admin,
+                "is_manager": is_manager,
+            },
+        )
+
+    return templates.TemplateResponse(
+        "salaries/index.html",
+        {
+            "request": request,
+            "actor": actor,
+            "base_template": "base.html",
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+        },
+    )
+
+
+@app.get("/salaries/shifts/modal", response_class=HTMLResponse, name="salaries_shifts_modal")
+@app.get("/crm/salaries/shifts/modal", response_class=HTMLResponse)
+async def salaries_shifts_modal(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        user_id = int(request.query_params.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    try:
+        logger.info(
+            "salaries_api_payouts_list",
+            extra={"user_id": int(user_id), "limit": int(limit), "offset": int(offset)},
+        )
+    except Exception:
+        pass
+
+    month = str(request.query_params.get("month") or "").strip()
+
+    u = (await session.execute(select(User).where(User.id == int(user_id)).where(User.is_deleted == False))).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(status_code=404)
+
+    fio = (
+        " ".join([
+            str(getattr(u, "first_name", "") or "").strip(),
+            str(getattr(u, "last_name", "") or "").strip(),
+        ]).strip()
+        or str(getattr(u, "username", "") or "").strip()
+        or f"#{int(user_id)}"
+    )
+
+    return templates.TemplateResponse(
+        "salaries/shifts_modal.html",
+        {
+            "request": request,
+            "base_template": "base.html",
+            "user_id": int(user_id),
+            "user_name": fio,
+            "month": month,
+        },
+    )
+
+
+@app.get("/crm/salaries/{user_id}/shifts", response_class=HTMLResponse)
+@app.get("/salaries/{user_id}/shifts", response_class=HTMLResponse)
+async def salaries_user_shifts_page(
+    user_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    if not _salary_pin_cookie_is_valid(request):
+        return RedirectResponse(url="/crm/salaries", status_code=302)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        y, mo = _parse_month_ym(None)
+    month = f"{int(y):04d}-{int(mo):02d}"
+
+    try:
+        logger.info("salaries_user_shifts_page render", extra={"user_id": int(user_id), "month": month})
+    except Exception:
+        pass
+
+    u = (
+        await session.execute(
+            select(User)
+            .where(User.id == int(user_id))
+            .where(User.is_deleted == False)
+        )
+    ).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(status_code=404)
+
+    fio = (
+        " ".join(
+            [
+                str(getattr(u, "first_name", "") or "").strip(),
+                str(getattr(u, "last_name", "") or "").strip(),
+            ]
+        ).strip()
+        or str(getattr(u, "username", "") or "").strip()
+        or f"#{int(user_id)}"
+    )
+
+    return templates.TemplateResponse(
+        "salaries/shifts_page.html",
+        {
+            "request": request,
+            "base_template": "base.html",
+            "user_id": int(user_id),
+            "user_name": fio,
+            "user_color": str(getattr(u, "color", "") or "") or None,
+            "month": month,
+            "is_admin": is_admin,
+            "is_manager": is_manager,
+        },
+    )
+
+
+@app.post("/api/salaries/pin/verify")
+@app.post("/crm/api/salaries/pin/verify")
+async def salaries_api_pin_verify(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+    pin = str(body.get("pin") or "").strip()
+
+    ok = await verify_salary_pin(session=session, pin=pin)
+    if not ok:
+        return {"ok": False}
+
+    resp = JSONResponse({"ok": True})
+    _salary_pin_set_cookie(resp)
+    return resp
+
+
+@app.post("/api/salaries/password/update")
+@app.post("/crm/api/salaries/password/update")
+async def salaries_api_password_update(
+    request: Request,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+    pin = str(body.get("password") or body.get("pin") or "").strip()
+    try:
+        await set_salary_pin(session=session, new_pin=pin, updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid_pin"}, status_code=422)
+    return {"ok": True}
+
+
+@app.post("/api/salaries/password/reset")
+@app.post("/crm/api/salaries/password/reset")
+async def salaries_api_password_reset(
+    request: Request,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    await reset_salary_pin(session=session, updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None)
+    return {"ok": True}
+
+
+def _parse_month_ym(raw: str | None) -> tuple[int, int]:
+    s = str(raw or "").strip()
+    if not s:
+        now = datetime.now(MOSCOW_TZ)
+        return int(now.year), int(now.month)
+    m = re.match(r"^(\d{4})-(\d{2})$", s)
+    if not m:
+        raise ValueError("bad_month")
+    y = int(m.group(1))
+    mo = int(m.group(2))
+    if mo < 1 or mo > 12:
+        raise ValueError("bad_month")
+    return y, mo
+
+
+def _month_period(y: int, m: int) -> tuple[date, date]:
+    last = int(calendar.monthrange(int(y), int(m))[1])
+    return date(int(y), int(m), 1), date(int(y), int(m), int(last))
+
+
+@app.get("/api/salaries/grid")
+@app.get("/crm/api/salaries/grid")
+async def salaries_api_grid(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(y, mo)
+
+    res = await session.execute(
+        select(User)
+        .where(User.is_deleted == False)
+        .where(User.status == UserStatus.APPROVED)
+        .order_by(User.first_name, User.last_name, User.id)
+    )
+    users = list(res.scalars().all())
+
+    items: list[dict] = []
+    for u in users:
+        uid = int(getattr(u, "id", 0) or 0)
+        if uid <= 0:
+            continue
+        totals = await calc_user_period_totals(
+            session=session,
+            user_id=uid,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        fio = (" ".join([str(getattr(u, "first_name", "") or "").strip(), str(getattr(u, "last_name", "") or "").strip()]).strip())
+        hour_rate_val = getattr(u, "hour_rate", None)
+        if hour_rate_val is None:
+            try:
+                rk = getattr(u, "rate_k", None)
+                if rk is not None:
+                    hour_rate_val = Decimal(int(rk))
+            except Exception:
+                pass
+        hour_rate_s = None
+        try:
+            if hour_rate_val is not None:
+                hour_rate_s = f"{Decimal(str(hour_rate_val)):.2f}"
+        except Exception:
+            hour_rate_s = (str(hour_rate_val) or None) if hour_rate_val is not None else None
+
+        items.append(
+            {
+                "user_id": uid,
+                "name": fio or str(getattr(u, "username", "") or "") or f"#{uid}",
+                "color": str(getattr(u, "color", "") or "") or None,
+                "hour_rate": hour_rate_s,
+                "accrued": f"{totals.accrued:.2f}",
+                "paid": f"{totals.paid:.2f}",
+                "balance": f"{totals.balance:.2f}",
+                "needs_review_total": int(getattr(totals, "needs_review_total", 0) or 0),
+            }
+        )
+
+    return {
+        "ok": True,
+        "month": f"{int(y):04d}-{int(mo):02d}",
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "items": items,
+    }
+
+
+@app.get("/api/salaries/dashboard")
+@app.get("/crm/api/salaries/dashboard")
+async def salaries_api_dashboard(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(int(y), int(mo))
+
+    # load users (same set as grid)
+    res = await session.execute(
+        select(User)
+        .where(User.is_deleted == False)
+        .where(User.status == UserStatus.APPROVED)
+        .order_by(User.first_name, User.last_name, User.id)
+    )
+    users = list(res.scalars().all())
+
+    # KPI based on existing calculation function (authoritative)
+    grid_items: list[dict] = []
+    sum_accrued = Decimal("0")
+    sum_paid = Decimal("0")
+    sum_positive_balance = Decimal("0")
+    sum_negative_balance_abs = Decimal("0")
+    count_needs_review = 0
+
+    no_rate: list[dict] = []
+
+    # series by day
+    accrued_by_day: dict[str, Decimal] = {}
+    count_needs_review_by_day: dict[str, int] = {}
+
+    for u in users:
+        uid = int(getattr(u, "id", 0) or 0)
+        if uid <= 0:
+            continue
+        totals = await calc_user_period_totals(
+            session=session,
+            user_id=uid,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        fio = (
+            " ".join(
+                [
+                    str(getattr(u, "first_name", "") or "").strip(),
+                    str(getattr(u, "last_name", "") or "").strip(),
+                ]
+            ).strip()
+        )
+        name = fio or str(getattr(u, "username", "") or "") or f"#{uid}"
+
+        hour_rate_val = getattr(u, "hour_rate", None)
+        if hour_rate_val is None:
+            try:
+                rk = getattr(u, "rate_k", None)
+                if rk is not None:
+                    hour_rate_val = Decimal(int(rk))
+            except Exception:
+                pass
+        totals_accrued_raw = getattr(totals, "accrued", None)
+        totals_paid_raw = getattr(totals, "paid", None)
+        totals_balance_raw = getattr(totals, "balance", None)
+        try:
+            totals_accrued = Decimal(str(totals_accrued_raw if totals_accrued_raw is not None else 0))
+        except Exception:
+            totals_accrued = Decimal("0")
+        try:
+            totals_paid = Decimal(str(totals_paid_raw if totals_paid_raw is not None else 0))
+        except Exception:
+            totals_paid = Decimal("0")
+        try:
+            totals_balance = Decimal(str(totals_balance_raw if totals_balance_raw is not None else 0))
+        except Exception:
+            totals_balance = Decimal("0")
+
+        if hour_rate_val is None:
+            no_rate.append({"user_id": uid, "name": name, "balance": f"{q2(totals_balance):.2f}"})
+
+        sum_accrued += q2(totals_accrued)
+        sum_paid += q2(totals_paid)
+        bal = q2(totals_balance)
+        if bal > 0:
+            sum_positive_balance += bal
+        elif bal < 0:
+            sum_negative_balance_abs += q2(abs(bal))
+        count_needs_review += int(getattr(totals, "needs_review_total", 0) or 0)
+
+        grid_items.append(
+            {
+                "user_id": uid,
+                "name": name,
+                "balance": f"{bal:.2f}",
+                "needs_review_total": int(getattr(totals, "needs_review_total", 0) or 0),
+            }
+        )
+
+        # accrue by day: compute per-user shifts (keeps calc logic intact)
+        try:
+            shifts_calc = await calc_user_shifts(
+                session=session,
+                user_id=uid,
+                period_start=period_start,
+                period_end=period_end,
+            )
+            for s in shifts_calc:
+                day = str(getattr(s, "day", "") or "")
+                if not day:
+                    continue
+                amt = q2(Decimal(getattr(s, "total_amount", Decimal("0")) or Decimal("0")))
+                accrued_by_day[day] = q2(accrued_by_day.get(day, Decimal("0")) + amt)
+                if bool(getattr(s, "needs_review", False)):
+                    count_needs_review_by_day[day] = int(count_needs_review_by_day.get(day, 0)) + 1
+        except Exception:
+            pass
+
+    # adjustments stats for month (count + plus/minus)
+    adj_count = 0
+    adj_plus = Decimal("0")
+    adj_minus = Decimal("0")
+    try:
+        adj_rows = list(
+            (
+                await session.execute(
+                    select(SalaryAdjustment.delta_amount)
+                    .join(ShiftInstance, ShiftInstance.id == SalaryAdjustment.shift_id)
+                    .where(ShiftInstance.day >= period_start)
+                    .where(ShiftInstance.day <= period_end)
+                )
+            ).all()
+        )
+        for r in adj_rows:
+            try:
+                v = q2(Decimal(r[0]))
+            except Exception:
+                continue
+            adj_count += 1
+            if v > 0:
+                adj_plus += v
+            elif v < 0:
+                adj_minus += q2(abs(v))
+    except Exception:
+        pass
+
+    # payouts series for month (by created_at day, only payouts for this period)
+    paid_by_day: dict[str, Decimal] = {}
+    try:
+        payouts = list(
+            (
+                await session.execute(
+                    select(SalaryPayout)
+                    .where(SalaryPayout.period_start == period_start)
+                    .where(SalaryPayout.period_end == period_end)
+                    .order_by(SalaryPayout.created_at.asc(), SalaryPayout.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for p in payouts:
+            try:
+                dt = getattr(p, "created_at", None)
+                day = str(dt.date()) if dt is not None else ""
+                if not day:
+                    continue
+                amt = q2(Decimal(getattr(p, "amount", Decimal("0")) or Decimal("0")))
+                paid_by_day[day] = q2(paid_by_day.get(day, Decimal("0")) + amt)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    top_balance = sorted(
+        [x for x in grid_items if Decimal(str(x.get("balance") or "0")) > 0],
+        key=lambda x: Decimal(str(x.get("balance") or "0")),
+        reverse=True,
+    )[:5]
+    top_needs_review = sorted(grid_items, key=lambda x: int(x.get("needs_review_total") or 0), reverse=True)[:5]
+    negative_balance = sorted(
+        [x for x in grid_items if Decimal(str(x.get("balance") or "0")) < 0],
+        key=lambda x: Decimal(str(x.get("balance") or "0")),
+    )
+
+    def _series_from_map(m: dict[str, Decimal]) -> list[dict]:
+        return [
+            {"day": k, "amount": f"{q2(Decimal(v)):.2f}"}
+            for k, v in sorted(m.items(), key=lambda kv: kv[0])
+        ]
+
+    def _series_int_from_map(m: dict[str, int]) -> list[dict]:
+        return [{"day": k, "count": int(v)} for k, v in sorted(m.items(), key=lambda kv: kv[0])]
+
+    month_ru = [
+        "Январь",
+        "Февраль",
+        "Март",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Июль",
+        "Август",
+        "Сентябрь",
+        "Октябрь",
+        "Ноябрь",
+        "Декабрь",
+    ][int(mo) - 1]
+
+    return {
+        "ok": True,
+        "month": f"{int(y):04d}-{int(mo):02d}",
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "period_label": f"{month_ru} {int(y)}",
+        "kpi": {
+            "sum_accrued": f"{q2(sum_accrued):.2f}",
+            "sum_paid": f"{q2(sum_paid):.2f}",
+            "sum_positive_balance": f"{q2(sum_positive_balance):.2f}",
+            "sum_negative_balance_abs": f"{q2(sum_negative_balance_abs):.2f}",
+            "count_needs_review": int(count_needs_review),
+            "adjustments": {
+                "count": int(adj_count),
+                "plus": f"{q2(adj_plus):.2f}",
+                "minus": f"{q2(adj_minus):.2f}",
+            },
+        },
+        "series": {
+            "accrued_by_day": _series_from_map(accrued_by_day),
+            "paid_by_day": _series_from_map(paid_by_day),
+            "needs_review_by_day": _series_int_from_map(count_needs_review_by_day),
+        },
+        "lists": {
+            "top_balance": top_balance,
+            "top_needs_review": top_needs_review,
+            "no_rate": no_rate,
+            "negative_balance": negative_balance,
+        },
+    }
+
+
+@app.get("/api/salaries/payouts")
+@app.get("/crm/api/salaries/payouts")
+async def salaries_api_payouts_journal(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    month = str(request.query_params.get("month") or "").strip()
+    user_id_raw = str(request.query_params.get("user_id") or "").strip()
+    user_q = str(request.query_params.get("user_q") or "").strip()
+    q = str(request.query_params.get("q") or "").strip()
+    sort = str(request.query_params.get("sort") or "created_at").strip()
+    dir_raw = str(request.query_params.get("dir") or "desc").strip().lower()
+    limit_raw = str(request.query_params.get("limit") or "50").strip()
+    offset_raw = str(request.query_params.get("offset") or "0").strip()
+
+    try:
+        limit = max(1, min(200, int(limit_raw)))
+        offset = max(0, int(offset_raw))
+    except Exception:
+        limit = 50
+        offset = 0
+
+    try:
+        user_id = int(user_id_raw) if user_id_raw else 0
+    except Exception:
+        user_id = 0
+
+    period_start = None
+    period_end = None
+    if month:
+        try:
+            y, mo = _parse_month_ym(month)
+            period_start, period_end = _month_period(int(y), int(mo))
+        except Exception:
+            raise HTTPException(status_code=400)
+
+    query = select(SalaryPayout).options(selectinload(SalaryPayout.user), selectinload(SalaryPayout.created_by_user))
+    if user_id > 0:
+        query = query.where(SalaryPayout.user_id == int(user_id))
+    if period_start is not None and period_end is not None:
+        query = query.where(SalaryPayout.period_start == period_start).where(SalaryPayout.period_end == period_end)
+    if user_q:
+        import re
+        from sqlalchemy import and_, or_
+
+        uq_raw = " ".join(str(user_q).strip().split())
+        parts = [p for p in re.split(r"\s+", uq_raw) if p]
+        if parts:
+            query = query.join(User, User.id == SalaryPayout.user_id).where(User.is_deleted == False)
+            full_name = func.concat_ws(
+                " ",
+                func.coalesce(User.first_name, ""),
+                func.coalesce(User.last_name, ""),
+            )
+            full_name_rev = func.concat_ws(
+                " ",
+                func.coalesce(User.last_name, ""),
+                func.coalesce(User.first_name, ""),
+            )
+            conds = []
+            for p in parts:
+                pat = f"%{p}%"
+                conds.append(
+                    or_(
+                        User.first_name.ilike(pat),
+                        User.last_name.ilike(pat),
+                        full_name.ilike(pat),
+                        full_name_rev.ilike(pat),
+                    )
+                )
+            if conds:
+                query = query.where(and_(*conds))
+    if q:
+        query = query.where(SalaryPayout.comment.ilike(f"%{q}%"))
+
+    desc = dir_raw != "asc"
+    if sort == "amount":
+        query = query.order_by(SalaryPayout.amount.desc() if desc else SalaryPayout.amount.asc(), SalaryPayout.created_at.desc())
+    elif sort == "user":
+        query = query.order_by(SalaryPayout.user_id.desc() if desc else SalaryPayout.user_id.asc(), SalaryPayout.created_at.desc())
+    else:
+        query = query.order_by(SalaryPayout.created_at.desc() if desc else SalaryPayout.created_at.asc(), SalaryPayout.id.desc())
+
+    total = None
+    try:
+        total = int(
+            (
+                await session.execute(
+                    select(func.count()).select_from(query.subquery())
+                )
+            ).scalar_one()
+        )
+    except Exception:
+        total = None
+
+    rows = list((await session.execute(query.limit(int(limit)).offset(int(offset)))).scalars().all())
+    items: list[dict] = []
+    for p in rows:
+        u = getattr(p, "user", None)
+        actor = getattr(p, "created_by_user", None)
+        uname = (
+            " ".join([
+                str(getattr(u, "first_name", "") or "").strip(),
+                str(getattr(u, "last_name", "") or "").strip(),
+            ]).strip() if u is not None else ""
+        )
+        if not uname:
+            uname = f"#{int(getattr(p, 'user_id', 0) or 0)}"
+        aname = (
+            " ".join([
+                str(getattr(actor, "first_name", "") or "").strip(),
+                str(getattr(actor, "last_name", "") or "").strip(),
+            ]).strip() if actor is not None else ""
+        )
+        items.append(
+            {
+                "id": int(getattr(p, "id", 0) or 0),
+                "created_at": str(getattr(p, "created_at", "") or ""),
+                "user_id": int(getattr(p, "user_id", 0) or 0),
+                "user_name": uname,
+                "user_color": (str(getattr(u, "color", "") or "") if u is not None else "") or None,
+                "period_start": str(getattr(p, "period_start", "") or ""),
+                "period_end": str(getattr(p, "period_end", "") or ""),
+                "amount": str(getattr(p, "amount", "") or ""),
+                "actor_user_id": int(getattr(p, "created_by_user_id", 0) or 0) or None,
+                "actor_name": aname or None,
+                "comment": (str(getattr(p, "comment", "") or "") or None),
+            }
+        )
+
+    return {"ok": True, "items": items, "limit": int(limit), "offset": int(offset), "total": total}
+
+
+@app.get("/api/salaries/payouts/{payout_id:int}")
+@app.get("/crm/api/salaries/payouts/{payout_id:int}")
+async def salaries_api_payout_detail(
+    payout_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    p = (
+        await session.execute(
+            select(SalaryPayout)
+            .where(SalaryPayout.id == int(payout_id))
+            .options(selectinload(SalaryPayout.user), selectinload(SalaryPayout.created_by_user))
+        )
+    ).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=404)
+
+    audit = (
+        await session.execute(
+            select(SalaryPayoutAudit)
+            .where(SalaryPayoutAudit.payout_id == int(payout_id))
+            .order_by(SalaryPayoutAudit.created_at.desc(), SalaryPayoutAudit.id.desc())
+        )
+    ).scalars().first()
+
+    u = getattr(p, "user", None)
+    actor = getattr(p, "created_by_user", None)
+    uname = (
+        " ".join([
+            str(getattr(u, "first_name", "") or "").strip(),
+            str(getattr(u, "last_name", "") or "").strip(),
+        ]).strip() if u is not None else ""
+    )
+    if not uname:
+        uname = f"#{int(getattr(p, 'user_id', 0) or 0)}"
+    aname = (
+        " ".join([
+            str(getattr(actor, "first_name", "") or "").strip(),
+            str(getattr(actor, "last_name", "") or "").strip(),
+        ]).strip() if actor is not None else ""
+    )
+
+    return {
+        "ok": True,
+        "payout": {
+            "id": int(getattr(p, "id", 0) or 0),
+            "created_at": str(getattr(p, "created_at", "") or ""),
+            "user_id": int(getattr(p, "user_id", 0) or 0),
+            "user_name": uname,
+            "user_color": (str(getattr(u, "color", "") or "") if u is not None else "") or None,
+            "period_start": str(getattr(p, "period_start", "") or ""),
+            "period_end": str(getattr(p, "period_end", "") or ""),
+            "amount": str(getattr(p, "amount", "") or ""),
+            "actor_user_id": int(getattr(p, "created_by_user_id", 0) or 0) or None,
+            "actor_name": aname or None,
+            "comment": (str(getattr(p, "comment", "") or "") or None),
+        },
+        "audit": {
+            "before": getattr(audit, "before", None) if audit is not None else None,
+            "after": getattr(audit, "after", None) if audit is not None else None,
+            "meta": getattr(audit, "meta", None) if audit is not None else None,
+            "created_at": str(getattr(audit, "created_at", "") or "") if audit is not None else None,
+        },
+    }
+
+
+@app.get("/api/salaries/adjustments/stats")
+@app.get("/crm/api/salaries/adjustments/stats")
+async def salaries_api_adjustments_stats(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(int(y), int(mo))
+
+    # aggregate adjustments by user
+    plus = Decimal("0")
+    minus = Decimal("0")
+    count = 0
+    by_user: dict[int, dict] = {}
+    try:
+        rows = list(
+            (
+                await session.execute(
+                    select(ShiftInstance.user_id, SalaryAdjustment.delta_amount)
+                    .join(ShiftInstance, ShiftInstance.id == SalaryAdjustment.shift_id)
+                    .where(ShiftInstance.day >= period_start)
+                    .where(ShiftInstance.day <= period_end)
+                )
+            ).all()
+        )
+        for r in rows:
+            uid = int(r[0] or 0)
+            try:
+                v = q2(Decimal(r[1]))
+            except Exception:
+                continue
+            count += 1
+            if v > 0:
+                plus += v
+            elif v < 0:
+                minus += q2(abs(v))
+            st = by_user.get(uid)
+            if st is None:
+                st = {"user_id": uid, "count": 0, "plus": Decimal("0"), "minus": Decimal("0")}
+                by_user[uid] = st
+            st["count"] = int(st["count"]) + 1
+            if v > 0:
+                st["plus"] = q2(Decimal(st["plus"]) + v)
+            elif v < 0:
+                st["minus"] = q2(Decimal(st["minus"]) + q2(abs(v)))
+    except Exception:
+        pass
+
+    # resolve names for top
+    user_ids = [int(x) for x in by_user.keys() if int(x) > 0]
+    names: dict[int, str] = {}
+    if user_ids:
+        res = await session.execute(select(User).where(User.id.in_([int(x) for x in user_ids])))
+        for u in list(res.scalars().all()):
+            uid = int(getattr(u, "id", 0) or 0)
+            fio = (
+                " ".join(
+                    [
+                        str(getattr(u, "first_name", "") or "").strip(),
+                        str(getattr(u, "last_name", "") or "").strip(),
+                    ]
+                ).strip()
+            )
+            names[uid] = fio or str(getattr(u, "username", "") or "") or f"#{uid}"
+
+    top = sorted(by_user.values(), key=lambda x: int(x.get("count") or 0), reverse=True)[:10]
+    top_out = [
+        {
+            "user_id": int(x["user_id"]),
+            "name": names.get(int(x["user_id"]), f"#{int(x['user_id'])}"),
+            "count": int(x["count"]),
+            "plus": f"{q2(Decimal(x['plus'])):.2f}",
+            "minus": f"{q2(Decimal(x['minus'])):.2f}",
+        }
+        for x in top
+    ]
+
+    return {
+        "ok": True,
+        "month": f"{int(y):04d}-{int(mo):02d}",
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "count": int(count),
+        "plus": f"{q2(plus):.2f}",
+        "minus": f"{q2(minus):.2f}",
+        "top": top_out,
+    }
+
+
+@app.get("/api/salaries/{user_id}/summary")
+@app.get("/crm/api/salaries/{user_id}/summary")
+async def salaries_api_user_summary(
+    user_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(int(y), int(mo))
+
+    u = (
+        await session.execute(
+            select(User)
+            .where(User.id == int(user_id))
+            .where(User.is_deleted == False)
+        )
+    ).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(status_code=404)
+
+    fio = (
+        " ".join(
+            [
+                str(getattr(u, "first_name", "") or "").strip(),
+                str(getattr(u, "last_name", "") or "").strip(),
+            ]
+        ).strip()
+        or str(getattr(u, "username", "") or "").strip()
+        or f"#{int(user_id)}"
+    )
+
+    hour_rate_val = None
+    try:
+        hour_rate_val = getattr(u, "hour_rate", None)
+    except Exception:
+        hour_rate_val = None
+    if hour_rate_val is None:
+        try:
+            rk = getattr(u, "rate_k", None)
+            if rk is not None:
+                hour_rate_val = Decimal(int(rk))
+        except Exception:
+            pass
+    hour_rate_s = None
+    try:
+        if hour_rate_val is not None:
+            hour_rate_s = f"{Decimal(str(hour_rate_val)):.2f}"
+    except Exception:
+        hour_rate_s = (str(hour_rate_val) or None) if hour_rate_val is not None else None
+
+    totals = await calc_user_period_totals(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    shifts_calc = await calc_user_shifts(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    shifts_total = int(len(shifts_calc))
+    needs_review_total = int(sum((1 for s in shifts_calc if bool(getattr(s, "needs_review", False))), 0))
+
+    position_ru = ""
+    try:
+        position_ru = (
+            u.position.value
+            if hasattr(u.position, "value")
+            else (str(u.position) if u.position is not None else "")
+        )
+    except Exception:
+        position_ru = ""
+
+    try:
+        logger.info(
+            "salaries_api_user_summary",
+            extra={
+                "user_id": int(user_id),
+                "month": f"{int(y):04d}-{int(mo):02d}",
+                "shifts_total": int(shifts_total),
+                "needs_review_total": int(needs_review_total),
+            },
+        )
+    except Exception:
+        pass
+
+    # stable contract + backward-compatible top-level fields for current frontend
+    return {
+        "ok": True,
+        "user": {
+            "id": int(user_id),
+            "full_name": fio,
+            "role": position_ru or None,
+            "color": str(getattr(u, "color", "") or "") or None,
+            "hour_rate": hour_rate_s,
+        },
+        "month": f"{int(y):04d}-{int(mo):02d}",
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "counts": {"shifts_total": shifts_total, "needs_review": needs_review_total},
+        "totals": {
+            "accrued": f"{totals.accrued:.2f}",
+            "paid": f"{totals.paid:.2f}",
+            "balance": f"{totals.balance:.2f}",
+        },
+        "position_ru": position_ru or None,
+        "position": position_ru or None,
+        "hour_rate": hour_rate_s,
+        "shifts_total": shifts_total,
+        "needs_review_total": needs_review_total,
+        "accrued": f"{totals.accrued:.2f}",
+        "paid": f"{totals.paid:.2f}",
+        "balance": f"{totals.balance:.2f}",
+    }
+
+
+@app.get("/api/salaries/shifts/list")
+@app.get("/crm/api/salaries/shifts/list")
+async def salaries_api_shifts_list(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        user_id = int(request.query_params.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    try:
+        y, mo = _parse_month_ym(request.query_params.get("month"))
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(y, mo)
+
+    shifts_calc = await calc_user_shifts(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+
+    try:
+        logger.info(
+            "salaries_api_shifts_list",
+            extra={"user_id": int(user_id), "month": f"{int(y):04d}-{int(mo):02d}", "items": int(len(shifts_calc))},
+        )
+    except Exception:
+        pass
+
+    shift_ids = [int(getattr(s, "shift_id", 0) or 0) for s in shifts_calc if int(getattr(s, "shift_id", 0) or 0) > 0]
+    paid_map: dict[int, bool] = {}
+    comment_map: dict[int, str | None] = {}
+    confirmed_at_map: dict[int, str | None] = {}
+    confirmed_by_map: dict[int, int | None] = {}
+    if shift_ids:
+        rows = list(
+            (
+                await session.execute(
+                    select(
+                        SalaryShiftStateRow.shift_id,
+                        SalaryShiftStateRow.is_paid,
+                        SalaryShiftStateRow.comment,
+                        SalaryShiftStateRow.confirmed_at,
+                        SalaryShiftStateRow.confirmed_by_user_id,
+                    )
+                    .where(SalaryShiftStateRow.shift_id.in_([int(x) for x in shift_ids]))
+                )
+            ).all()
+        )
+        for r in rows:
+            paid_map[int(r[0])] = bool(r[1])
+            comment_map[int(r[0])] = (str(r[2]).strip() if r[2] else None)
+            confirmed_at_map[int(r[0])] = (str(r[3]) if r[3] else None)
+            confirmed_by_map[int(r[0])] = (int(r[4]) if r[4] else None)
+
+    adjustments_by_shift: dict[int, list[dict]] = {}
+    if shift_ids:
+        adj_rows = list(
+            (
+                await session.execute(
+                    select(SalaryAdjustment)
+                    .where(SalaryAdjustment.shift_id.in_([int(x) for x in shift_ids]))
+                    .order_by(SalaryAdjustment.created_at.asc(), SalaryAdjustment.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for a in adj_rows:
+            sid = int(getattr(a, "shift_id", 0) or 0)
+            if sid <= 0:
+                continue
+            adjustments_by_shift.setdefault(sid, []).append(
+                {
+                    "id": int(getattr(a, "id", 0) or 0),
+                    "delta_amount": str(getattr(a, "delta_amount", "") or ""),
+                    "comment": str(getattr(a, "comment", "") or "").strip(),
+                    "created_at": str(getattr(a, "created_at", "") or ""),
+                }
+            )
+
+    items: list[dict] = []
+    for s in shifts_calc:
+        sid = int(getattr(s, "shift_id", 0) or 0)
+        adjs = adjustments_by_shift.get(int(sid), [])
+        manual_hours_val = getattr(s, "manual_hours", None)
+        manual_amount_val = getattr(s, "manual_amount_override", None)
+
+        try:
+            logger.info(
+                "salaries_shift_flags",
+                extra={
+                    "shift_id": int(sid),
+                    "state": str(getattr(s, "state", "")),
+                    "manual_hours": (str(manual_hours_val) if manual_hours_val is not None else None),
+                    "manual_amount_override": (str(manual_amount_val) if manual_amount_val is not None else None),
+                    "adjustments_count": int(len(adjs)),
+                    "needs_review": bool(getattr(s, "needs_review", False)),
+                },
+            )
+        except Exception:
+            pass
+        items.append(
+            {
+                "shift_id": sid,
+                "day": str(getattr(s, "day", "")),
+                "state": str(getattr(s, "state", "")),
+                "needs_review": bool(getattr(s, "needs_review", False)),
+                "confirmed_at": confirmed_at_map.get(int(sid)),
+                "confirmed_by_user_id": confirmed_by_map.get(int(sid)),
+                "planned_hours": (str(getattr(s, "planned_hours", "") or "") or None),
+                "actual_hours": (str(getattr(s, "actual_hours", "") or "") or None),
+                "manual_hours": (str(manual_hours_val) if manual_hours_val is not None else None),
+                "manual_amount_override": (str(manual_amount_val) if manual_amount_val is not None else None),
+                "base_amount": f"{getattr(s, 'base_amount', Decimal('0')):.2f}",
+                "adjustments_amount": f"{getattr(s, 'adjustments_amount', Decimal('0')):.2f}",
+                "total_amount": f"{getattr(s, 'total_amount', Decimal('0')):.2f}",
+                "is_paid": bool(paid_map.get(int(sid), False)),
+                "comment": comment_map.get(int(sid)),
+                "adjustments_count": int(len(adjs)),
+                "adjustments": adjs,
+            }
+        )
+
+    return {
+        "ok": True,
+        "month": f"{int(y):04d}-{int(mo):02d}",
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "items": items,
+    }
+
+
+@app.post("/api/salaries/shifts/{shift_id}/update")
+@app.post("/crm/api/salaries/shifts/{shift_id}/update")
+async def salaries_api_shifts_update(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    state = str(body.get("state") or "").strip() or "worked"
+    manual_hours_raw = body.get("manual_hours")
+    manual_amount_override_raw = body.get("manual_amount_override")
+    comment = str(body.get("comment") or "").strip() or None
+    month = str(body.get("month") or "").strip()
+
+    try:
+        state_enum = SalaryShiftState(str(state))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_state"}, status_code=422)
+
+    manual_hours: Decimal | None = None
+    if manual_hours_raw is not None and str(manual_hours_raw).strip() != "":
+        try:
+            manual_hours = Decimal(str(manual_hours_raw).strip().replace(",", "."))
+        except Exception:
+            return JSONResponse({"ok": False, "error": "bad_manual_hours"}, status_code=400)
+    manual_amount_override: Decimal | None = None
+    if manual_amount_override_raw is not None and str(manual_amount_override_raw).strip() != "":
+        try:
+            manual_amount_override = Decimal(str(manual_amount_override_raw).strip().replace(",", "."))
+        except Exception:
+            return JSONResponse({"ok": False, "error": "bad_manual_amount"}, status_code=400)
+
+    period_start = None
+    period_end = None
+    if month:
+        y, mo = _parse_month_ym(month)
+        period_start, period_end = _month_period(y, mo)
+
+    try:
+        logger.info(
+            "salaries_api_adjustments_create",
+            extra={
+                "shift_id": int(shift_id),
+                "month": (month or None),
+                "delta": str(delta_amount),
+                "comment_len": int(len(comment or "")),
+            },
+        )
+    except Exception:
+        pass
+
+    try:
+        try:
+            logger.info(
+                "salaries_api_shifts_update",
+                extra={
+                    "shift_id": int(shift_id),
+                    "state": str(state_enum.value),
+                    "month": (month or None),
+                    "has_manual_hours": bool(manual_hours is not None),
+                    "has_manual_amount": bool(manual_amount_override is not None),
+                    "comment_len": int(len(comment or "")),
+                },
+            )
+        except Exception:
+            pass
+        row = await update_salary_shift_state(
+            session=session,
+            shift_id=int(shift_id),
+            state=state_enum,
+            manual_hours=manual_hours,
+            manual_amount_override=manual_amount_override,
+            comment=comment,
+            updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+            notify_employee=True,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "comment_required":
+            return JSONResponse({"ok": False, "error": "comment_required"}, status_code=400)
+        if code == "shift_not_found":
+            return JSONResponse({"ok": False, "error": "shift_not_found"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+
+    return {
+        "ok": True,
+        "shift_id": int(getattr(row, "shift_id", 0) or 0),
+    }
+
+
+@app.post("/api/salaries/shifts/{shift_id}/confirm")
+@app.post("/crm/api/salaries/shifts/{shift_id}/confirm")
+async def salaries_api_shifts_confirm(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    shift = (
+        await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+    ).scalar_one_or_none()
+    if shift is None:
+        raise HTTPException(status_code=404)
+
+    st_row = (
+        await session.execute(
+            select(SalaryShiftStateRow).where(SalaryShiftStateRow.shift_id == int(shift_id))
+        )
+    ).scalars().first()
+    if st_row is None:
+        st_row = SalaryShiftStateRow(
+            shift_id=int(shift_id),
+            state=SalaryShiftState.WORKED,
+            manual_hours=None,
+            manual_amount_override=None,
+            comment=None,
+            is_paid=False,
+            updated_by_user_id=None,
+            confirmed_by_user_id=None,
+            confirmed_at=None,
+        )
+        session.add(st_row)
+        await session.flush()
+
+    before = {
+        "confirmed_at": (str(getattr(st_row, "confirmed_at", "") or "") or None),
+        "confirmed_by_user_id": (int(getattr(st_row, "confirmed_by_user_id", 0) or 0) or None),
+    }
+
+    st_row.confirmed_at = utc_now()
+    st_row.confirmed_by_user_id = int(getattr(actor, "id", 0) or 0) or None
+    session.add(st_row)
+    await session.flush()
+
+    try:
+        session.add(
+            SalaryShiftAudit(
+                shift_id=int(shift_id),
+                actor_user_id=int(getattr(actor, "id", 0) or 0) or None,
+                event_type="shift_confirm",
+                before=before,
+                after={
+                    "confirmed_at": (str(getattr(st_row, "confirmed_at", "") or "") or None),
+                    "confirmed_by_user_id": (int(getattr(st_row, "confirmed_by_user_id", 0) or 0) or None),
+                },
+                meta={"day": str(getattr(shift, "day", "") or "")},
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
+@app.post("/api/salaries/shifts/{shift_id}/adjustments/create")
+@app.post("/crm/api/salaries/shifts/{shift_id}/adjustments/create")
+async def salaries_api_shifts_adjustments_create(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    delta_raw = str(body.get("delta_amount") or "").strip().replace(",", ".")
+    comment = str(body.get("comment") or "").strip()
+    month = str(body.get("month") or "").strip()
+    try:
+        delta_amount = Decimal(delta_raw)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_delta_amount"}, status_code=400)
+    if delta_amount == 0:
+        return JSONResponse({"ok": False, "error": "bad_delta_amount"}, status_code=400)
+
+    period_start = None
+    period_end = None
+    if month:
+        y, mo = _parse_month_ym(month)
+        period_start, period_end = _month_period(y, mo)
+
+    try:
+        adj = await create_salary_adjustment(
+            session=session,
+            shift_id=int(shift_id),
+            delta_amount=delta_amount,
+            comment=comment,
+            created_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+            notify_employee=True,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "comment_required":
+            return JSONResponse({"ok": False, "error": "comment_required"}, status_code=400)
+        if code == "shift_not_found":
+            return JSONResponse({"ok": False, "error": "shift_not_found"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+
+    return {"ok": True, "id": int(getattr(adj, "id", 0) or 0)}
+
+
+@app.get("/api/salaries/payouts/list")
+@app.get("/crm/api/salaries/payouts/list")
+async def salaries_api_payouts_list(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        user_id = int(request.query_params.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    try:
+        limit = int(request.query_params.get("limit") or 10)
+        offset = int(request.query_params.get("offset") or 0)
+    except Exception:
+        limit = 10
+        offset = 0
+
+    rows = await list_salary_payouts_for_user(
+        session=session,
+        user_id=int(user_id),
+        limit=int(limit),
+        offset=int(offset),
+    )
+    items: list[dict] = []
+    for p in rows:
+        items.append(
+            {
+                "id": int(getattr(p, "id", 0) or 0),
+                "user_id": int(getattr(p, "user_id", 0) or 0),
+                "amount": str(getattr(p, "amount", "") or ""),
+                "period_start": str(getattr(p, "period_start", "") or ""),
+                "period_end": str(getattr(p, "period_end", "") or ""),
+                "comment": (str(getattr(p, "comment", "") or "") or None),
+                "created_at": str(getattr(p, "created_at", "") or ""),
+            }
+        )
+
+    return {"ok": True, "items": items}
+
+
+@app.get("/api/salaries/shifts/{shift_id}/audit")
+@app.get("/crm/api/salaries/shifts/{shift_id}/audit")
+async def salaries_api_shift_audit_list(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    rows = list(
+        (
+            await session.execute(
+                select(SalaryShiftAudit)
+                .where(SalaryShiftAudit.shift_id == int(shift_id))
+                .order_by(SalaryShiftAudit.created_at.desc(), SalaryShiftAudit.id.desc())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    items: list[dict] = []
+    for r in rows:
+        actor = getattr(r, "actor_user", None)
+        actor_name = None
+        if actor is not None:
+            actor_name = (
+                " ".join([str(getattr(actor, "first_name", "") or "").strip(), str(getattr(actor, "last_name", "") or "").strip()]).strip()
+                or str(getattr(actor, "username", "") or "").strip()
+                or f"#{int(getattr(actor, 'id', 0) or 0)}"
+            )
+        items.append(
+            {
+                "id": int(getattr(r, "id", 0) or 0),
+                "shift_id": int(getattr(r, "shift_id", 0) or 0),
+                "event_type": str(getattr(r, "event_type", "") or ""),
+                "before": getattr(r, "before", None),
+                "after": getattr(r, "after", None),
+                "meta": getattr(r, "meta", None),
+                "actor_user_id": (int(getattr(r, "actor_user_id", 0) or 0) or None),
+                "actor_name": actor_name,
+                "created_at": str(getattr(r, "created_at", "") or ""),
+            }
+        )
+
+    return {"ok": True, "items": items}
+
+
+@app.get("/api/salaries/payouts/audit")
+@app.get("/crm/api/salaries/payouts/audit")
+async def salaries_api_payout_audit_list(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        user_id = int(request.query_params.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    rows = list(
+        (
+            await session.execute(
+                select(SalaryPayoutAudit)
+                .where(SalaryPayoutAudit.user_id == int(user_id))
+                .order_by(SalaryPayoutAudit.created_at.desc(), SalaryPayoutAudit.id.desc())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    items: list[dict] = []
+    for r in rows:
+        actor = getattr(r, "actor_user", None)
+        actor_name = None
+        if actor is not None:
+            actor_name = (
+                " ".join([str(getattr(actor, "first_name", "") or "").strip(), str(getattr(actor, "last_name", "") or "").strip()]).strip()
+                or str(getattr(actor, "username", "") or "").strip()
+                or f"#{int(getattr(actor, 'id', 0) or 0)}"
+            )
+        items.append(
+            {
+                "id": int(getattr(r, "id", 0) or 0),
+                "payout_id": int(getattr(r, "payout_id", 0) or 0),
+                "user_id": int(getattr(r, "user_id", 0) or 0),
+                "event_type": str(getattr(r, "event_type", "") or ""),
+                "before": getattr(r, "before", None),
+                "after": getattr(r, "after", None),
+                "meta": getattr(r, "meta", None),
+                "actor_user_id": (int(getattr(r, "actor_user_id", 0) or 0) or None),
+                "actor_name": actor_name,
+                "created_at": str(getattr(r, "created_at", "") or ""),
+            }
+        )
+
+    return {"ok": True, "items": items}
+
+
+@app.post("/api/salaries/payouts/create")
+@app.post("/crm/api/salaries/payouts/create")
+async def salaries_api_payouts_create(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    try:
+        user_id = int(body.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    month = str(body.get("month") or "").strip()
+    try:
+        y, mo = _parse_month_ym(month)
+    except Exception:
+        raise HTTPException(status_code=400)
+    period_start, period_end = _month_period(y, mo)
+
+    ps_raw = str(body.get("period_start") or "").strip()
+    pe_raw = str(body.get("period_end") or "").strip()
+    if ps_raw and pe_raw:
+        try:
+            ps = date.fromisoformat(ps_raw)
+            pe = date.fromisoformat(pe_raw)
+            if ps <= pe:
+                period_start, period_end = ps, pe
+        except Exception:
+            pass
+
+    amount_raw = str(body.get("amount") or "").strip().replace(",", ".")
+    try:
+        amount = Decimal(amount_raw)
+    except Exception:
+        raise HTTPException(status_code=400)
+    if amount <= 0:
+        raise HTTPException(status_code=400)
+
+    try:
+        logger.info(
+            "salaries_api_payouts_create",
+            extra={
+                "user_id": int(user_id),
+                "month": month,
+                "amount": str(amount),
+                "comment_len": int(len(str(body.get("comment") or "").strip())),
+            },
+        )
+    except Exception:
+        pass
+
+    comment = str(body.get("comment") or "").strip() or None
+
+    u = (
+        await session.execute(select(User).where(User.id == int(user_id)).where(User.is_deleted == False))
+    ).scalar_one_or_none()
+    if u is None:
+        raise HTTPException(status_code=404)
+    notify_tg_id = int(getattr(u, "tg_id", 0) or 0) or None
+
+    payout = await create_salary_payout(
+        session=session,
+        user_id=int(user_id),
+        amount=amount,
+        period_start=period_start,
+        period_end=period_end,
+        comment=comment,
+        created_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+        notify_tg_id=notify_tg_id,
+    )
+
+    return {"ok": True, "id": int(getattr(payout, "id", 0) or 0)}
+
+
 @app.get("/purchases/archive", response_class=HTMLResponse, name="purchases_archive")
 async def purchases_archive(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
@@ -3872,6 +5544,10 @@ async def user_update(
     if rate_k is not None:
         try:
             user.rate_k = int(rate_k)
+            try:
+                user.hour_rate = Decimal(str(int(rate_k)))
+            except Exception:
+                pass
         except Exception:
             pass
     if schedule is not None:
@@ -6348,3 +8024,4 @@ async def supplies_update(
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
     )
+ 

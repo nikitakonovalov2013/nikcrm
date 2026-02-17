@@ -1,0 +1,163 @@
+{% extends base_template %}
+
+{% block title %}Смены сотрудника{% endblock %}
+
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', path='schedule.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='salaries.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='salaries_shifts.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="salary-shifts-page" data-user-id="{{ user_id }}" data-user-name="{{ user_name|e }}" data-user-color="{{ user_color|default('')|e }}" data-month="{{ month|e }}">
+  <div class="salary-shifts-top">
+    <a class="salary-shifts-back" href="/crm/salaries?tab=employees&month={{ month|e }}">← Сотрудники</a>
+    <div class="salary-shifts-top-right">
+      <div class="salary-shifts-month-field">
+        <div class="salary-shifts-month-label">Месяц</div>
+        <input id="salary-shifts-month" class="input" type="month" value="{{ month|e }}" />
+      </div>
+      <button id="salary-shifts-month-apply" class="btn" type="button">Обновить</button>
+      <button id="salary-shifts-export" class="btn-outline" type="button">Экспорт CSV</button>
+    </div>
+  </div>
+
+  <div class="salary-shifts-summary-row">
+    <div class="salary-shifts-summary" id="salary-shifts-summary">
+      <div class="salary-shifts-summary-head">
+        <div class="salary-shifts-summary-user">
+          <span class="salary-shifts-summary-dot" id="salary-shifts-summary-dot"></span>
+          <div class="salary-shifts-summary-name" id="salary-shifts-summary-name">{{ user_name }}</div>
+        </div>
+        <div class="salary-shifts-summary-month" id="salary-shifts-summary-month">{{ month }}</div>
+      </div>
+      <div class="salary-shifts-summary-grid" id="salary-shifts-summary-grid">
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Должность</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-position">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Ставка</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-rate">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Смен</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-shifts">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Отклонения</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-review">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Начислено</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-accrued">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Выплачено</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-paid">—</div></div>
+        <div class="salary-shifts-summary-item"><div class="salary-shifts-summary-k">Баланс</div><div class="salary-shifts-summary-v" id="salary-shifts-summary-balance">—</div></div>
+      </div>
+    </div>
+
+    <div class="salary-shifts-legend" id="salary-shifts-legend">
+      <div class="salary-shifts-legend-title">Легенда</div>
+      <div class="salary-shifts-legend-items">
+        <div class="salary-shifts-legend-item"><span class="salary-shifts-legend-dot worked">✅</span><span>Отработано</span></div>
+        <div class="salary-shifts-legend-item"><span class="salary-shifts-legend-dot day_off">🟠</span><span>Выходной</span></div>
+        <div class="salary-shifts-legend-item"><span class="salary-shifts-legend-dot needs_review">⚠</span><span>Отклонение</span></div>
+        <div class="salary-shifts-legend-item"><span class="salary-shifts-legend-dot paid">💰</span><span>Выплачено</span></div>
+      </div>
+      <div class="salary-shifts-legend-hint">Отклонение: ручные часы/сумма, корректировки или изменённый статус</div>
+    </div>
+  </div>
+
+  <div class="salary-shifts-tools" id="salary-shifts-tools">
+    <label class="salary-shifts-toggle">
+      <input id="salary-shifts-only-deviations" type="checkbox" />
+      <span>Показать только отклонения</span>
+    </label>
+    <div class="salary-shifts-nav">
+      <button id="salary-shifts-dev-prev" class="btn-outline" type="button">←</button>
+      <button id="salary-shifts-dev-next" class="btn-outline" type="button">→</button>
+    </div>
+  </div>
+
+  <div class="schedule-cal salary-shifts-cal">
+    <div class="schedule-cal-head">
+      <button class="btn-outline" type="button" id="salary-shifts-prev">←</button>
+      <div class="schedule-cal-title" id="salary-shifts-title">—</div>
+      <button class="btn-outline" type="button" id="salary-shifts-next">→</button>
+    </div>
+    <div class="schedule-cal-weekdays">
+      <div>Пн</div><div>Вт</div><div>Ср</div><div>Чт</div><div>Пт</div><div>Сб</div><div>Вс</div>
+    </div>
+    <div class="schedule-cal-grid" id="salary-shifts-grid"></div>
+  </div>
+
+  <div class="salary-shifts-pane" id="salary-shifts-editor-card">
+    <div class="salary-shifts-pane-head">
+      <div class="salary-shifts-pane-title">Редактирование смены</div>
+      <div id="salary-shifts-selected" class="salary-shifts-selected">Выберите день</div>
+    </div>
+
+    <div id="salary-shifts-editor-empty" class="salary-shifts-empty">Нет смены на этот день</div>
+
+    <div id="salary-shifts-editor" style="display:none;">
+      <div class="salary-shifts-fields">
+        <label class="salary-shifts-label" id="salary-shifts-label-state">
+          <span class="salary-shifts-label-row"><span>Статус</span><span class="salary-shifts-req">*</span></span>
+          <select id="salary-shifts-state" class="input">
+            <option value="worked">Отработано</option>
+            <option value="day_off">Выходной</option>
+            <option value="overtime">Переработка</option>
+            <option value="skip">Пропуск</option>
+            <option value="needs_review">Требует подтверждения</option>
+          </select>
+        </label>
+
+        <label class="salary-shifts-label">
+          Ручные часы
+          <input id="salary-shifts-manual-hours" class="input" type="text" placeholder="например, 8" />
+        </label>
+
+        <label class="salary-shifts-label">
+          Ручная сумма
+          <input id="salary-shifts-manual-amount" class="input" type="text" placeholder="например, 2500" />
+        </label>
+
+        <div></div>
+      </div>
+
+      <label class="salary-shifts-label" id="salary-shifts-label-comment" style="margin-top:10px;">
+        <span class="salary-shifts-label-row"><span>Комментарий</span><span class="salary-shifts-req">*</span></span>
+        <textarea id="salary-shifts-comment" class="input" rows="4" placeholder="обязательно при изменениях"></textarea>
+        <div id="salary-shifts-comment-error" class="salary-shifts-field-error" style="display:none;"></div>
+      </label>
+
+      <div id="salary-shifts-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
+
+      <div class="salary-shifts-actions">
+        <div id="salary-shifts-confirm-wrap" class="salary-shifts-confirm" style="display:none;">
+          <span id="salary-shifts-confirm-badge" class="salary-shifts-confirm-badge">—</span>
+          <button id="salary-shifts-confirm" class="btn-outline" type="button">Подтвердить смену</button>
+        </div>
+        <button id="salary-shifts-save" class="btn" type="button">Сохранить</button>
+      </div>
+
+      <div class="salary-shifts-section">
+        <div class="salary-shifts-section-title">Корректировки</div>
+        <div id="salary-shifts-adjustments"></div>
+
+        <div class="salary-shifts-fields" style="margin-top:10px;">
+          <label class="salary-shifts-label" id="salary-shifts-label-adj-delta">
+            <span class="salary-shifts-label-row"><span>Сумма, ₽</span><span class="salary-shifts-req">*</span></span>
+            <input id="salary-shifts-adj-delta" class="input" type="text" placeholder="-500 или 500" />
+          </label>
+          <label class="salary-shifts-label" id="salary-shifts-label-adj-comment">
+            <span class="salary-shifts-label-row"><span>Комментарий</span><span class="salary-shifts-req">*</span></span>
+            <input id="salary-shifts-adj-comment" class="input" type="text" placeholder="обязательно" />
+          </label>
+        </div>
+
+        <div id="salary-shifts-adj-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
+        <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+          <button id="salary-shifts-adj-add" class="btn-outline" type="button">Добавить корректировку</button>
+        </div>
+      </div>
+
+      <div class="salary-shifts-section">
+        <button id="salary-shifts-history-toggle" class="salary-shifts-history-toggle" type="button">
+          История изменений
+          <span class="salary-shifts-history-caret" aria-hidden="true">▾</span>
+        </button>
+        <div id="salary-shifts-history" class="salary-shifts-history" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script defer src="{{ url_for('static', path='salaries_shifts.js') }}"></script>
+{% endblock %}

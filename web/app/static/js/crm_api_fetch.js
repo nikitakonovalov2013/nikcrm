@@ -2,6 +2,33 @@
   const originalFetch = window.fetch ? window.fetch.bind(window) : null;
   if (!originalFetch) return;
 
+  const AUTH_STATE = {
+    handling: false,
+    lastAt: 0,
+  };
+
+  async function _handleUnauthorized(resp){
+    try {
+      if (!resp || resp.status !== 401) return;
+      const now = Date.now();
+      if (AUTH_STATE.handling) return;
+      if (now - AUTH_STATE.lastAt < 5000) return;
+      AUTH_STATE.handling = true;
+      AUTH_STATE.lastAt = now;
+
+      try {
+        const msg = 'Сессия истекла. Обновите страницу.';
+        if (window.crmAlert) {
+          await window.crmAlert(msg, { title: 'Авторизация' });
+        }
+      } catch (_){ }
+
+      try { window.location.reload(); } catch (_){ }
+    } finally {
+      AUTH_STATE.handling = false;
+    }
+  }
+
   function _methodFromInit(init){
     try {
       const m = (init && init.method) ? String(init.method) : 'GET';
@@ -79,7 +106,13 @@
     const isMutation = _isMutation(method);
     const isWatched = isMutation && _isSameOriginApi(urlObj);
 
-    const resp = await originalFetch(rewritten.input, init);
+    const nextInit = Object.assign({}, (init || {}), {
+      credentials: (init && init.credentials) ? init.credentials : 'include',
+    });
+
+    const resp = await originalFetch(rewritten.input, nextInit);
+
+    try { await _handleUnauthorized(resp); } catch (_){ }
 
     try {
       if (isWatched && resp && resp.ok) {
@@ -136,6 +169,8 @@
     } catch (_){ }
 
     const resp = await originalFetch(finalUrl, nextInit);
+
+    try { await _handleUnauthorized(resp); } catch (_){ }
 
     try {
       if (isGetLike && window.CRM_DEBUG_POLLING) {

@@ -1,0 +1,626 @@
+from __future__ import annotations
+
+import asyncio
+import html
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
+
+import httpx
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.config import settings
+from shared.enums import SalaryShiftState
+from shared.models import (
+    User,
+    WorkShiftDay,
+    ShiftInstance,
+    SalaryShiftStateRow,
+    SalaryAdjustment,
+    SalaryPayout,
+    SalaryShiftAudit,
+    SalaryPayoutAudit,
+)
+from shared.services.salaries_calc import calc_shift_salary, q2, DEC_0
+from shared.utils import utc_now
+
+
+_TG_SALARY_AGG_WINDOW_SEC = 30
+_tg_salary_agg_lock: asyncio.Lock | None = None
+_tg_salary_agg: dict[int, dict] = {}
+
+
+def _tg_salary_get_lock() -> asyncio.Lock:
+    global _tg_salary_agg_lock
+    if _tg_salary_agg_lock is None:
+        _tg_salary_agg_lock = asyncio.Lock()
+    return _tg_salary_agg_lock
+
+
+async def _tg_salary_agg_flush(chat_id: int) -> None:
+    try:
+        await asyncio.sleep(int(_TG_SALARY_AGG_WINDOW_SEC))
+        lock = _tg_salary_get_lock()
+        async with lock:
+            st = _tg_salary_agg.get(int(chat_id)) or {}
+            lines = list(st.get("lines") or [])
+            _tg_salary_agg.pop(int(chat_id), None)
+        if not lines:
+            return
+        txt = "🧾 <b>Изменения по зарплате</b>\n\n" + "\n".join(lines)
+        await _tg_send_html(chat_id=int(chat_id), text=txt)
+    except Exception:
+        try:
+            lock = _tg_salary_get_lock()
+            async with lock:
+                _tg_salary_agg.pop(int(chat_id), None)
+        except Exception:
+            pass
+
+
+async def _tg_salary_enqueue(chat_id: int, line_html: str) -> None:
+    try:
+        lock = _tg_salary_get_lock()
+        async with lock:
+            st = _tg_salary_agg.get(int(chat_id))
+            if st is None:
+                st = {"lines": [], "task": None}
+                _tg_salary_agg[int(chat_id)] = st
+            st["lines"].append(str(line_html))
+            t = st.get("task")
+            if t is None or getattr(t, "done", lambda: True)():
+                st["task"] = asyncio.create_task(_tg_salary_agg_flush(int(chat_id)))
+    except Exception:
+        pass
+
+@dataclass(frozen=True)
+class SalaryPeriodTotals:
+    accrued: Decimal
+    paid: Decimal
+    balance: Decimal
+    needs_review_total: int
+
+
+async def _tg_send_html(*, chat_id: int, text: str) -> None:
+    token = str(getattr(settings, "BOT_TOKEN", "") or "").strip()
+    if not token:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": int(chat_id),
+        "text": str(text),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(url, data=payload)
+        r.raise_for_status()
+
+
+def _money(v: Decimal) -> str:
+    return f"{q2(v):.2f} ₽"
+
+
+def _esc(s: str) -> str:
+    return html.escape(str(s or ""))
+
+
+async def load_user_hour_rate(*, session: AsyncSession, user_id: int) -> Decimal | None:
+    row = (
+        await session.execute(
+            select(User.hour_rate, User.rate_k).where(User.id == int(user_id))
+        )
+    ).first()
+    if not row:
+        return None
+    hr = row[0]
+    if hr is not None:
+        return hr
+    rk = row[1]
+    if rk is None:
+        return None
+    try:
+        return Decimal(int(rk))
+    except Exception:
+        return None
+
+
+async def load_user_tg_id(*, session: AsyncSession, user_id: int) -> int | None:
+    row = (await session.execute(select(User.tg_id).where(User.id == int(user_id)))).first()
+    if not row:
+        return None
+    tg_id = int(row[0] or 0)
+    return tg_id if tg_id > 0 else None
+
+
+async def calc_user_period_totals(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_start: date,
+    period_end: date,
+) -> SalaryPeriodTotals:
+    # accrued (sum of per-shift totals)
+    items = await calc_user_shifts(session=session, user_id=user_id, period_start=period_start, period_end=period_end)
+    accrued = q2(sum((it.total_amount for it in items), DEC_0))
+    needs_review_total = int(sum((1 for it in items if bool(getattr(it, "needs_review", False))), 0))
+
+    paid = (await session.execute(
+        select(func.coalesce(func.sum(SalaryPayout.amount), 0))
+        .where(SalaryPayout.user_id == int(user_id))
+        .where(SalaryPayout.period_start == period_start)
+        .where(SalaryPayout.period_end == period_end)
+    )).scalar_one()
+
+    paid = q2(Decimal(paid))
+    balance = q2(accrued - paid)
+    return SalaryPeriodTotals(accrued=accrued, paid=paid, balance=balance, needs_review_total=needs_review_total)
+
+
+async def _ensure_salary_shift_state(
+    *,
+    session: AsyncSession,
+    shift: ShiftInstance,
+) -> SalaryShiftStateRow:
+    existing = (await session.execute(
+        select(SalaryShiftStateRow).where(SalaryShiftStateRow.shift_id == int(shift.id))
+    )).scalars().first()
+    if existing is not None:
+        return existing
+    row = SalaryShiftStateRow(
+        shift_id=int(shift.id),
+        state=SalaryShiftState.WORKED,
+        manual_hours=None,
+        manual_amount_override=None,
+        comment=None,
+        is_paid=False,
+        updated_by_user_id=None,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def calc_user_shifts(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_start: date,
+    period_end: date,
+) -> list:
+    # load shifts + plans
+    shifts = list(
+        (
+            await session.execute(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(user_id))
+                .where(ShiftInstance.day >= period_start)
+                .where(ShiftInstance.day <= period_end)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    plans = {
+        int(p.day.toordinal()): p
+        for p in list(
+            (
+                await session.execute(
+                    select(WorkShiftDay)
+                    .where(WorkShiftDay.user_id == int(user_id))
+                    .where(WorkShiftDay.day >= period_start)
+                    .where(WorkShiftDay.day <= period_end)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    }
+
+    hour_rate = await load_user_hour_rate(session=session, user_id=int(user_id))
+
+    # preload adjustments sums
+    adj_rows = (await session.execute(
+        select(SalaryAdjustment.shift_id, func.coalesce(func.sum(SalaryAdjustment.delta_amount), 0))
+        .where(SalaryAdjustment.shift_id.in_([int(s.id) for s in shifts]))
+        .group_by(SalaryAdjustment.shift_id)
+    )).all() if shifts else []
+    adj_sum = {int(r[0]): Decimal(r[1]) for r in adj_rows}
+
+    out = []
+    for s in shifts:
+        st_row = await _ensure_salary_shift_state(session=session, shift=s)
+        plan = plans.get(int(s.day.toordinal()))
+        planned_hours = None
+        if plan is not None and getattr(plan, "hours", None) is not None:
+            planned_hours = Decimal(int(getattr(plan, "hours")))
+        elif getattr(s, "planned_hours", None) is not None:
+            planned_hours = Decimal(int(getattr(s, "planned_hours")))
+
+        out.append(
+            calc_shift_salary(
+                shift_id=int(s.id),
+                user_id=int(user_id),
+                day=s.day,
+                hour_rate=hour_rate,
+                planned_hours=planned_hours,
+                shift_status=getattr(s, "status", None),
+                started_at=getattr(s, "started_at", None),
+                ended_at=getattr(s, "ended_at", None),
+                state=getattr(st_row, "state", SalaryShiftState.WORKED),
+                manual_hours=getattr(st_row, "manual_hours", None),
+                manual_amount_override=getattr(st_row, "manual_amount_override", None),
+                adjustments_amount=adj_sum.get(int(s.id), DEC_0),
+                confirmed_at=getattr(st_row, "confirmed_at", None),
+                confirmed_by_user_id=(int(getattr(st_row, "confirmed_by_user_id", 0) or 0) or None),
+            )
+        )
+
+    return out
+
+
+async def update_salary_shift_state(
+    *,
+    session: AsyncSession,
+    shift_id: int,
+    state: SalaryShiftState,
+    manual_hours: Decimal | None,
+    manual_amount_override: Decimal | None,
+    comment: str | None,
+    updated_by_user_id: int | None,
+    notify_employee: bool = True,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> SalaryShiftStateRow:
+    shift = (
+        await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+    ).scalars().first()
+    if shift is None:
+        raise ValueError("shift_not_found")
+
+    st_row = await _ensure_salary_shift_state(session=session, shift=shift)
+
+    before = {
+        "state": str(getattr(st_row, "state", "")),
+        "manual_hours": (str(getattr(st_row, "manual_hours", None)) if getattr(st_row, "manual_hours", None) is not None else None),
+        "manual_amount_override": (
+            str(getattr(st_row, "manual_amount_override", None))
+            if getattr(st_row, "manual_amount_override", None) is not None
+            else None
+        ),
+        "comment": (str(getattr(st_row, "comment", "") or "") or None),
+        "is_paid": bool(getattr(st_row, "is_paid", False)),
+        "updated_by_user_id": (int(getattr(st_row, "updated_by_user_id", 0) or 0) or None),
+        "updated_at": (str(getattr(st_row, "updated_at", "") or "") or None),
+    }
+
+    cmt = (str(comment or "").strip() or None)
+    need_comment = False
+    if state != getattr(st_row, "state", SalaryShiftState.WORKED):
+        need_comment = True
+    if manual_hours is not None or manual_amount_override is not None:
+        need_comment = True
+    if state in {SalaryShiftState.OVERTIME, SalaryShiftState.SKIP, SalaryShiftState.DAY_OFF, SalaryShiftState.NEEDS_REVIEW}:
+        need_comment = True
+    if need_comment and not cmt:
+        raise ValueError("comment_required")
+
+    st_row.state = SalaryShiftState(str(state))
+    st_row.manual_hours = q2(Decimal(manual_hours)) if manual_hours is not None else None
+    st_row.manual_amount_override = q2(Decimal(manual_amount_override)) if manual_amount_override is not None else None
+    st_row.comment = cmt
+    st_row.updated_by_user_id = int(updated_by_user_id) if updated_by_user_id is not None else None
+    session.add(st_row)
+    await session.flush()
+
+    after = {
+        "state": str(getattr(st_row, "state", "")),
+        "manual_hours": (str(getattr(st_row, "manual_hours", None)) if getattr(st_row, "manual_hours", None) is not None else None),
+        "manual_amount_override": (
+            str(getattr(st_row, "manual_amount_override", None))
+            if getattr(st_row, "manual_amount_override", None) is not None
+            else None
+        ),
+        "comment": (str(getattr(st_row, "comment", "") or "") or None),
+        "is_paid": bool(getattr(st_row, "is_paid", False)),
+        "updated_by_user_id": (int(getattr(st_row, "updated_by_user_id", 0) or 0) or None),
+        "updated_at": (str(getattr(st_row, "updated_at", "") or "") or None),
+    }
+    try:
+        session.add(
+            SalaryShiftAudit(
+                shift_id=int(shift_id),
+                actor_user_id=int(updated_by_user_id) if updated_by_user_id is not None else None,
+                event_type="shift_update",
+                before=before,
+                after=after,
+                meta={
+                    "day": str(getattr(shift, "day", "") or ""),
+                    "notify_employee": bool(notify_employee),
+                },
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    if notify_employee:
+        tg_id = await load_user_tg_id(session=session, user_id=int(getattr(shift, "user_id", 0) or 0))
+        if tg_id is not None:
+            try:
+                tot_txt = "—"
+                try:
+                    items = await calc_user_shifts(
+                        session=session,
+                        user_id=int(getattr(shift, "user_id", 0) or 0),
+                        period_start=shift.day,
+                        period_end=shift.day,
+                    )
+                    if items:
+                        tot_txt = _money(items[0].total_amount)
+                except Exception:
+                    pass
+
+                balance_txt = ""
+                if period_start is not None and period_end is not None:
+                    try:
+                        totals = await calc_user_period_totals(
+                            session=session,
+                            user_id=int(getattr(shift, "user_id", 0) or 0),
+                            period_start=period_start,
+                            period_end=period_end,
+                        )
+                        balance_txt = f"\nБаланс за период: <b>{_esc(_money(totals.balance))}</b>"
+                    except Exception:
+                        balance_txt = ""
+
+                txt_lines = [
+                    "✏️ <b>Смена</b>",
+                    f"{_esc(shift.day.strftime('%d.%m.%Y'))}: статус <b>{_esc(str(state))}</b>, сумма <b>{_esc(tot_txt)}</b>",
+                ]
+                if balance_txt:
+                    try:
+                        txt_lines.append(balance_txt.strip())
+                    except Exception:
+                        txt_lines.append(balance_txt)
+                if cmt:
+                    txt_lines.append(f"Комментарий: {_esc(cmt)}")
+                await _tg_salary_enqueue(int(tg_id), "\n".join([x for x in txt_lines if str(x).strip()]))
+            except Exception:
+                pass
+
+    return st_row
+
+
+async def create_salary_adjustment(
+    *,
+    session: AsyncSession,
+    shift_id: int,
+    delta_amount: Decimal,
+    comment: str,
+    created_by_user_id: int | None,
+    notify_employee: bool = True,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> SalaryAdjustment:
+    cmt = str(comment or "").strip()
+    if not cmt:
+        raise ValueError("comment_required")
+
+    shift = (
+        await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+    ).scalars().first()
+    if shift is None:
+        raise ValueError("shift_not_found")
+
+    adj = SalaryAdjustment(
+        shift_id=int(shift_id),
+        delta_amount=q2(Decimal(delta_amount)),
+        comment=cmt,
+        created_by_user_id=int(created_by_user_id) if created_by_user_id is not None else None,
+    )
+    session.add(adj)
+    await session.flush()
+
+    try:
+        session.add(
+            SalaryShiftAudit(
+                shift_id=int(shift_id),
+                actor_user_id=int(created_by_user_id) if created_by_user_id is not None else None,
+                event_type="adjustment_create",
+                before=None,
+                after={
+                    "adjustment_id": int(getattr(adj, "id", 0) or 0),
+                    "delta_amount": str(getattr(adj, "delta_amount", "") or ""),
+                    "comment": str(getattr(adj, "comment", "") or ""),
+                    "created_at": str(getattr(adj, "created_at", "") or ""),
+                },
+                meta={
+                    "day": str(getattr(shift, "day", "") or ""),
+                    "notify_employee": bool(notify_employee),
+                },
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    if notify_employee:
+        tg_id = await load_user_tg_id(session=session, user_id=int(getattr(shift, "user_id", 0) or 0))
+        if tg_id is not None:
+            try:
+                tot_txt = "—"
+                try:
+                    items = await calc_user_shifts(
+                        session=session,
+                        user_id=int(getattr(shift, "user_id", 0) or 0),
+                        period_start=shift.day,
+                        period_end=shift.day,
+                    )
+                    if items:
+                        tot_txt = _money(items[0].total_amount)
+                except Exception:
+                    pass
+
+                balance_txt = ""
+                if period_start is not None and period_end is not None:
+                    try:
+                        totals = await calc_user_period_totals(
+                            session=session,
+                            user_id=int(getattr(shift, "user_id", 0) or 0),
+                            period_start=period_start,
+                            period_end=period_end,
+                        )
+                        balance_txt = f"\nБаланс за период: <b>{_esc(_money(totals.balance))}</b>"
+                    except Exception:
+                        balance_txt = ""
+
+                txt_lines = [
+                    "➕➖ <b>Корректировка</b>",
+                    f"{_esc(shift.day.strftime('%d.%m.%Y'))}: изменение <b>{_esc(_money(q2(Decimal(delta_amount))))}</b>, сумма <b>{_esc(tot_txt)}</b>",
+                ]
+                if balance_txt:
+                    try:
+                        txt_lines.append(balance_txt.strip())
+                    except Exception:
+                        txt_lines.append(balance_txt)
+                txt_lines.append(f"Комментарий: {_esc(cmt)}")
+                await _tg_salary_enqueue(int(tg_id), "\n".join([x for x in txt_lines if str(x).strip()]))
+            except Exception:
+                pass
+
+    return adj
+
+
+async def list_salary_payouts_for_user(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    limit: int = 10,
+    offset: int = 0,
+) -> list[SalaryPayout]:
+    lim = max(1, min(100, int(limit)))
+    off = max(0, int(offset))
+    return list(
+        (
+            await session.execute(
+                select(SalaryPayout)
+                .where(SalaryPayout.user_id == int(user_id))
+                .order_by(SalaryPayout.created_at.desc(), SalaryPayout.id.desc())
+                .limit(lim)
+                .offset(off)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def create_salary_payout(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    amount: Decimal,
+    period_start: date,
+    period_end: date,
+    comment: str | None,
+    created_by_user_id: int | None,
+    notify_tg_id: int | None,
+) -> SalaryPayout:
+    amt = q2(Decimal(amount))
+
+    totals_before = await calc_user_period_totals(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+
+    p = SalaryPayout(
+        user_id=int(user_id),
+        amount=amt,
+        period_start=period_start,
+        period_end=period_end,
+        comment=(str(comment).strip() or None),
+        created_by_user_id=int(created_by_user_id) if created_by_user_id is not None else None,
+    )
+    session.add(p)
+    await session.flush()
+
+    # full payout -> mark shifts as paid
+    if amt >= totals_before.balance:
+        shifts = list(
+            (
+                await session.execute(
+                    select(ShiftInstance)
+                    .where(ShiftInstance.user_id == int(user_id))
+                    .where(ShiftInstance.day >= period_start)
+                    .where(ShiftInstance.day <= period_end)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for s in shifts:
+            st_row = await _ensure_salary_shift_state(session=session, shift=s)
+            st_row.is_paid = True
+            st_row.updated_by_user_id = int(created_by_user_id) if created_by_user_id is not None else None
+            session.add(st_row)
+
+    totals_after = await calc_user_period_totals(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+
+    try:
+        session.add(
+            SalaryPayoutAudit(
+                payout_id=int(getattr(p, "id", 0) or 0),
+                user_id=int(user_id),
+                actor_user_id=int(created_by_user_id) if created_by_user_id is not None else None,
+                event_type="payout_create",
+                before={
+                    "accrued": str(totals_before.accrued),
+                    "paid": str(totals_before.paid),
+                    "balance": str(totals_before.balance),
+                },
+                after={
+                    "payout_amount": str(amt),
+                    "accrued": str(totals_after.accrued),
+                    "paid": str(totals_after.paid),
+                    "balance": str(totals_after.balance),
+                },
+                meta={
+                    "period_start": str(period_start),
+                    "period_end": str(period_end),
+                    "comment": (str(comment).strip() or None) if comment is not None else None,
+                },
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    # TG notification to employee
+    if notify_tg_id is not None and int(notify_tg_id) > 0:
+        try:
+            period = f"{period_start.strftime('%d.%m.%Y')}–{period_end.strftime('%d.%m.%Y')}"
+            cmt = (str(comment).strip() if comment is not None else "")
+            txt_lines = [
+                "💸 <b>Выплата</b>",
+                "",
+                f"Период: <b>{_esc(period)}</b>",
+                f"Сумма: <b>{_esc(_money(amt))}</b>",
+                f"Баланс после: <b>{_esc(_money(totals_after.balance))}</b>",
+            ]
+            txt_lines.append("")
+            txt_lines.append(f"Комментарий: {_esc(cmt) if cmt else '—'}")
+            await _tg_send_html(chat_id=int(notify_tg_id), text="\n".join(txt_lines))
+        except Exception:
+            pass
+
+    return p

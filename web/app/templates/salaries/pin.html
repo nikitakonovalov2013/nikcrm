@@ -1,0 +1,55 @@
+{% extends base_template %}
+
+{% block title %}Зарплаты — PIN{% endblock %}
+
+{% block content %}
+<div style="max-width:420px; margin:0 auto; padding:24px;">
+  <h2 style="margin:0 0 12px 0;">Зарплаты</h2>
+  <div style="color:#667085; margin-bottom:16px;">Введите PIN для доступа (сессия 72 часа).</div>
+
+  <div style="display:flex; flex-direction:column; gap:10px;">
+    <input id="salary-pin" class="crm-ui-dialog-input" type="password" inputmode="numeric" maxlength="6" placeholder="PIN (6 цифр)" />
+    <div id="salary-pin-error" class="crm-ui-dialog-error" style="display:none">Неверный PIN</div>
+    <button id="salary-pin-submit" class="btn" type="button">Открыть</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const input = document.getElementById('salary-pin');
+  const btn = document.getElementById('salary-pin-submit');
+  const err = document.getElementById('salary-pin-error');
+
+  function apiBase(){
+    const m = document.querySelector('meta[name="crm-api-base"]');
+    return (m && m.getAttribute('content')) ? m.getAttribute('content') : '/crm/api';
+  }
+
+  async function submit(){
+    try {
+      if (err) err.style.display = 'none';
+      const pin = String((input && input.value) || '').trim();
+      btn.disabled = true;
+      const r = await fetch(apiBase() + '/salaries/pin/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (data && data.ok) {
+        window.location.href = '/crm/salaries';
+        return;
+      }
+      if (err) err.style.display = 'block';
+    } catch(e){
+      if (err) err.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  if (btn) btn.addEventListener('click', submit);
+  if (input) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+})();
+</script>
+{% endblock %}

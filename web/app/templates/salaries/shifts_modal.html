@@ -1,0 +1,371 @@
+<div class="salary-modal">
+  <div class="sm-root">
+    <div class="sm-head">
+      <div>
+        <h3 class="sm-title">Смены — {{ user_name }}</h3>
+        <div class="sm-sub">Месяц: <b>{{ month }}</b></div>
+      </div>
+    </div>
+
+    <div class="sm-grid">
+      <div class="sm-pane">
+        <div class="sm-table-wrap">
+          <table class="sm-table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Статус</th>
+                <th>Часы (план/факт)</th>
+                <th>Сумма</th>
+              </tr>
+            </thead>
+            <tbody id="salary-shifts-body">
+              <tr><td colspan="4" style="color:#667085; padding:14px;">Загрузка…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="sm-pane pad">
+        <div class="sm-form-head">
+          <div class="sm-form-title">Редактирование смены</div>
+          <div id="salary-shift-selected" class="sm-form-date">Выберите смену</div>
+        </div>
+
+        <div id="salary-shift-form" style="display:none;">
+          <div class="sm-fields">
+            <label class="sm-label">
+              Статус
+              <select id="salary-shift-state" class="input">
+                <option value="worked">Отработано</option>
+                <option value="day_off">Выходной</option>
+                <option value="overtime">Переработка</option>
+                <option value="skip">Пропуск</option>
+                <option value="needs_review">Требует подтверждения</option>
+              </select>
+            </label>
+
+            <label class="sm-label">
+              Ручные часы (опц.)
+              <input id="salary-shift-manual-hours" class="input" type="text" placeholder="например, 8" />
+            </label>
+
+            <label class="sm-label">
+              Ручная сумма (опц.)
+              <input id="salary-shift-manual-amount" class="input" type="text" placeholder="например, 2500" />
+            </label>
+            <div></div>
+          </div>
+
+          <label class="sm-label" style="margin-top:10px;">
+            Комментарий
+            <textarea id="salary-shift-comment" class="input" rows="4" placeholder="обязательно при изменениях"></textarea>
+          </label>
+
+          <div id="salary-shift-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
+
+          <div class="sm-actions">
+            <button id="salary-shift-save" class="btn" type="button">Сохранить</button>
+          </div>
+
+          <div class="sm-section">
+            <div class="sm-section-title">Корректировки</div>
+            <div id="salary-shift-adjustments"></div>
+
+            <div class="sm-fields" style="margin-top:10px;">
+              <label class="sm-label">
+                Сумма, ₽
+                <input id="salary-adj-delta" class="input" type="text" placeholder="-500 или 500" />
+              </label>
+              <label class="sm-label">
+                Комментарий
+                <input id="salary-adj-comment" class="input" type="text" placeholder="обязательно" />
+              </label>
+            </div>
+
+            <div id="salary-adj-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
+            <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+              <button id="salary-adj-add" class="btn-outline" type="button">Добавить корректировку</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  const body = document.getElementById('salary-shifts-body');
+  const userId = Number('{{ user_id }}');
+  const month = String('{{ month }}' || '').trim();
+
+  const selectedEl = document.getElementById('salary-shift-selected');
+  const formWrap = document.getElementById('salary-shift-form');
+  const stateEl = document.getElementById('salary-shift-state');
+  const mhEl = document.getElementById('salary-shift-manual-hours');
+  const maEl = document.getElementById('salary-shift-manual-amount');
+  const cEl = document.getElementById('salary-shift-comment');
+  const errEl = document.getElementById('salary-shift-error');
+  const saveBtn = document.getElementById('salary-shift-save');
+
+  const adjListEl = document.getElementById('salary-shift-adjustments');
+  const adjDeltaEl = document.getElementById('salary-adj-delta');
+  const adjCommentEl = document.getElementById('salary-adj-comment');
+  const adjErrEl = document.getElementById('salary-adj-error');
+  const adjAddBtn = document.getElementById('salary-adj-add');
+
+  let shifts = [];
+  let selectedShiftId = 0;
+
+  function apiBase(){
+    const m = document.querySelector('meta[name="crm-api-base"]');
+    return (m && m.getAttribute('content')) ? m.getAttribute('content') : '/crm/api';
+  }
+
+  function setMsg(msg){
+    if(!body) return;
+    body.innerHTML = '<tr><td colspan="4" style="color:#667085; padding:12px;">' + String(msg || '') + '</td></tr>';
+  }
+
+  function setErr(target, msg){
+    if(!target) return;
+    if(!msg){
+      target.style.display = 'none';
+      target.textContent = '';
+      return;
+    }
+    target.style.display = 'block';
+    target.textContent = String(msg);
+  }
+
+  function findShift(shiftId){
+    const sid = Number(shiftId || 0);
+    for (let i=0;i<shifts.length;i++){
+      if(Number(shifts[i].shift_id||0) === sid) return shifts[i];
+    }
+    return null;
+  }
+
+  function selectShift(shiftId){
+    selectedShiftId = Number(shiftId || 0);
+    const it = findShift(selectedShiftId);
+    if(!it){
+      if(selectedEl) selectedEl.textContent = 'Выберите смену слева';
+      if(formWrap) formWrap.style.display = 'none';
+      return;
+    }
+    if(selectedEl) selectedEl.textContent = String(it.day || '');
+    if(formWrap) formWrap.style.display = '';
+
+    try { if(stateEl) stateEl.value = String(it.state || 'worked'); } catch(_) {}
+    try { if(mhEl) mhEl.value = String(it.manual_hours || ''); } catch(_) {}
+    try { if(maEl) maEl.value = String(it.manual_amount_override || ''); } catch(_) {}
+    try { if(cEl) cEl.value = String(it.comment || ''); } catch(_) {}
+    setErr(errEl, null);
+    setErr(adjErrEl, null);
+
+    renderAdjustments(it);
+  }
+
+  function renderAdjustments(it){
+    if(!adjListEl) return;
+    const list = Array.isArray(it && it.adjustments) ? it.adjustments : [];
+    if(!list.length){
+      adjListEl.innerHTML = '<div class="sm-adj-empty">Пока нет корректировок</div>';
+      return;
+    }
+    adjListEl.innerHTML = list.map((a)=>{
+      const d = String(a.delta_amount || '0');
+      const c = String(a.comment || '').trim();
+      return '<div class="sm-adj-item">' +
+        '<div><b>' + d + ' ₽</b>' + (c ? (' — ' + c) : '') + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function statusBadge(state){
+    const s = String(state || 'worked');
+    if(s === 'worked') return '<span class="sm-badge green">✅ Отработано</span>';
+    if(s === 'day_off') return '<span class="sm-badge yellow">🟡 Выходной</span>';
+    if(s === 'overtime') return '<span class="sm-badge purple">⚡ Переработка</span>';
+    if(s === 'skip') return '<span class="sm-badge red">❌ Пропуск</span>';
+    if(s === 'needs_review') return '<span class="sm-badge orange">⚠️ Требует подтверждения</span>';
+    return '<span class="sm-badge orange">⚠️ Требует подтверждения</span>';
+  }
+
+  function fmtRub(v){
+    const s = String(v || '0');
+    return s + ' ₽';
+  }
+
+  async function load(){
+    try {
+      setMsg('Загрузка…');
+      const url = apiBase() + '/salaries/shifts/list?user_id=' + encodeURIComponent(String(userId)) + '&month=' + encodeURIComponent(month);
+      const r = await fetch(url);
+      if(r.status === 403){
+        window.location.href = '/crm/salaries';
+        return;
+      }
+      const data = await r.json().catch(()=> ({}));
+      if(!data || !data.ok){
+        setMsg('Не удалось загрузить');
+        return;
+      }
+      const items = Array.isArray(data.items) ? data.items : [];
+      shifts = items;
+      if(!items.length){
+        setMsg('Смен нет');
+        return;
+      }
+      body.innerHTML = items.map((it)=>{
+        const day = String(it.day || '');
+        const state = String(it.state || '');
+        const planned = it.planned_hours ? String(it.planned_hours) : '—';
+        const actual = it.actual_hours ? String(it.actual_hours) : '—';
+        const total = fmtRub(it.total_amount);
+        const sid = Number(it.shift_id || 0);
+        const review = it.needs_review ? ' ⚠️' : '';
+        return (
+          '<tr data-salary-shift-row="' + String(sid) + '">' +
+            '<td>' + day + (review ? ' <span title="Требует внимания">⚠️</span>' : '') + '</td>' +
+            '<td>' + statusBadge(state) + '</td>' +
+            '<td>' + planned + ' / ' + actual + '</td>' +
+            '<td><b>' + total + '</b></td>' +
+          '</tr>'
+        );
+      }).join('');
+
+      document.querySelectorAll('[data-salary-shift-row]').forEach((tr)=>{
+        if(tr.dataset.bound === '1') return;
+        tr.dataset.bound = '1';
+        tr.addEventListener('click', ()=>{
+          const sid = Number(tr.dataset.salaryShiftRow || 0);
+          if(!sid) return;
+          try {
+            document.querySelectorAll('[data-salary-shift-row]').forEach((x)=>x.classList.remove('sm-row-active'));
+            tr.classList.add('sm-row-active');
+          } catch(_) {}
+          selectShift(sid);
+        });
+      });
+
+      // auto select first
+      if(!selectedShiftId && items.length){
+        selectShift(Number(items[0].shift_id || 0));
+      } else {
+        selectShift(selectedShiftId);
+      }
+
+    } catch(e){
+      setMsg('Ошибка');
+    }
+  }
+
+  async function save(){
+    if(!selectedShiftId) return;
+    setErr(errEl, null);
+    try {
+      if(saveBtn) saveBtn.disabled = true;
+      const payload = {
+        month: month,
+        state: String(stateEl && stateEl.value ? stateEl.value : 'worked').trim(),
+        manual_hours: String(mhEl && mhEl.value ? mhEl.value : '').trim(),
+        manual_amount_override: String(maEl && maEl.value ? maEl.value : '').trim(),
+        comment: String(cEl && cEl.value ? cEl.value : '').trim(),
+      };
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if(r.status === 403){
+        window.location.href = '/crm/salaries';
+        return;
+      }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        const code = String(d && d.error ? d.error : 'bad');
+        if(code === 'comment_required'){
+          setErr(errEl, 'Комментарий обязателен');
+          return;
+        }
+        if(code === 'bad_manual_hours'){
+          setErr(errEl, 'Неверные ручные часы');
+          return;
+        }
+        if(code === 'bad_manual_amount'){
+          setErr(errEl, 'Неверная ручная сумма');
+          return;
+        }
+        setErr(errEl, 'Не удалось сохранить');
+        return;
+      }
+      try { window.dispatchEvent(new CustomEvent('close-modal')); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('salary-grid-refresh')); } catch(_) {}
+    } catch(e){
+      setErr(errEl, 'Ошибка сохранения');
+    } finally {
+      if(saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function addAdj(){
+    if(!selectedShiftId) return;
+    setErr(adjErrEl, null);
+    const delta = String(adjDeltaEl && adjDeltaEl.value ? adjDeltaEl.value : '').trim();
+    const comment = String(adjCommentEl && adjCommentEl.value ? adjCommentEl.value : '').trim();
+    if(!delta){
+      setErr(adjErrEl, 'Введите сумму');
+      return;
+    }
+    if(!comment){
+      setErr(adjErrEl, 'Комментарий обязателен');
+      return;
+    }
+    try {
+      if(adjAddBtn) adjAddBtn.disabled = true;
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/adjustments/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ month: month, delta_amount: delta, comment: comment }),
+      });
+      if(r.status === 403){
+        window.location.href = '/crm/salaries';
+        return;
+      }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        const code = String(d && d.error ? d.error : 'bad');
+        if(code === 'comment_required'){
+          setErr(adjErrEl, 'Комментарий обязателен');
+          return;
+        }
+        if(code === 'bad_delta_amount'){
+          setErr(adjErrEl, 'Неверная сумма');
+          return;
+        }
+        setErr(adjErrEl, 'Не удалось добавить корректировку');
+        return;
+      }
+      try { if(adjDeltaEl) adjDeltaEl.value = ''; } catch(_) {}
+      try { if(adjCommentEl) adjCommentEl.value = ''; } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('close-modal')); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('salary-grid-refresh')); } catch(_) {}
+    } catch(e){
+      setErr(adjErrEl, 'Ошибка');
+    } finally {
+      if(adjAddBtn) adjAddBtn.disabled = false;
+    }
+  }
+
+  try {
+    if(saveBtn) saveBtn.addEventListener('click', save);
+    if(adjAddBtn) adjAddBtn.addEventListener('click', addAdj);
+  } catch(e) {}
+
+  load();
+})();
+</script>

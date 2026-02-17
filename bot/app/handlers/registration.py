@@ -18,8 +18,82 @@ from bot.app.utils.bot_commands import sync_commands_for_chat
 from bot.app.utils.urls import _public_base_url
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from shared.permissions import role_flags
+from datetime import date
+import calendar
+
+from bot.app.utils.telegram import edit_html
+from shared.services.salaries_service import calc_user_period_totals, list_salary_payouts_for_user
 
 router = Router()
+
+
+def _month_period_for_day(d: date) -> tuple[date, date]:
+    first = date(int(d.year), int(d.month), 1)
+    last_day = int(calendar.monthrange(int(d.year), int(d.month))[1])
+    last = date(int(d.year), int(d.month), int(last_day))
+    return first, last
+
+
+async def _build_profile_text_and_kb(*, session, user: User) -> tuple[str, InlineKeyboardMarkup | None]:
+    bd = format_date(user.birth_date)
+    rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
+    status_map = {
+        UserStatus.PENDING: 'На рассмотрении',
+        UserStatus.APPROVED: 'Одобрен',
+        UserStatus.REJECTED: 'Отклонён',
+        UserStatus.BLACKLISTED: 'В чёрном списке',
+    }
+    status_ru = status_map.get(user.status, '')
+
+    salary_line = ''
+    try:
+        ps, pe = _month_period_for_day(date.today())
+        totals = await calc_user_period_totals(session=session, user_id=int(user.id), period_start=ps, period_end=pe)
+        salary_line = f"\n💼 Зарплата (месяц): {totals.balance:.2f} ₽"
+    except Exception:
+        salary_line = ''
+
+    text = (
+        "🧾 Ваш профиль\n\n"
+        f"👤 Имя: {user.first_name}\n"
+        f"👤 Фамилия: {user.last_name}\n"
+        f"📅 Дата рождения: {bd}\n"
+        f"💰 Ставка: {rate}\n"
+        f"🗓️ График: {user.schedule}\n"
+        f"👔 Должность: {user.position}\n"
+        f"🟢 Статус: {status_ru}"
+        f"{salary_line}"
+    )
+
+    kb = None
+    try:
+        base = _public_base_url()
+        url = (base + "/crm/about") if base else "/crm/about"
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Миссия и цель", url=str(url))],
+                [InlineKeyboardButton(text="История выплат", callback_data="salary_payouts:0")],
+            ]
+        )
+    except Exception:
+        kb = None
+
+    return text, kb
+
+
+def _salary_payouts_kb(*, offset: int, limit: int, has_more: bool) -> InlineKeyboardMarkup:
+    off = max(0, int(offset))
+    lim = max(1, int(limit))
+    rows: list[list[InlineKeyboardButton]] = []
+    nav: list[InlineKeyboardButton] = []
+    if off > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"salary_payouts:{max(0, off - lim)}"))
+    if has_more:
+        nav.append(InlineKeyboardButton(text="➡️ Вперёд", callback_data=f"salary_payouts:{off + lim}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="↩️ Профиль", callback_data="salary_payouts:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(CommandStart())
@@ -52,6 +126,80 @@ async def cmd_start(message: Message, state: FSMContext):
         )
     except Exception:
         pass
+
+
+@router.callback_query(F.data.startswith("salary_payouts:"))
+async def salary_payouts(cb: CallbackQuery):
+    raw = str(cb.data or "")
+    arg = raw.split(":", 1)[1] if ":" in raw else ""
+
+    async with get_async_session() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_tg_id(cb.from_user.id)
+        if not user or user.status != UserStatus.APPROVED:
+            try:
+                await cb.answer("Недоступно")
+            except Exception:
+                pass
+            return
+
+        if arg == "back":
+            text, kb = await _build_profile_text_and_kb(session=session, user=user)
+            await edit_html(cb, text, reply_markup=kb)
+            try:
+                await cb.answer()
+            except Exception:
+                pass
+            return
+
+        try:
+            offset = int(arg or 0)
+        except Exception:
+            offset = 0
+
+        limit = 5
+        rows = await list_salary_payouts_for_user(session=session, user_id=int(user.id), limit=limit + 1, offset=offset)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        if not rows:
+            text = "💸 <b>История выплат</b>\n\nПока выплат нет."
+            kb = _salary_payouts_kb(offset=int(offset), limit=int(limit), has_more=False)
+            await edit_html(cb, text, reply_markup=kb)
+            try:
+                await cb.answer()
+            except Exception:
+                pass
+            return
+
+        lines = ["💸 <b>История выплат</b>", ""]
+        for p in rows:
+            try:
+                amt = f"{getattr(p, 'amount', 0):.2f} ₽"
+            except Exception:
+                amt = f"{getattr(p, 'amount', 0)} ₽"
+            ps = getattr(p, "period_start", None)
+            pe = getattr(p, "period_end", None)
+            period = ""
+            try:
+                if ps and pe:
+                    period = f"{ps.strftime('%d.%m.%Y')}–{pe.strftime('%d.%m.%Y')}"
+            except Exception:
+                period = ""
+            cmt = str(getattr(p, "comment", "") or "").strip()
+            line = f"• <b>{amt}</b>"
+            if period:
+                line += f" ({period})"
+            if cmt:
+                line += f" — {cmt}"
+            lines.append(line)
+
+        kb = _salary_payouts_kb(offset=int(offset), limit=int(limit), has_more=bool(has_more))
+        await edit_html(cb, "\n".join(lines), reply_markup=kb)
+        try:
+            await cb.answer()
+        except Exception:
+            pass
 
 
 @router.message(F.text.in_({"Зарегистрироваться", "📝 Зарегистрироваться"}))
@@ -277,36 +425,8 @@ async def profile(message: Message):
             reply_markup=main_menu_kb(user.status, message.from_user.id, user.position),
         )
         return
-    bd = format_date(user.birth_date)
-    rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
-    status_map = {
-        UserStatus.PENDING: 'На рассмотрении',
-        UserStatus.APPROVED: 'Одобрен',
-        UserStatus.REJECTED: 'Отклонён',
-        UserStatus.BLACKLISTED: 'В чёрном списке',
-    }
-    status_ru = status_map.get(user.status, '')
-    text = (
-        "🧾 Ваш профиль\n\n"
-        f"👤 Имя: {user.first_name}\n"
-        f"👤 Фамилия: {user.last_name}\n"
-        f"📅 Дата рождения: {bd}\n"
-        f"💰 Ставка: {rate}\n"
-        f"🗓️ График: {user.schedule}\n"
-        f"👔 Должность: {user.position}\n"
-        f"🟢 Статус: {status_ru}"
-    )
-
-    kb = None
-    try:
-        base = _public_base_url()
-        url = (base + "/crm/about") if base else "/crm/about"
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Миссия и цель", url=str(url))]]
-        )
-    except Exception:
-        kb = None
-
+    async with get_async_session() as session:
+        text, kb = await _build_profile_text_and_kb(session=session, user=user)
     await message.answer(text, reply_markup=kb)
 
     try:

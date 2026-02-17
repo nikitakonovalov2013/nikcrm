@@ -79,3 +79,11 @@ class ShiftSwapRequestStatus(StrEnum):
     ACCEPTED = "accepted"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class SalaryShiftState(StrEnum):
+    WORKED = "worked"
+    DAY_OFF = "day_off"
+    OVERTIME = "overtime"
+    SKIP = "skip"
+    NEEDS_REVIEW = "needs_review"

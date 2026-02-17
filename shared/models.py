@@ -3,6 +3,7 @@ from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, Date
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy import UniqueConstraint
+from decimal import Decimal
 from datetime import datetime, date, time
 from typing import Optional
 from .db import Base
@@ -17,6 +18,7 @@ from .enums import (
     TaskEventType,
     ShiftInstanceStatus,
     ShiftSwapRequestStatus,
+    SalaryShiftState,
 )
 from .utils import utc_now
 
@@ -50,6 +52,7 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rate_k: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hour_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     # Postgres enum type names are explicitly set to avoid name conflicts with column names
     schedule: Mapped[Schedule | None] = mapped_column(
         PG_ENUM(
@@ -86,6 +89,13 @@ class User(Base):
     )
 
     actions: Mapped[list["AdminAction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+    salary_payouts: Mapped[list["SalaryPayout"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        foreign_keys="SalaryPayout.user_id",
+    )
 
     tasks_created: Mapped[list["Task"]] = relationship(
         foreign_keys="Task.created_by_user_id",
@@ -210,6 +220,13 @@ class ShiftInstance(Base):
         lazy="selectin",
     )
 
+    salary_state: Mapped[Optional["SalaryShiftStateRow"]] = relationship(
+        back_populates="shift",
+        cascade="all, delete-orphan",
+        uselist=False,
+        lazy="selectin",
+    )
+
     __table_args__ = (
         UniqueConstraint("user_id", "day", name="uq_shift_instances_user_day"),
         Index("ix_shift_instances_status", "status"),
@@ -232,6 +249,127 @@ class ShiftInstanceEvent(Base):
 
     __table_args__ = (
         Index("ix_shift_instance_events_shift_created_at", "shift_id", "created_at"),
+    )
+
+
+class SalarySettings(Base):
+    __tablename__ = "salary_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pin_hash: Mapped[str] = mapped_column(String(256))
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    updated_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[updated_by_user_id])
+
+
+class SalaryShiftStateRow(Base):
+    __tablename__ = "salary_shift_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shift_instances.id", ondelete="CASCADE"), unique=True, index=True)
+    state: Mapped[SalaryShiftState] = mapped_column(
+        PG_ENUM(
+            SalaryShiftState,
+            name="salary_shift_state_enum",
+            values_callable=lambda obj: [e.value for e in obj],
+            create_type=False,
+        ),
+        default=SalaryShiftState.WORKED,
+    )
+    manual_hours: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    manual_amount_override: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_paid: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    confirmed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    shift: Mapped["ShiftInstance"] = relationship(back_populates="salary_state", lazy="selectin")
+    updated_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[updated_by_user_id])
+    confirmed_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[confirmed_by_user_id])
+
+
+class SalaryAdjustment(Base):
+    __tablename__ = "salary_adjustments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shift_instances.id", ondelete="CASCADE"), index=True)
+    delta_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    comment: Mapped[str] = mapped_column(Text)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    shift: Mapped["ShiftInstance"] = relationship(lazy="selectin")
+    created_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index("ix_salary_adjustments_shift_created_at", "shift_id", "created_at"),
+    )
+
+
+class SalaryPayout(Base):
+    __tablename__ = "salary_payouts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped["User"] = relationship(back_populates="salary_payouts", lazy="selectin", foreign_keys=[user_id])
+    created_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        Index("ix_salary_payouts_user_created_at", "user_id", "created_at"),
+    )
+
+
+class SalaryShiftAudit(Base):
+    __tablename__ = "salary_shift_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shift_instances.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    shift: Mapped["ShiftInstance"] = relationship(lazy="selectin")
+    actor_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[actor_user_id])
+
+    __table_args__ = (
+        Index("ix_salary_shift_audit_shift_created_at", "shift_id", "created_at"),
+        Index("ix_salary_shift_audit_actor_user_id", "actor_user_id"),
+    )
+
+
+class SalaryPayoutAudit(Base):
+    __tablename__ = "salary_payout_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    payout_id: Mapped[int] = mapped_column(ForeignKey("salary_payouts.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    payout: Mapped["SalaryPayout"] = relationship(lazy="selectin")
+    user: Mapped["User"] = relationship(lazy="selectin", foreign_keys=[user_id])
+    actor_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[actor_user_id])
+
+    __table_args__ = (
+        Index("ix_salary_payout_audit_user_created_at", "user_id", "created_at"),
     )
 
 

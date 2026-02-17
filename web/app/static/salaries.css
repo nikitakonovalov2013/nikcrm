@@ -1,0 +1,313 @@
+/* Salaries module (scoped)
+   IMPORTANT: keep selectors within .salaries-page / .salary-modal to avoid affecting other screens.
+*/
+
+.salaries-page{--sal-radius:16px;--sal-radius-sm:12px;--sal-border:#e6edf7;--sal-bg:#f8fafc;--sal-card:#ffffff;--sal-head:#0f172a;--sal-muted:#64748b;--sal-primary:#2563eb;--sal-primary2:#1d4ed8;--sal-success:#16a34a;--sal-success2:#15803d;--sal-shadow:0 12px 40px rgba(2,6,23,.08);--sal-shadow-sm:0 8px 20px rgba(2,6,23,.06)}
+
+.salaries-page .sal-header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
+.salaries-page .sal-title{margin:0;font-size:22px;font-weight:800;color:var(--sal-head);letter-spacing:-.01em}
+
+.salaries-page .sal-header-actions{display:flex;align-items:center;gap:10px}
+
+.salaries-page .sal-tabs{display:flex;gap:0;margin:10px 0 12px;border:1px solid var(--sal-border);border-radius:14px;overflow:hidden;background:#fff}
+.salaries-page .sal-tab{flex:1 1 0;appearance:none;border:none;background:transparent;padding:12px 14px;font-weight:900;color:#334155;cursor:pointer;transition:.15s}
+.salaries-page .sal-tab + .sal-tab{border-left:1px solid var(--sal-border)}
+.salaries-page .sal-tab:hover{background:#f8fafc}
+.salaries-page .sal-tab.is-active{background:#eef2ff;color:#1e3a8a}
+
+.salaries-page .sal-panel{display:none}
+.salaries-page .sal-panel.is-active{display:block}
+
+.salaries-page .sal-actions{display:flex;align-items:flex-end;gap:10px;min-height:44px}
+
+.salaries-page .sal-pill{display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:999px;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;border:1px solid transparent}
+.salaries-page .sal-pill.pos{background:rgba(22,163,74,.10);border-color:rgba(22,163,74,.25);color:var(--sal-success2)}
+.salaries-page .sal-pill.neg{background:rgba(239,68,68,.10);border-color:rgba(239,68,68,.25);color:#b42318}
+.salaries-page .sal-pill.neutral{background:#f1f5f9;border-color:#e2e8f0;color:#334155}
+
+.salaries-page .sal-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.salaries-page .sal-field{display:flex;flex-direction:column;gap:6px;min-width:260px}
+.salaries-page .sal-label{font-size:12px;font-weight:700;color:var(--sal-muted)}
+.salaries-page .sal-input{width:100%;padding:11px 12px;border-radius:12px;border:1px solid var(--sal-border);background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:var(--sal-head);outline:none}
+.salaries-page .sal-input:focus{border-color:#93c5fd;box-shadow:0 0 0 4px rgba(59,130,246,.18)}
+.salaries-page .sal-field-filters{min-width:220px}
+.salaries-page .sal-check{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;color:#334155;user-select:none}
+.salaries-page .sal-check input{width:16px;height:16px}
+.salaries-page .sal-month-wrap{position:relative}
+.salaries-page .sal-month{width:100%;padding:11px 40px 11px 12px;border-radius:12px;border:1px solid var(--sal-border);background:#fff;box-shadow:0 1px 0 rgba(2,6,23,.03);font-size:14px;color:var(--sal-head);outline:none}
+.salaries-page .sal-month:focus{border-color:#93c5fd;box-shadow:0 0 0 4px rgba(59,130,246,.18)}
+.salaries-page .sal-month-icon{position:absolute;right:12px;bottom:11px;width:18px;height:18px;opacity:.55;pointer-events:none}
+
+.salaries-page .sal-btn-primary{background:var(--sal-primary);color:#fff;border:none;border-radius:12px;padding:11px 16px;font-weight:800;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;box-shadow:0 8px 18px rgba(37,99,235,.22);transition:.15s}
+.salaries-page .sal-btn-primary:hover{background:var(--sal-primary2)}
+.salaries-page .sal-btn-primary:disabled{opacity:.6;cursor:not-allowed}
+
+.salaries-page .sal-card{background:var(--sal-card);border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm)}
+.salaries-page .sal-table-wrap{border-radius:var(--sal-radius);overflow:hidden}
+
+.salaries-page .sal-security{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff;border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm);padding:12px 12px;margin:10px 0 10px}
+.salaries-page .sal-security-title{font-weight:900;color:var(--sal-head)}
+.salaries-page .sal-security-hint{color:var(--sal-muted);font-weight:800;font-size:12px;margin-top:4px}
+.salaries-page .sal-security-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+
+.salary-pin-modal{--spn-radius:18px;--spn-border:#e6edf7;--spn-muted:#64748b;--spn-head:#0f172a;--spn-shadow:0 14px 40px rgba(2,6,23,.10)}
+.salary-pin-modal .spn-root{padding:16px;max-width:520px;width:min(520px,calc(100vw - 32px))}
+.salary-pin-modal .spn-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.salary-pin-modal .spn-title{margin:0;font-size:18px;font-weight:900;color:var(--spn-head)}
+.salary-pin-modal .spn-label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:800;color:#334155;margin-bottom:10px}
+.salary-pin-modal .spn-label:last-child{margin-bottom:0}
+.salary-pin-modal .spn-label-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.salary-pin-modal .spn-req{color:#b42318;font-weight:900}
+.salary-pin-modal .spn-label.is-error .input{border-color:#fca5a5;box-shadow:0 0 0 4px rgba(244,63,94,.12)}
+.salary-pin-modal .spn-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
+.salary-pin-modal .spn-actions .btn,.salary-pin-modal .spn-actions .btn-outline{min-width:160px;justify-content:center}
+
+@media (max-width: 560px){
+  .salary-pin-modal .spn-actions{flex-direction:column;align-items:stretch}
+  .salary-pin-modal .spn-actions .btn,.salary-pin-modal .spn-actions .btn-outline{width:100%;min-width:0}
+}
+
+.salaries-page .sal-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0 12px}
+.salaries-page .sal-summary-card{background:#fff;border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm);padding:12px 12px 10px;min-width:0}
+.salaries-page .sal-summary-k{color:var(--sal-muted);font-size:12px;font-weight:800}
+.salaries-page .sal-summary-v{margin-top:6px;font-size:18px;font-weight:900;color:var(--sal-head);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.salaries-page .sal-dash{margin:12px 0 12px}
+.salaries-page .sal-dash-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:10px}
+.salaries-page .sal-dash-title{font-weight:900;color:var(--sal-head)}
+.salaries-page .sal-dash-sub{color:var(--sal-muted);font-weight:800;font-size:12px;margin-top:4px}
+
+.salaries-page .sal-kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.salaries-page .sal-kpi-card{background:#fff;border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm);padding:12px 12px 10px;min-width:0}
+.salaries-page .sal-k{color:var(--sal-muted);font-size:12px;font-weight:800}
+.salaries-page .sal-v{margin-top:6px;font-size:18px;font-weight:900;color:var(--sal-head);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.salaries-page .sal-h{margin-top:6px;color:var(--sal-muted);font-weight:900;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.salaries-page .sal-charts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.salaries-page .sal-chart{background:#fff;border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm);padding:12px;min-width:0}
+.salaries-page .sal-chart-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.salaries-page .sal-chart-title{font-size:14px;font-weight:950;color:#334155}
+.salaries-page .sal-chart-legend{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+.salaries-page .sal-lg{display:inline-flex;align-items:center;gap:8px;color:var(--sal-muted);font-weight:900;font-size:12px;white-space:nowrap}
+.salaries-page .sal-lg-dot{width:10px;height:10px;border-radius:999px;display:inline-block}
+.salaries-page .sal-lg-dot.blue{background:#2563eb}
+.salaries-page .sal-lg-dot.green{background:#16a34a}
+.salaries-page .sal-chart-body{min-height:160px}
+.salaries-page .sal-spark{width:100%;height:160px;display:block}
+.salaries-page .sal-spark-empty{height:160px;display:flex;align-items:center;justify-content:center;color:var(--sal-muted);font-weight:900}
+
+.salaries-page .sal-charts{grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:12px}
+
+@media (max-width: 640px){
+  .salaries-page .sal-charts{grid-template-columns:1fr}
+  .salaries-page .sal-chart-body{min-height:170px}
+  .salaries-page .sal-spark{height:170px}
+}
+
+/* Base modal sizing overrides for Salaries only */
+#modal[data-size="wide"] .modal-content{width:min(1100px,92vw);max-width:min(1100px,92vw)}
+#modal[data-size="narrow"] .modal-content{width:min(520px,92vw);max-width:min(520px,92vw)}
+#modal[data-size="pinwide"] .modal-content{width:min(720px,92vw);max-width:min(720px,92vw)}
+
+/* PIN modal: no inner scroll when content fits */
+#modal[data-size="narrow"] .modal-content{overflow:hidden}
+#modal[data-size="narrow"] .modal-body{overflow:visible}
+#modal[data-size="pinwide"] .modal-content{overflow:hidden}
+#modal[data-size="pinwide"] .modal-body{overflow:visible}
+
+@media (max-width: 480px){
+  #modal[data-size="wide"] .modal-content{width:100vw;max-width:100vw}
+  #modal[data-size="narrow"] .modal-content{width:100vw;max-width:100vw}
+  #modal[data-size="pinwide"] .modal-content{width:100vw;max-width:100vw}
+}
+
+@media (max-width: 900px){
+  .salary-pay-detail .spd-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width: 560px){
+  .salary-pay-detail .spd-grid{grid-template-columns:1fr}
+}
+
+.salaries-page .sal-attn{margin-top:10px}
+.salaries-page .sal-attn-title{font-weight:900;color:var(--sal-head);margin:8px 0 10px}
+.salaries-page .sal-attn-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.salaries-page .sal-attn-card{background:#fff;border:1px solid var(--sal-border);border-radius:var(--sal-radius);box-shadow:var(--sal-shadow-sm);padding:12px;min-width:0}
+.salaries-page .sal-attn-h{font-size:12px;font-weight:900;color:#334155;margin-bottom:8px}
+.salaries-page .sal-attn-empty{color:var(--sal-muted);font-weight:800}
+.salaries-page .sal-attn-item{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid #eef2ff;background:#fbfdff;border-radius:12px;color:var(--sal-head);font-weight:900;cursor:pointer;text-align:left;transition:.15s}
+.salaries-page .sal-attn-item:hover{background:#f1f6ff}
+.salaries-page .sal-attn-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:800}
+.salaries-page .sal-attn-item b{font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.salaries-page .sal-journal{margin-top:12px}
+.salaries-page .sal-journal-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:14px 0 10px}
+.salaries-page .sal-journal-title{font-weight:900;color:var(--sal-head)}
+.salaries-page .sal-journal-sub{color:var(--sal-muted);font-weight:800;font-size:12px;margin-top:4px}
+.salaries-page .sal-journal-controls{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.salaries-page .sal-journal-field{min-width:180px}
+.salaries-page .sal-select{height:44px;border:1px solid var(--sal-border);border-radius:14px;padding:0 12px;background:#fff;color:var(--sal-head);font-weight:800;outline:none}
+
+.salaries-page .sal-journal-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
+.salaries-page .sal-journal-meta{color:var(--sal-muted);font-weight:800}
+.salaries-page .sal-journal-nav{display:flex;gap:10px}
+
+.salaries-page .sal-tr-click{cursor:pointer}
+.salaries-page .sal-tr-click:hover td{background:#fbfdff}
+.salaries-page .sal-tr-click:hover td:first-child{box-shadow:inset 3px 0 0 rgba(37,99,235,.18)}
+
+.salaries-page .sal-x{appearance:none;border:1px solid var(--sal-border);background:#fff;color:#334155;width:38px;height:38px;border-radius:12px;font-size:22px;line-height:1;font-weight:900;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
+.salaries-page .sal-x:hover{background:#f8fafc}
+
+/* Payout detail modal */
+.salary-pay-detail{--spd-radius:18px;--spd-border:#e6edf7;--spd-muted:#64748b;--spd-head:#0f172a;--spd-shadow:0 14px 40px rgba(2,6,23,.10)}
+.salary-pay-detail .spd-root{padding:16px;max-width:900px;width:min(900px,calc(100vw - 32px))}
+.salary-pay-detail .spd-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.salary-pay-detail .spd-title{margin:0;font-size:20px;font-weight:900;color:var(--spd-head)}
+.salary-pay-detail .spd-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 12px}
+.salary-pay-detail .spd-card{background:#fff;border:1px solid var(--spd-border);border-radius:var(--spd-radius);box-shadow:var(--spd-shadow);padding:12px;min-width:0}
+.salary-pay-detail .spd-k{color:var(--spd-muted);font-size:12px;font-weight:800}
+.salary-pay-detail .spd-v{margin-top:6px;font-size:14px;font-weight:900;color:var(--spd-head);min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+.salary-pay-detail .spd-root{overflow-x:hidden}
+.salary-pay-detail .spd-audit-h{font-weight:900;color:var(--spd-head);margin:12px 0 10px}
+.salary-pay-detail .spd-audit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.salary-pay-detail .spd-audit-card{background:#fff;border:1px solid var(--spd-border);border-radius:var(--spd-radius);box-shadow:var(--spd-shadow);padding:12px;min-width:0}
+.salary-pay-detail .spd-pre{margin:8px 0 0;background:#0b1220;color:#e2e8f0;border-radius:12px;padding:10px;overflow:auto;max-height:220px;font-size:12px;line-height:1.35;white-space:pre-wrap;word-break:break-word}
+
+@media (max-width: 980px){
+  .salary-pay-detail .spd-grid{grid-template-columns:1fr}
+  .salary-pay-detail .spd-audit-grid{grid-template-columns:1fr}
+}
+
+@media (max-width: 1100px){
+  .salaries-page .sal-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .salaries-page .sal-attn-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width: 820px){
+  .salaries-page .sal-charts{grid-template-columns:1fr}
+}
+
+.salaries-page .sal-table thead th[data-sal-sort]{user-select:none}
+.salaries-page .sal-table thead th.sal-th-sort-active{color:var(--sal-head)}
+
+.salaries-page .sal-table{width:100%;border-collapse:separate;border-spacing:0}
+.salaries-page .sal-table thead th{background:#f6faff;color:#334155;font-weight:800;font-size:12px;letter-spacing:.02em;text-transform:none;padding:14px 14px;border-bottom:1px solid var(--sal-border);text-align:left}
+.salaries-page .sal-table tbody td{padding:14px 14px;border-bottom:1px solid #f1f5f9;vertical-align:middle;color:var(--sal-head)}
+.salaries-page .sal-table tbody tr:hover{background:#fbfdff}
+
+.salaries-page .sal-user{display:flex;align-items:center;gap:10px;min-width:0}
+.salaries-page .sal-avatar{width:34px;height:34px;border-radius:999px;background:#e0e7ff;color:#1e3a8a;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex:0 0 auto}
+.salaries-page .sal-user-name{font-weight:800;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.salaries-page .sal-dev{display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:3px 8px;border-radius:999px;background:#fffbeb;color:#92400e;border:1px solid #fde68a;font-size:12px;font-weight:900;vertical-align:middle}
+
+.salaries-page .sal-row{cursor:pointer}
+.salaries-page .sal-row button{cursor:pointer}
+
+.salaries-page .sal-rate-missing{display:inline-flex;align-items:center;gap:8px;color:var(--sal-muted);font-weight:700}
+.salaries-page .sal-rate-note{font-size:12px;font-weight:800;color:var(--sal-muted)}
+.salaries-page .sal-hint{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;border:1px solid #dbe7ff;background:#f1f6ff;color:#1e3a8a;font-size:12px;font-weight:900}
+
+.salaries-page .sal-money{font-variant-numeric:tabular-nums}
+.salaries-page .sal-balance{font-weight:900}
+
+.salaries-page .sal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.salaries-page .sal-btn-pay{background:var(--sal-success);color:#fff;border:none;border-radius:12px;padding:10px 14px;font-weight:900;min-height:40px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
+.salaries-page .sal-btn-pay:hover{background:var(--sal-success2)}
+.salaries-page .sal-btn-sec{background:#eef2ff;color:#1e3a8a;border:1px solid #dbe7ff;border-radius:12px;padding:10px 12px;font-weight:800;min-height:40px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}
+.salaries-page .sal-btn-sec:hover{background:#e0e7ff}
+
+/* Mobile: employee rows as cards */
+@media (max-width: 860px){
+  .salaries-page .sal-header{align-items:flex-start;flex-direction:column}
+  .salaries-page .sal-field{min-width:min(420px,100%)}
+  .salaries-page .sal-summary{grid-template-columns:1fr 1fr}
+}
+
+@media (max-width: 768px){
+  .salaries-page .sal-card{border-radius:14px}
+  .salaries-page .sal-table-wrap{overflow:visible}
+  .salaries-page .sal-table thead{display:none}
+  .salaries-page .sal-table, .salaries-page .sal-table tbody{display:block;width:100%}
+  .salaries-page .sal-table tbody tr{display:block;background:#fff;border:1px solid var(--sal-border);border-radius:14px;box-shadow:0 8px 18px rgba(2,6,23,.05);padding:12px;margin:10px 0}
+  .salaries-page .sal-table tbody td{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border:none}
+  .salaries-page .sal-table tbody td::before{content:attr(data-label);color:var(--sal-muted);font-size:12px;font-weight:800}
+  .salaries-page .sal-actions{flex-direction:column;align-items:stretch}
+  .salaries-page .sal-actions button{width:100%}
+}
+
+/* Modal shifts UI */
+.salary-modal{--sm-radius:18px;--sm-border:#e6edf7;--sm-muted:#64748b;--sm-head:#0f172a;--sm-shadow:0 14px 40px rgba(2,6,23,.10)}
+.salary-modal .sm-root{padding:16px;max-width:1100px}
+.salary-modal .sm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.salary-modal .sm-title{margin:0;font-size:20px;font-weight:900;color:var(--sm-head)}
+.salary-modal .sm-sub{color:var(--sm-muted);margin-top:6px}
+.salary-modal .sm-grid{display:grid;grid-template-columns:minmax(360px,1fr) minmax(360px,1fr);gap:14px;align-items:start}
+.salary-modal .sm-pane{background:#fff;border:1px solid var(--sm-border);border-radius:var(--sm-radius);box-shadow:var(--sm-shadow)}
+.salary-modal .sm-pane.pad{padding:14px}
+
+.salary-modal .sm-table-wrap{border:1px solid var(--sm-border);border-radius:var(--sm-radius);overflow:hidden}
+.salary-modal .sm-table{width:100%;border-collapse:separate;border-spacing:0}
+.salary-modal .sm-table thead th{background:#f6faff;color:#334155;font-weight:900;font-size:12px;padding:14px;border-bottom:1px solid var(--sm-border)}
+.salary-modal .sm-table tbody td{padding:14px;border-bottom:1px solid #f1f5f9}
+.salary-modal .sm-table tbody tr{cursor:pointer}
+.salary-modal .sm-table tbody tr:hover{background:#fbfdff}
+.salary-modal .sm-row-active{background:#eef6ff!important}
+
+.salary-modal .sm-badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:900;white-space:nowrap}
+.salary-modal .sm-badge.green{background:#ecfdf5;color:#065f46}
+.salary-modal .sm-badge.yellow{background:#fffbeb;color:#92400e}
+.salary-modal .sm-badge.red{background:#fef2f2;color:#991b1b}
+.salary-modal .sm-badge.purple{background:#f5f3ff;color:#5b21b6}
+.salary-modal .sm-badge.orange{background:#fff7ed;color:#9a3412}
+
+.salary-modal .sm-form-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.salary-modal .sm-form-title{font-weight:900;color:var(--sm-head)}
+.salary-modal .sm-form-date{color:var(--sm-muted);font-weight:800}
+.salary-modal .sm-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.salary-modal .sm-label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:800;color:#334155}
+.salary-modal .sm-actions{display:flex;justify-content:flex-end;margin-top:12px;position:sticky;bottom:0;background:#fff;padding-top:10px}
+.salary-modal .sm-actions .btn{min-width:160px;justify-content:center}
+
+.salary-modal .sm-section{margin-top:14px;border-top:1px solid #f1f5f9;padding-top:12px}
+.salary-modal .sm-section-title{font-weight:900;margin-bottom:8px}
+.salary-modal .sm-adj-empty{color:var(--sm-muted)}
+.salary-modal .sm-adj-item{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid #eef2ff;border-radius:12px;background:#fbfdff}
+.salary-modal .sm-adj-item b{font-variant-numeric:tabular-nums}
+
+/* Payout modal */
+.salary-pay-modal{--spm-radius:18px;--spm-border:#e6edf7;--spm-muted:#64748b;--spm-head:#0f172a;--spm-shadow:0 14px 40px rgba(2,6,23,.10)}
+.salary-pay-modal .spm-root{padding:16px;max-width:760px;width:min(760px,calc(100vw - 32px))}
+.salary-pay-modal .spm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.salary-pay-modal .spm-title{margin:0;font-size:20px;font-weight:900;color:var(--spm-head)}
+.salary-pay-modal .spm-sub{margin-top:6px;color:var(--spm-muted);font-weight:700}
+.salary-pay-modal .spm-sub b{color:var(--spm-head)}
+
+.salary-pay-modal .spm-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 14px}
+.salary-pay-modal .spm-card{background:#fff;border:1px solid var(--spm-border);border-radius:var(--spm-radius);box-shadow:var(--spm-shadow);padding:12px 12px 10px;min-width:0}
+.salary-pay-modal .spm-k{color:var(--spm-muted);font-size:12px;font-weight:800}
+.salary-pay-modal .spm-v{margin-top:6px;font-size:18px;font-weight:900;color:var(--spm-head);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.salary-pay-modal .spm-form{background:#fff;border:1px solid var(--spm-border);border-radius:var(--spm-radius);box-shadow:var(--spm-shadow);padding:14px}
+.salary-pay-modal .spm-label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:800;color:#334155;margin-bottom:10px}
+.salary-pay-modal .spm-label:last-child{margin-bottom:0}
+.salary-pay-modal .spm-label-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.salary-pay-modal .spm-req{color:#b42318;font-weight:900}
+.salary-pay-modal .spm-hint{color:var(--spm-muted);font-weight:700;font-size:12px}
+.salary-pay-modal .spm-label.is-error .input{border-color:#fca5a5;box-shadow:0 0 0 4px rgba(244,63,94,.12)}
+
+.salary-pay-modal .spm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px;position:sticky;bottom:0;background:#fff;padding-top:10px}
+.salary-pay-modal .spm-actions .btn,.salary-pay-modal .spm-actions .btn-outline{min-width:160px;justify-content:center}
+
+@media (max-width: 820px){
+  .salary-pay-modal .spm-grid{grid-template-columns:1fr}
+}
+
+@media (max-width: 980px){
+  .salary-modal .sm-grid{grid-template-columns:1fr}
+}
+
+@media (max-width: 480px){
+  .salary-modal .sm-root{padding:12px}
+  .salary-modal .sm-fields{grid-template-columns:1fr}
+}
