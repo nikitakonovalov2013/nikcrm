@@ -252,6 +252,10 @@ async def calc_user_shifts(
                 state=getattr(st_row, "state", SalaryShiftState.WORKED),
                 manual_hours=getattr(st_row, "manual_hours", None),
                 manual_amount_override=getattr(st_row, "manual_amount_override", None),
+                requested_amount=(Decimal(int(getattr(s, "amount_submitted", 0) or 0)) if getattr(s, "amount_submitted", None) is not None else None),
+                approved_amount=(Decimal(int(getattr(s, "amount_approved", 0) or 0)) if getattr(s, "amount_approved", None) is not None else None),
+                approval_required=(bool(getattr(s, "approval_required", False)) if getattr(s, "approval_required", None) is not None else None),
+                approved_at=getattr(s, "approved_at", None),
                 adjustments_amount=adj_sum.get(int(s.id), DEC_0),
                 confirmed_at=getattr(st_row, "confirmed_at", None),
                 confirmed_by_user_id=(int(getattr(st_row, "confirmed_by_user_id", 0) or 0) or None),
@@ -624,3 +628,134 @@ async def create_salary_payout(
             pass
 
     return p
+
+
+async def update_salary_payout(
+    *,
+    session: AsyncSession,
+    payout_id: int,
+    amount: Decimal,
+    period_start: date | None,
+    period_end: date | None,
+    comment: str | None,
+    updated_by_user_id: int | None,
+) -> dict:
+    p = (
+        await session.execute(
+            select(SalaryPayout).where(SalaryPayout.id == int(payout_id))
+        )
+    ).scalars().first()
+    if p is None:
+        raise ValueError("payout_not_found")
+
+    old_user_id = int(getattr(p, "user_id", 0) or 0)
+    old_ps = getattr(p, "period_start", None)
+    old_pe = getattr(p, "period_end", None)
+    old_amount = getattr(p, "amount", None)
+    old_comment = getattr(p, "comment", None)
+
+    # If period_start/period_end not provided -> keep existing
+    new_ps = period_start if period_start is not None else old_ps
+    new_pe = period_end if period_end is not None else old_pe
+    if new_ps is None or new_pe is None:
+        raise ValueError("bad_period")
+    if new_ps > new_pe:
+        raise ValueError("bad_period")
+
+    new_amount = q2(Decimal(amount))
+    new_comment = (str(comment).strip() or None) if comment is not None else None
+
+    totals_before_old = await calc_user_period_totals(
+        session=session,
+        user_id=int(old_user_id),
+        period_start=old_ps,
+        period_end=old_pe,
+    )
+
+    # Apply changes
+    p.amount = new_amount
+    p.comment = new_comment
+    p.period_start = new_ps
+    p.period_end = new_pe
+    session.add(p)
+    await session.flush()
+
+    # Re-evaluate "paid" flags for shifts in affected periods (old + new)
+    periods = {(old_ps, old_pe), (new_ps, new_pe)}
+    for ps, pe in periods:
+        if ps is None or pe is None:
+            continue
+        totals = await calc_user_period_totals(
+            session=session,
+            user_id=int(old_user_id),
+            period_start=ps,
+            period_end=pe,
+        )
+        sum_paid = totals.paid
+        sum_accrued = totals.accrued
+        is_paid_now = bool(sum_paid >= sum_accrued)
+
+        shifts = list(
+            (
+                await session.execute(
+                    select(ShiftInstance)
+                    .where(ShiftInstance.user_id == int(old_user_id))
+                    .where(ShiftInstance.day >= ps)
+                    .where(ShiftInstance.day <= pe)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for s in shifts:
+            st_row = await _ensure_salary_shift_state(session=session, shift=s)
+            st_row.is_paid = is_paid_now
+            st_row.updated_by_user_id = int(updated_by_user_id) if updated_by_user_id is not None else None
+            session.add(st_row)
+
+    totals_after_new = await calc_user_period_totals(
+        session=session,
+        user_id=int(old_user_id),
+        period_start=new_ps,
+        period_end=new_pe,
+    )
+
+    before = {
+        "amount": (str(old_amount) if old_amount is not None else None),
+        "comment": (str(old_comment).strip() if old_comment is not None and str(old_comment).strip() else None),
+        "period_start": str(old_ps) if old_ps is not None else None,
+        "period_end": str(old_pe) if old_pe is not None else None,
+        "paid": str(totals_before_old.paid),
+        "balance": str(totals_before_old.balance),
+    }
+    after = {
+        "amount": str(new_amount),
+        "comment": (str(new_comment).strip() if new_comment is not None and str(new_comment).strip() else None),
+        "period_start": str(new_ps),
+        "period_end": str(new_pe),
+        "paid": str(totals_after_new.paid),
+        "balance": str(totals_after_new.balance),
+    }
+    try:
+        session.add(
+            SalaryPayoutAudit(
+                payout_id=int(getattr(p, "id", 0) or 0),
+                user_id=int(old_user_id),
+                actor_user_id=int(updated_by_user_id) if updated_by_user_id is not None else None,
+                event_type="payout_update",
+                before=before,
+                after=after,
+                meta={
+                    "changed": {
+                        "amount": bool(str(before.get("amount") or "") != str(after.get("amount") or "")),
+                        "comment": bool((before.get("comment") or None) != (after.get("comment") or None)),
+                        "period": bool((before.get("period_start"), before.get("period_end")) != (after.get("period_start"), after.get("period_end"))),
+                    }
+                },
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    return {"before": before, "after": after}

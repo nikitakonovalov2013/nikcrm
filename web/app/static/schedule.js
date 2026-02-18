@@ -1,10 +1,28 @@
 (function(){
   const modalBody = () => document.getElementById('modal-body');
 
+  const BOOT = (function(){
+    try {
+      const el = document.getElementById('schedule-boot');
+      if (!el) return null;
+      const txt = String(el.textContent || '').trim();
+      if (!txt) return null;
+      return JSON.parse(txt);
+    } catch (_){
+      return null;
+    }
+  })();
+
   const IS_ADMIN = (function(){
+    try {
+      if (BOOT && Object.prototype.hasOwnProperty.call(BOOT, 'is_admin')) return !!BOOT.is_admin;
+    } catch (_){ }
     try { return !!window.SCHEDULE_IS_ADMIN; } catch (_) { return false; }
   })();
   const IS_MANAGER = (function(){
+    try {
+      if (BOOT && Object.prototype.hasOwnProperty.call(BOOT, 'is_manager')) return !!BOOT.is_manager;
+    } catch (_){ }
     try { return !!window.SCHEDULE_IS_MANAGER; } catch (_) { return false; }
   })();
 
@@ -254,6 +272,9 @@
   view.setDate(1);
 
   const USERS = (function(){
+    try {
+      if (BOOT && Array.isArray(BOOT.users)) return BOOT.users;
+    } catch (_){ }
     try { return (window.SCHEDULE_USERS && Array.isArray(window.SCHEDULE_USERS)) ? window.SCHEDULE_USERS : []; } catch (_) { return []; }
   })();
 
@@ -266,8 +287,9 @@
   }
 
   function canEditSchedule(){
-    // Editing is only for admin/manager AND only in single-user mode.
-    return (IS_ADMIN || IS_MANAGER) && isSingleUserMode();
+    // Editing is allowed only in single-user mode.
+    // For regular users, user selector contains only self (set by backend).
+    return isSingleUserMode();
   }
 
   function isAllFilterMode(){
@@ -317,6 +339,8 @@
       if (quickWrap) quickWrap.style.display = allMode ? 'none' : '';
       const emergencyBtn = document.getElementById('schedule-emergency');
       if (emergencyBtn) emergencyBtn.style.display = allMode ? 'none' : '';
+      const autofillBtn = document.getElementById('schedule-autofill');
+      if (autofillBtn) autofillBtn.style.display = allMode ? 'none' : '';
       if (allMode) {
         quickMode = '';
         try {
@@ -388,23 +412,29 @@
     if (!wrap || !sel) return;
     if (!Array.isArray(USERS) || !USERS.length) return;
 
-    wrap.style.display = '';
-    const baseOpts = USERS.map(u => '<option value="' + String(u.id) + '">' + escapeHtml(u.name) + '</option>').join('');
-    // "Все" доступно всем ролям, но режим всегда view-only.
-    sel.innerHTML = '<option value="">Все</option>' + baseOpts;
-    if (IS_ADMIN || IS_MANAGER) {
-      selectedAll = true;
-      selectedUserId = null;
-      try { sel.value = ''; } catch (_){ }
-    } else {
-      // Обычный пользователь по умолчанию видит только себя (первый в списке)
+    const isAdminOrManager = (IS_ADMIN || IS_MANAGER);
+    if (!isAdminOrManager) {
+      // Regular user: no selector UI; force self mode.
+      wrap.style.display = 'none';
       try {
         const first = USERS[0];
         selectedUserId = first ? Number(first.id) : null;
         selectedAll = false;
-        try { sel.value = selectedUserId ? String(selectedUserId) : ''; } catch (_){ }
-      } catch (_){ selectedUserId = null; selectedAll = true; }
+      } catch (_){
+        selectedUserId = null;
+        selectedAll = false;
+      }
+      updateUiForMode();
+      return;
     }
+
+    wrap.style.display = '';
+    const baseOpts = USERS.map(u => '<option value="' + String(u.id) + '">' + escapeHtml(u.name) + '</option>').join('');
+    // Admin/manager can switch to All-mode (view-only).
+    sel.innerHTML = '<option value="">Все</option>' + baseOpts;
+    selectedAll = true;
+    selectedUserId = null;
+    try { sel.value = ''; } catch (_){ }
     updateUiForMode();
     sel.addEventListener('change', async () => {
       if (!sel.value) {
@@ -430,6 +460,128 @@
         const wrap = document.getElementById('schedule-quick-time-wrap');
         if (wrap) wrap.style.display = (q === 'custom') ? '' : 'none';
       });
+    });
+  }
+
+  function renderAutofillModal(){
+    const y = view.getFullYear();
+    const m = view.getMonth() + 1;
+    const monthFirst = new Date(y, m-1, 1);
+    const anchor = iso(monthFirst);
+    return (
+      '<div class="modal-header">Автозаполнение</div>' +
+      '<div class="modal-body tasks-modal">' +
+        '<div class="muted">Заполнит график по шаблону X/Y на выбранный месяц.</div>' +
+        '<div class="task-field" style="margin-top:12px">' +
+          '<div class="task-field-label">Шаблон</div>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+            '<input class="input" type="number" id="af-x" min="1" value="5" style="width:120px" />' +
+            '<div class="muted">раб. дней</div>' +
+            '<input class="input" type="number" id="af-y" min="1" value="2" style="width:120px" />' +
+            '<div class="muted">вых. дней</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="task-field">' +
+          '<div class="task-field-label">Якорная дата</div>' +
+          '<input class="input" type="date" id="af-anchor" value="' + escapeHtml(anchor) + '" style="width:220px" />' +
+          '<div class="muted" style="margin-top:6px">От неё считается цикл X/Y.</div>' +
+        '</div>' +
+        '<div class="task-field">' +
+          '<div class="task-field-label">Режим на якорной дате</div>' +
+          '<select class="input" id="af-start" style="width:220px">' +
+            '<option value="work">Рабочий день</option>' +
+            '<option value="off">Выходной</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="task-field">' +
+          '<label style="display:flex;gap:10px;align-items:center">' +
+            '<input type="checkbox" id="af-overwrite" />' +
+            '<span>Перезаписывать уже заданные дни</span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="task-actions">' +
+          '<button class="btn" type="button" id="af-apply">Применить</button>' +
+          '<button class="btn-outline" type="button" id="af-cancel">Отмена</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  async function applyAutofill(){
+    if (!requireSingleUserModeOrWarn()) return;
+    const xEl = document.getElementById('af-x');
+    const yEl = document.getElementById('af-y');
+    const anchorEl = document.getElementById('af-anchor');
+    const startEl = document.getElementById('af-start');
+    const overwriteEl = document.getElementById('af-overwrite');
+
+    const x = Number(xEl ? xEl.value : 0);
+    const y = Number(yEl ? yEl.value : 0);
+    const anchor = String(anchorEl ? anchorEl.value : '').trim();
+    const startMode = String(startEl ? startEl.value : 'work').trim();
+    const overwrite = !!(overwriteEl && overwriteEl.checked);
+
+    if (!Number.isFinite(x) || x <= 0 || !Number.isFinite(y) || y <= 0) {
+      try { window.crmAlert && window.crmAlert('Неверный шаблон. X и Y должны быть больше 0'); } catch (_){ }
+      return;
+    }
+    if (!anchor) {
+      try { window.crmAlert && window.crmAlert('Выберите якорную дату'); } catch (_){ }
+      return;
+    }
+
+    const ok = window.crmConfirm
+      ? await window.crmConfirm('Заполнить график на этот месяц?', { title: 'Подтвердите действие', okText: 'Применить' })
+      : window.confirm('Заполнить график на этот месяц?');
+    if (!ok) return;
+
+    const yv = view.getFullYear();
+    const mv = view.getMonth() + 1;
+    const payload = {
+      year: yv,
+      month: mv,
+      x: x,
+      y: y,
+      anchor_day: anchor,
+      anchor_is_work: (startMode !== 'off'),
+      overwrite: overwrite,
+    };
+    if (selectedUserId) payload.user_id = Number(selectedUserId);
+
+    try {
+      const res = await apiJson('/crm/api/schedule/autofill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      closeModal();
+      await loadMonth();
+      try {
+        const created = (res && res.created !== undefined && res.created !== null) ? Number(res.created) : 0;
+        const updated = (res && res.updated !== undefined && res.updated !== null) ? Number(res.updated) : 0;
+        const skipped = (res && res.skipped !== undefined && res.skipped !== null) ? Number(res.skipped) : 0;
+        const msg = 'Автозаполнение выполнено.'
+          + '\nСоздано: ' + String(Number.isFinite(created) ? created : 0)
+          + '\nОбновлено: ' + String(Number.isFinite(updated) ? updated : 0)
+          + '\nПропущено: ' + String(Number.isFinite(skipped) ? skipped : 0);
+        if (window.crmAlert) window.crmAlert(msg);
+        else window.alert(msg);
+      } catch (_){ }
+    } catch (e) {
+      try { window.crmAlert && window.crmAlert((e && e.message) || 'Не удалось выполнить автозаполнение'); } catch (_){ }
+    }
+  }
+
+  function bindAutofill(){
+    const btn = document.getElementById('schedule-autofill');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      if (!requireSingleUserModeOrWarn()) return;
+      openModal(renderAutofillModal());
+      const cancel = document.getElementById('af-cancel');
+      const apply = document.getElementById('af-apply');
+      if (cancel) cancel.addEventListener('click', closeModal);
+      if (apply) apply.addEventListener('click', applyAutofill);
     });
   }
 
@@ -601,7 +753,7 @@
             '<button class="btn" type="button" data-action="preset_10_22">10:00–22:00 (12 часов)</button>' +
             '<button class="btn-outline" type="button" data-action="off">Выходной</button>' +
             '<button class="btn-outline" type="button" data-action="clear">Очистить</button>' +
-            ((IS_ADMIN || IS_MANAGER) ? '<button class="btn-outline" type="button" data-action="delete_shift">Удалить смену</button>' : '') +
+            '<button class="btn-outline" type="button" data-action="delete_shift">Удалить смену</button>' +
           '</div>'
         ) : '') +
         '<div class="divider"></div>' +
@@ -817,7 +969,6 @@
 
         if (act === 'delete_shift') {
           try {
-            if (!(IS_ADMIN || IS_MANAGER)) return;
             let ok2 = false;
             if (!window.crmConfirm) {
               ok2 = window.confirm('Удалить смену? Это уберет ее из календаря');
@@ -961,6 +1112,7 @@
   bindNav();
   bindUserSelector();
   bindQuick();
+  bindAutofill();
   bindEmergency();
   loadMonth().catch(() => {});
 })();

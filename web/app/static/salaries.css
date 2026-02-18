@@ -51,7 +51,7 @@
 .salaries-page .sal-security-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 
 .salary-pin-modal{--spn-radius:18px;--spn-border:#e6edf7;--spn-muted:#64748b;--spn-head:#0f172a;--spn-shadow:0 14px 40px rgba(2,6,23,.10)}
-.salary-pin-modal .spn-root{padding:16px;max-width:520px;width:min(520px,calc(100vw - 32px))}
+.salary-pin-modal .spn-root{padding:16px;max-width:520px;width:100%;box-sizing:border-box}
 .salary-pin-modal .spn-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
 .salary-pin-modal .spn-title{margin:0;font-size:18px;font-weight:900;color:var(--spn-head)}
 .salary-pin-modal .spn-label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:800;color:#334155;margin-bottom:10px}
@@ -59,7 +59,7 @@
 .salary-pin-modal .spn-label-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .salary-pin-modal .spn-req{color:#b42318;font-weight:900}
 .salary-pin-modal .spn-label.is-error .input{border-color:#fca5a5;box-shadow:0 0 0 4px rgba(244,63,94,.12)}
-.salary-pin-modal .spn-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
+.salary-pin-modal .spn-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:12px;flex-wrap:wrap}
 .salary-pin-modal .spn-actions .btn,.salary-pin-modal .spn-actions .btn-outline{min-width:160px;justify-content:center}
 
 @media (max-width: 560px){
@@ -105,9 +105,9 @@
 }
 
 /* Base modal sizing overrides for Salaries only */
-#modal[data-size="wide"] .modal-content{width:min(1100px,92vw);max-width:min(1100px,92vw)}
-#modal[data-size="narrow"] .modal-content{width:min(520px,92vw);max-width:min(520px,92vw)}
-#modal[data-size="pinwide"] .modal-content{width:min(720px,92vw);max-width:min(720px,92vw)}
+#modal[data-size="wide"] .modal-content{width:min(920px,calc(100vw - 64px));max-width:min(920px,calc(100vw - 64px));box-sizing:border-box}
+#modal[data-size="narrow"] .modal-content{width:min(560px,calc(100vw - 32px));max-width:min(560px,calc(100vw - 32px));box-sizing:border-box}
+#modal[data-size="pinwide"] .modal-content{width:min(720px,calc(100vw - 32px));max-width:min(720px,calc(100vw - 32px));box-sizing:border-box}
 
 /* PIN modal: no inner scroll when content fits */
 #modal[data-size="narrow"] .modal-content{overflow:hidden}
@@ -161,10 +161,10 @@
 
 /* Payout detail modal */
 .salary-pay-detail{--spd-radius:18px;--spd-border:#e6edf7;--spd-muted:#64748b;--spd-head:#0f172a;--spd-shadow:0 14px 40px rgba(2,6,23,.10)}
-.salary-pay-detail .spd-root{padding:16px;max-width:900px;width:min(900px,calc(100vw - 32px))}
+.salary-pay-detail .spd-root{padding:16px;max-width:1100px;width:100%;box-sizing:border-box}
 .salary-pay-detail .spd-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
 .salary-pay-detail .spd-title{margin:0;font-size:20px;font-weight:900;color:var(--spd-head)}
-.salary-pay-detail .spd-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 12px}
+.salary-pay-detail .spd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:12px 0 12px}
 .salary-pay-detail .spd-card{background:#fff;border:1px solid var(--spd-border);border-radius:var(--spd-radius);box-shadow:var(--spd-shadow);padding:12px;min-width:0}
 .salary-pay-detail .spd-k{color:var(--spd-muted);font-size:12px;font-weight:800}
 .salary-pay-detail .spd-v{margin-top:6px;font-size:14px;font-weight:900;color:var(--spd-head);min-width:0;white-space:normal;overflow-wrap:anywhere;word-break:break-word}

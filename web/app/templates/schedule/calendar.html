@@ -7,6 +7,7 @@
     <div class="muted">План и фактические смены</div>
   </div>
   <div class="tasks-header-actions">
+    <button class="btn-outline" type="button" id="schedule-autofill">Автозаполнение</button>
     <button class="btn" type="button" id="schedule-emergency">⚡ Экстренная смена</button>
     <button class="btn-outline" type="button" id="schedule-today">Сегодня</button>
   </div>
@@ -59,10 +60,12 @@
 </div>
 
 <link rel="stylesheet" href="{{ url_for('static', path='schedule.css') }}" />
-<script>
-  window.SCHEDULE_USERS = {{ users_json|default('[]')|safe }};
-  window.SCHEDULE_IS_ADMIN = {% if is_admin %}true{% else %}false{% endif %};
-  window.SCHEDULE_IS_MANAGER = {% if is_manager %}true{% else %}false{% endif %};
+<script type="application/json" id="schedule-boot">
+  {
+    "users": {{ users_json|default('[]')|safe }},
+    "is_admin": {{ (is_admin|default(false)) | tojson }},
+    "is_manager": {{ (is_manager|default(false)) | tojson }}
+  }
 </script>
 <script defer src="{{ url_for('static', path='schedule.js') }}"></script>
 {% endblock %}

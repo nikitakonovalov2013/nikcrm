@@ -29,7 +29,12 @@ class SalaryShiftCalc:
     confirmed_at: object | None
     confirmed_by_user_id: int | None
 
+    # Backward-compatible name: previously hourly rate, now interpreted as per-shift base rate
     hour_rate: Decimal | None
+
+    requested_amount: Decimal | None
+    approved_amount: Decimal | None
+    is_amount_approved: bool
 
     base_amount: Decimal
     adjustments_amount: Decimal
@@ -61,6 +66,10 @@ def calc_shift_salary(
     state: SalaryShiftState,
     manual_hours: Decimal | None,
     manual_amount_override: Decimal | None,
+    requested_amount: Decimal | None,
+    approved_amount: Decimal | None,
+    approval_required: bool | None,
+    approved_at=None,
     adjustments_amount: Decimal,
     confirmed_at=None,
     confirmed_by_user_id: int | None = None,
@@ -82,11 +91,43 @@ def calc_shift_salary(
     except Exception:
         pass
 
+    # Requested amount approval rules:
+    # - base rate is hour_rate (per-shift) from profile
+    # - requested_amount is what employee entered
+    # - approved_amount is authoritative approval (if exists)
+    base_rate = q2(Decimal(hour_rate)) if hour_rate is not None else DEC_0
+    req_amt = requested_amount
+    appr_amt = approved_amount
+    try:
+        if req_amt is not None and abs(Decimal(req_amt)) <= Decimal("0.0001"):
+            req_amt = None
+    except Exception:
+        pass
+    try:
+        if appr_amt is not None and abs(Decimal(appr_amt)) <= Decimal("0.0001"):
+            appr_amt = None
+    except Exception:
+        pass
+
+    approved_flag = bool(appr_amt is not None) and bool(getattr(approved_at, "__class__", None) is not None or approved_at is not None)
+    if approval_required is not None:
+        approved_flag = bool(approved_flag and (not bool(approval_required)))
+
+    req_differs = False
+    try:
+        if req_amt is not None:
+            req_differs = bool(q2(Decimal(req_amt)) != base_rate)
+    except Exception:
+        req_differs = True
+
+    needs_review_requested = bool(req_amt is not None and req_differs and (not approved_flag))
+
     needs_review_base = bool(
         (state != SalaryShiftState.WORKED)
         or (mh is not None)
         or (mao is not None)
         or (adjustments_amount is not None and abs(Decimal(adjustments_amount)) > Decimal("0.0001"))
+        or needs_review_requested
     )
 
     needs_review = bool(needs_review_base and (confirmed_at is None))
@@ -106,27 +147,24 @@ def calc_shift_salary(
             confirmed_at=confirmed_at,
             confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),
             hour_rate=hour_rate,
+            requested_amount=(q2(Decimal(req_amt)) if req_amt is not None else None),
+            approved_amount=(q2(Decimal(appr_amt)) if appr_amt is not None else None),
+            is_amount_approved=bool(approved_flag),
             base_amount=q2(base_amount),
             adjustments_amount=q2(adjustments_amount or DEC_0),
             total_amount=total,
         )
 
-    # choose hours for base
-    effective_hours: Decimal | None = None
-    if mh is not None:
-        effective_hours = mh
-    elif actual_hours is not None and not needs_review:
-        # if we have actual hours and no anomalies -> use them
-        effective_hours = actual_hours
-    else:
-        effective_hours = planned_hours
-
     base_amount = DEC_0
     if mao is not None:
         base_amount = mao
     else:
-        if hour_rate is not None and effective_hours is not None:
-            base_amount = hour_rate * effective_hours
+        # New model: hour_rate is interpreted as per-shift base rate.
+        # If employee requested a different amount, we use it only after approval.
+        if req_amt is not None and approved_flag:
+            base_amount = Decimal(req_amt)
+        else:
+            base_amount = base_rate
 
     base_amount = q2(base_amount)
     adjustments_amount = q2(adjustments_amount or DEC_0)
@@ -143,6 +181,9 @@ def calc_shift_salary(
         confirmed_at=confirmed_at,
         confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),
         hour_rate=hour_rate,
+        requested_amount=(q2(Decimal(req_amt)) if req_amt is not None else None),
+        approved_amount=(q2(Decimal(appr_amt)) if appr_amt is not None else None),
+        is_amount_approved=bool(approved_flag),
         base_amount=base_amount,
         adjustments_amount=adjustments_amount,
         total_amount=total,

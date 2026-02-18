@@ -32,6 +32,11 @@
           <div id="salary-shift-selected" class="sm-form-date">Выберите смену</div>
         </div>
 
+        <div id="salary-shift-payinfo" class="sm-section" style="margin-top:0; display:none;">
+          <div class="sm-section-title">Оплата за смену</div>
+          <div id="salary-shift-payinfo-body"></div>
+        </div>
+
         <div id="salary-shift-form" style="display:none;">
           <div class="sm-fields">
             <label class="sm-label">
@@ -61,6 +66,22 @@
             Комментарий
             <textarea id="salary-shift-comment" class="input" rows="4" placeholder="обязательно при изменениях"></textarea>
           </label>
+
+          <div class="sm-section">
+            <div class="sm-section-title">Запрошенная сумма</div>
+            <div class="sm-fields" style="margin-top:10px;">
+              <label class="sm-label">
+                Сумма за смену, ₽
+                <input id="salary-shift-requested-amount" class="input" type="text" placeholder="например, 3500" />
+              </label>
+              <div></div>
+            </div>
+            <div id="salary-shift-amount-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
+            <div class="sm-actions" style="margin-top:10px; justify-content:flex-end; gap:10px;">
+              <button id="salary-shift-amount-save" class="btn-outline" type="button">Сохранить сумму</button>
+              <button id="salary-shift-amount-approve" class="btn" type="button">Подтвердить сумму</button>
+            </div>
+          </div>
 
           <div id="salary-shift-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>
 
@@ -110,6 +131,14 @@
   const errEl = document.getElementById('salary-shift-error');
   const saveBtn = document.getElementById('salary-shift-save');
 
+  const reqAmtEl = document.getElementById('salary-shift-requested-amount');
+  const amtErrEl = document.getElementById('salary-shift-amount-error');
+  const amtSaveBtn = document.getElementById('salary-shift-amount-save');
+  const amtApproveBtn = document.getElementById('salary-shift-amount-approve');
+
+  const payInfoWrap = document.getElementById('salary-shift-payinfo');
+  const payInfoBody = document.getElementById('salary-shift-payinfo-body');
+
   const adjListEl = document.getElementById('salary-shift-adjustments');
   const adjDeltaEl = document.getElementById('salary-adj-delta');
   const adjCommentEl = document.getElementById('salary-adj-comment');
@@ -122,6 +151,79 @@
   function apiBase(){
     const m = document.querySelector('meta[name="crm-api-base"]');
     return (m && m.getAttribute('content')) ? m.getAttribute('content') : '/crm/api';
+  }
+
+  async function reloadAndReselect(){
+    const keep = Number(selectedShiftId || 0);
+    await load();
+    if(keep) selectShift(keep);
+  }
+
+  async function saveRequestedAmount(){
+    if(!selectedShiftId) return;
+    setErr(amtErrEl, null);
+    const v = String(reqAmtEl && reqAmtEl.value ? reqAmtEl.value : '').trim();
+    if(!v){
+      setErr(amtErrEl, 'Введите сумму');
+      return;
+    }
+    try {
+      if(amtSaveBtn) amtSaveBtn.disabled = true;
+      if(amtApproveBtn) amtApproveBtn.disabled = true;
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/amount/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ month: month, amount: v }),
+      });
+      if(r.status === 403){ window.location.href = '/crm/salaries'; return; }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        setErr(amtErrEl, 'Не удалось сохранить сумму');
+        return;
+      }
+      await reloadAndReselect();
+      try { window.dispatchEvent(new CustomEvent('salary-grid-refresh')); } catch(_) {}
+    } catch(_e){
+      setErr(amtErrEl, 'Ошибка сохранения');
+    } finally {
+      try { if(amtSaveBtn) amtSaveBtn.disabled = false; } catch(_){ }
+      try {
+        const it = findShift(selectedShiftId);
+        if(amtApproveBtn) amtApproveBtn.disabled = !(it && it.approval_required);
+      } catch(_){ }
+    }
+  }
+
+  async function approveRequestedAmount(){
+    if(!selectedShiftId) return;
+    setErr(amtErrEl, null);
+    try {
+      if(amtApproveBtn) amtApproveBtn.disabled = true;
+      if(amtSaveBtn) amtSaveBtn.disabled = true;
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/amount/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if(r.status === 403){ window.location.href = '/crm/salaries'; return; }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        const code = String(d && d.error ? d.error : 'bad');
+        if(code === 'no_requested_amount') setErr(amtErrEl, 'Нет запрошенной суммы');
+        else setErr(amtErrEl, 'Не удалось подтвердить');
+        return;
+      }
+      await reloadAndReselect();
+      try { window.dispatchEvent(new CustomEvent('salary-grid-refresh')); } catch(_) {}
+    } catch(_e){
+      setErr(amtErrEl, 'Ошибка подтверждения');
+    } finally {
+      try { if(amtSaveBtn) amtSaveBtn.disabled = false; } catch(_){ }
+      try {
+        const it = findShift(selectedShiftId);
+        if(amtApproveBtn) amtApproveBtn.disabled = !(it && it.approval_required);
+      } catch(_){ }
+    }
   }
 
   function setMsg(msg){
@@ -163,9 +265,18 @@
     try { if(mhEl) mhEl.value = String(it.manual_hours || ''); } catch(_) {}
     try { if(maEl) maEl.value = String(it.manual_amount_override || ''); } catch(_) {}
     try { if(cEl) cEl.value = String(it.comment || ''); } catch(_) {}
+    try { if(reqAmtEl) reqAmtEl.value = String(it.requested_amount || ''); } catch(_) {}
     setErr(errEl, null);
     setErr(adjErrEl, null);
+    setErr(amtErrEl, null);
 
+    try {
+      if(amtApproveBtn){
+        amtApproveBtn.disabled = !(it && it.approval_required);
+      }
+    } catch(_){ }
+
+    renderPayInfo(it);
     renderAdjustments(it);
   }
 
@@ -196,8 +307,57 @@
   }
 
   function fmtRub(v){
-    const s = String(v || '0');
+    const s = String(v === null || v === undefined ? '' : v).trim();
+    if(!s) return '—';
     return s + ' ₽';
+  }
+
+  function yesNo(v){
+    return v ? 'да' : 'нет';
+  }
+
+  function renderPayInfo(it){
+    if(!payInfoWrap || !payInfoBody) return;
+    if(!it){
+      payInfoWrap.style.display = 'none';
+      payInfoBody.innerHTML = '';
+      return;
+    }
+
+    const rate = fmtRub(it.shift_rate);
+    const req = fmtRub(it.requested_amount);
+    const appr = fmtRub(it.approved_amount);
+    const isAppr = !!(it && it.is_amount_approved);
+    const reqHas = !!(it && it.requested_amount);
+    const reqNeed = !!(it && it.approval_required);
+    const finalAmt = fmtRub((it && it.final_amount) ? it.final_amount : (it && it.total_amount));
+
+    let badge = '';
+    if(reqNeed){
+      badge = '<span class="sm-badge orange" style="margin-left:8px;">⚠️ Требует подтверждения</span>';
+    } else if(reqHas){
+      badge = '<span class="sm-badge green" style="margin-left:8px;">✅ Подтверждено</span>';
+    }
+
+    payInfoWrap.style.display = '';
+    payInfoBody.innerHTML = (
+      '<div class="sm-adj-item" style="margin-bottom:8px;">' +
+        '<div>Ставка (по профилю)</div>' +
+        '<b>' + rate + '</b>' +
+      '</div>' +
+      '<div class="sm-adj-item" style="margin-bottom:8px;">' +
+        '<div>Запрошено сотрудником</div>' +
+        '<b>' + req + '</b>' +
+      '</div>' +
+      '<div class="sm-adj-item" style="margin-bottom:8px;">' +
+        '<div>Подтверждено</div>' +
+        '<b>' + (reqHas ? yesNo(isAppr) : '—') + '</b>' +
+      '</div>' +
+      '<div class="sm-adj-item">' +
+        '<div>Начисление к учёту' + badge + '</div>' +
+        '<b>' + finalAmt + '</b>' +
+      '</div>'
+    );
   }
 
   async function load(){
@@ -225,12 +385,12 @@
         const state = String(it.state || '');
         const planned = it.planned_hours ? String(it.planned_hours) : '—';
         const actual = it.actual_hours ? String(it.actual_hours) : '—';
-        const total = fmtRub(it.total_amount);
+        const total = fmtRub(it.final_amount || it.total_amount);
         const sid = Number(it.shift_id || 0);
-        const review = it.needs_review ? ' ⚠️' : '';
+        const review = (it && (it.needs_review || it.approval_required)) ? ' ⚠️' : '';
         return (
           '<tr data-salary-shift-row="' + String(sid) + '">' +
-            '<td>' + day + (review ? ' <span title="Требует внимания">⚠️</span>' : '') + '</td>' +
+            '<td>' + day + (review ? ' <span title="Требует подтверждения">⚠️</span>' : '') + '</td>' +
             '<td>' + statusBadge(state) + '</td>' +
             '<td>' + planned + ' / ' + actual + '</td>' +
             '<td><b>' + total + '</b></td>' +
@@ -364,6 +524,8 @@
   try {
     if(saveBtn) saveBtn.addEventListener('click', save);
     if(adjAddBtn) adjAddBtn.addEventListener('click', addAdj);
+    if(amtSaveBtn) amtSaveBtn.addEventListener('click', saveRequestedAmount);
+    if(amtApproveBtn) amtApproveBtn.addEventListener('click', approveRequestedAmount);
   } catch(e) {}
 
   load();

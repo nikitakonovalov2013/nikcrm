@@ -4,6 +4,11 @@
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ url_for('static', path='salaries.css') }}" />
+{% if is_admin %}
+<meta name="sal-is-admin" content="1" />
+{% else %}
+<meta name="sal-is-admin" content="0" />
+{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -179,7 +184,7 @@
       <thead>
         <tr>
           <th data-sal-sort="name">Сотрудник</th>
-          <th data-sal-sort="hour_rate">Ставка/час</th>
+          <th data-sal-sort="hour_rate">Ставка за смену</th>
           <th data-sal-sort="accrued">Начислено</th>
           <th data-sal-sort="paid">Выплачено</th>
           <th data-sal-sort="balance">Баланс</th>
@@ -362,6 +367,42 @@
     }
   }
 
+  function isAdmin(){
+    try {
+      const m = document.querySelector('meta[name="sal-is-admin"]');
+      const v = (m && m.getAttribute('content')) ? String(m.getAttribute('content')) : '';
+      return v.trim() === '1';
+    } catch(_){
+      return false;
+    }
+  }
+
+  function fmtText(v){
+    try {
+      if(v === null || v === undefined) return '—';
+      const s = String(v).trim();
+      if(!s) return '—';
+      const low = s.toLowerCase();
+      if(low === 'none' || low === 'null' || low === 'undefined') return '—';
+      return s;
+    } catch(_){
+      return '—';
+    }
+  }
+
+  function fmtInputText(v){
+    try {
+      if(v === null || v === undefined) return '';
+      const s = String(v).trim();
+      if(!s) return '';
+      const low = s.toLowerCase();
+      if(low === 'none' || low === 'null' || low === 'undefined') return '';
+      return s;
+    } catch(_){
+      return '';
+    }
+  }
+
   function jsonPretty(v){
     try {
       if(v === null || v === undefined) return '—';
@@ -422,6 +463,7 @@
       const safeColor = (/^#[0-9a-fA-F]{6}$/.test(ucolor)) ? ucolor : '';
       const amtNum = moneyNum(p.amount);
       const amtCls = (amtNum < 0) ? 'neg' : 'pos';
+      const canEdit = isAdmin();
       openModal(
         '<div class="salary-modal salary-pay-detail">' +
           '<div class="spd-root">' +
@@ -434,14 +476,154 @@
               '<div class="spd-card"><div class="spd-k">Период</div><div class="spd-v">' + fmtDateRu(p.period_start) + '—' + fmtDateRu(p.period_end) + '</div></div>' +
               '<div class="spd-card"><div class="spd-k">Сумма</div><div class="spd-v"><span class="sal-pill ' + amtCls + '">' + fmtRubPretty(p.amount) + '</span></div></div>' +
               '<div class="spd-card"><div class="spd-k">Кто создал</div><div class="spd-v">' + String(p.actor_name || p.actor_user_id || '—') + '</div></div>' +
-              '<div class="spd-card"><div class="spd-k">Комментарий</div><div class="spd-v">' + String(p.comment || '—') + '</div></div>' +
+              '<div class="spd-card"><div class="spd-k">Комментарий</div><div class="spd-v">' + fmtText(p.comment) + '</div></div>' +
             '</div>' +
+            (canEdit ? (
+              '<div class="spd-actions" style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">' +
+                '<button class="btn-outline" type="button" id="spd-edit" data-payout-id="' + String(p.id || pid) + '">Редактировать</button>' +
+              '</div>'
+            ) : '') +
           '</div>' +
         '</div>'
       );
+
+      try {
+        const editBtn = document.getElementById('spd-edit');
+        if(editBtn) editBtn.addEventListener('click', ()=>{ openPayoutEditModal(p); });
+      } catch(_){ }
     } catch(_e){
       try { window.crmAlert && window.crmAlert('Ошибка загрузки выплаты'); } catch(_){ }
     }
+  }
+
+  async function openPayoutEditModal(p){
+    if(!isAdmin()) return;
+    const pid = Number(p && p.id || 0);
+    if(!pid) return;
+    openModal(
+      '<div class="salary-modal salary-pay-modal">' +
+        '<div class="spm-root">' +
+          '<div class="spm-head">' +
+            '<div>' +
+              '<h3 class="spm-title">Редактирование выплаты #' + String(pid) + '</h3>' +
+              '<div class="spm-sub">Сотрудник: <b>' + String(p.user_name || ('#' + String(p.user_id || ''))).replace(/</g,'&lt;') + '</b></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="spm-form">' +
+            '<label class="spm-label" id="spe-label-amount">' +
+              '<span class="spm-label-row"><span>Сумма выплаты</span><span class="spm-req">*</span></span>' +
+              '<input id="spe-amount" class="input" type="text" inputmode="decimal" value="' + String(p.amount || '').replace(/"/g,'&quot;') + '" />' +
+            '</label>' +
+            '<label class="spm-label">Комментарий' +
+              '<input id="spe-comment" class="input" type="text" value="' + (fmtInputText(p.comment).replace(/"/g,'&quot;')) + '" />' +
+            '</label>' +
+            '<div style="display:flex; gap:10px; flex-wrap:wrap;">' +
+              '<label class="spm-label" style="flex:1; min-width:220px;">Период (с)' +
+                '<input id="spe-ps" class="input" type="date" value="' + String(p.period_start || '').replace(/"/g,'&quot;') + '" />' +
+              '</label>' +
+              '<label class="spm-label" style="flex:1; min-width:220px;">Период (по)' +
+                '<input id="spe-pe" class="input" type="date" value="' + String(p.period_end || '').replace(/"/g,'&quot;') + '" />' +
+              '</label>' +
+            '</div>' +
+            '<div id="spe-error" class="crm-ui-dialog-error" style="display:none; margin-top:8px;"></div>' +
+            '<div class="spm-actions">' +
+              '<button id="spe-cancel" class="btn-outline" type="button">Отмена</button>' +
+              '<button id="spe-save" class="btn" type="button">Сохранить</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    const amountEl = document.getElementById('spe-amount');
+    const commentEl = document.getElementById('spe-comment');
+    const psEl = document.getElementById('spe-ps');
+    const peEl = document.getElementById('spe-pe');
+    const errEl = document.getElementById('spe-error');
+    const cancelBtn = document.getElementById('spe-cancel');
+    const saveBtn = document.getElementById('spe-save');
+    const amountLabel = document.getElementById('spe-label-amount');
+
+    function setErr(msg){
+      if(!errEl) return;
+      if(!msg){ errEl.style.display = 'none'; errEl.textContent = ''; return; }
+      errEl.style.display = 'block';
+      errEl.textContent = String(msg);
+    }
+    function setAmountError(on){
+      try {
+        if(!amountLabel) return;
+        if(on) amountLabel.classList.add('is-error');
+        else amountLabel.classList.remove('is-error');
+      } catch(_){ }
+    }
+    function parseMoney(v){
+      try {
+        const raw = String(v === null || v === undefined ? '' : v).trim().replace(/\s+/g,'').replace(',', '.');
+        if(!raw) return NaN;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : NaN;
+      } catch(_){
+        return NaN;
+      }
+    }
+
+    try { if(cancelBtn) cancelBtn.addEventListener('click', ()=>{ openPayoutDetailModal(pid); }); } catch(_){ }
+
+    async function onSave(){
+      setErr(null);
+      setAmountError(false);
+
+      const rawAmount = String(amountEl && amountEl.value ? amountEl.value : '').trim().replace(',', '.');
+      const amountNum = parseMoney(rawAmount);
+      if(!rawAmount || !Number.isFinite(amountNum) || amountNum < 0){
+        setAmountError(true);
+        setErr('Введите корректную сумму выплаты');
+        return;
+      }
+      const comment = String(commentEl && commentEl.value ? commentEl.value : '').trim();
+      const ps = String(psEl && psEl.value ? psEl.value : '').trim();
+      const pe = String(peEl && peEl.value ? peEl.value : '').trim();
+      if(ps && pe && ps > pe){
+        setErr('Неверный период: дата начала позже даты конца');
+        return;
+      }
+
+      try {
+        if(saveBtn) saveBtn.disabled = true;
+        const r = await apiFetch(apiBase() + '/salaries/payouts/' + encodeURIComponent(String(pid)) + '/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount: rawAmount, comment: comment, period_start: ps, period_end: pe })
+        });
+        if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+        const d = await r.json().catch(()=> ({}));
+        if(!d || !d.ok){ setErr('Не удалось обновить выплату'); return; }
+        const beforeAmount = (d.before && d.before.amount !== undefined) ? d.before.amount : null;
+        const afterAmount = (d.after && d.after.amount !== undefined) ? d.after.amount : null;
+        const msg = 'Выплата обновлена. Сумма: было ' + fmtRubPretty(beforeAmount) + ' → стало ' + fmtRubPretty(afterAmount);
+        try { window.crmAlert && window.crmAlert(msg, { title: 'Готово' }); } catch(_){ }
+
+        try {
+          const v0 = String((dashMonthEl && dashMonthEl.value) || '').trim();
+          const month = v0 ? (v0 + '-01').slice(0,7) : '';
+          if(month) loadDashboard(month);
+        } catch(_){ }
+        try { await load(); } catch(_){ }
+        try { await applyPayouts(); } catch(_){ }
+        await openPayoutDetailModal(pid);
+      } catch(_e){
+        setErr('Ошибка сохранения');
+      } finally {
+        try { if(saveBtn) saveBtn.disabled = false; } catch(_){ }
+      }
+    }
+
+    try {
+      if(saveBtn) saveBtn.addEventListener('click', onSave);
+      if(amountEl) amountEl.addEventListener('input', ()=>{ setAmountError(false); setErr(null); });
+      if(amountEl) amountEl.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ e.preventDefault(); onSave(); } });
+    } catch(_){ }
   }
 
   async function loadPayoutsJournal(month){
@@ -506,7 +688,7 @@
         const amtCls = (amtNum < 0) ? 'neg' : 'pos';
         const amt = fmtRubPretty(it.amount);
         const actor = String(it.actor_name || it.actor_user_id || '—');
-        const comment = String(it.comment || '');
+        const comment = fmtText(it.comment);
         return (
           '<tr class="sal-tr-click" data-pj-open-row="' + String(id) + '">' +
             '<td data-label="Дата"><span class="sal-muted">' + when + '</span></td>' +
@@ -514,7 +696,7 @@
             '<td data-label="Период"><span class="sal-muted">' + period + '</span></td>' +
             '<td data-label="Сумма"><span class="sal-pill ' + amtCls + '">' + amt + '</span></td>' +
             '<td data-label="Кто создал"><span class="sal-muted">' + actor.replace(/</g,'&lt;') + '</span></td>' +
-            '<td data-label="Комментарий"><span class="sal-muted">' + (comment ? comment.replace(/</g,'&lt;') : '—') + '</span></td>' +
+            '<td data-label="Комментарий"><span class="sal-muted">' + (comment === '—' ? '—' : comment.replace(/</g,'&lt;')) + '</span></td>' +
             '<td data-label="Детали" style="text-align:right;">' +
               '<button class="sal-btn-sec" type="button" data-pj-open="' + String(id) + '">Детали</button>' +
             '</td>' +
@@ -1442,7 +1624,7 @@
       const balNum = parseNum(it.balance);
       const balCls = (balNum < 0) ? 'neg' : 'pos';
       const rateHtml = hasRate
-        ? ('<span class="sal-money">' + rateNum.toFixed(2) + ' ₽/ч</span>')
+        ? ('<span class="sal-money">' + rateNum.toFixed(2) + ' ₽/смена</span>')
         : ('<span class="sal-rate-missing">— <span class="sal-rate-note">ставка не задана</span></span>');
       const accNum = parseNum(it.accrued);
       const paidNum = parseNum(it.paid);
@@ -1456,7 +1638,7 @@
               '<div class="sal-user-name"' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + ' title="' + uname.replace(/"/g,'&quot;') + '">' + uname + (dev > 0 ? (' <span class="sal-dev">⚠️ ' + String(dev) + '</span>') : '') + '</div>' +
             '</div>' +
           '</td>' +
-          '<td data-label="Ставка/час">' + rateHtml + '</td>' +
+          '<td data-label="Ставка за смену">' + rateHtml + '</td>' +
           '<td data-label="Начислено"><span class="sal-pill ' + accCls + '">' + fmtRubPretty(it.accrued) + '</span></td>' +
           '<td data-label="Выплачено"><span class="sal-pill ' + paidCls + '">' + fmtRubPretty(it.paid) + '</span></td>' +
           '<td data-label="Баланс"><span class="sal-pill ' + balCls + '">' + fmtRubPretty(it.balance) + '</span></td>' +

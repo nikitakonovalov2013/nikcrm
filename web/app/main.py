@@ -1221,6 +1221,243 @@ async def api_broadcasts_rate(
     await session.flush()
     return {"ok": True}
 
+
+@app.post("/api/schedule/autofill")
+@app.post("/crm/api/schedule/autofill")
+async def schedule_api_autofill(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Неверный формат")
+
+    try:
+        y = int(body.get("year"))
+        m = int(body.get("month"))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверный месяц")
+    if m < 1 or m > 12:
+        raise HTTPException(status_code=422, detail="Неверный месяц")
+
+    try:
+        x = int(body.get("x"))
+        y2 = int(body.get("y"))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверный шаблон")
+    if x <= 0 or y2 <= 0:
+        raise HTTPException(status_code=422, detail="Неверный шаблон")
+
+    anchor_raw = str(body.get("anchor_day") or "").strip()
+    if not anchor_raw:
+        raise HTTPException(status_code=422, detail="Не задана якорная дата")
+    try:
+        anchor_day = datetime.strptime(anchor_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная якорная дата")
+
+    anchor_is_work = bool(body.get("anchor_is_work", True))
+    overwrite = bool(body.get("overwrite", False))
+
+    target_user_id = body.get("user_id")
+    uid = int(actor.id)
+    if target_user_id is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        try:
+            uid = int(target_user_id)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверный user_id")
+
+    _, last_day = calendar.monthrange(y, m)
+    start = datetime(y, m, 1, tzinfo=MOSCOW_TZ).date()
+    end = datetime(y, m, last_day, tzinfo=MOSCOW_TZ).date()
+
+    cycle = int(x + y2)
+
+    # Preload existing plan rows and facts for overwrite protection
+    plan_rows = list(
+        (
+            await session.scalars(
+                select(WorkShiftDay)
+                .where(WorkShiftDay.user_id == int(uid))
+                .where(WorkShiftDay.day >= start)
+                .where(WorkShiftDay.day <= end)
+            )
+        ).all()
+    )
+    plan_by_day: dict[str, WorkShiftDay] = {str(getattr(r, "day")): r for r in plan_rows if getattr(r, "day", None) is not None}
+
+    fact_rows = list(
+        (
+            await session.scalars(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(uid))
+                .where(ShiftInstance.day >= start)
+                .where(ShiftInstance.day <= end)
+            )
+        ).all()
+    )
+    fact_days = {str(getattr(r, "day")) for r in fact_rows if getattr(r, "day", None) is not None}
+
+    created = 0
+    updated = 0
+    skipped = 0
+
+    d = start
+    while d <= end:
+        day_key = str(d)
+        if (not overwrite) and (day_key in plan_by_day or day_key in fact_days):
+            skipped += 1
+            d = d + timedelta(days=1)
+            continue
+
+        delta = int((d - anchor_day).days)
+        pos = ((delta % cycle) + cycle) % cycle
+        is_work = (pos < x) if anchor_is_work else (pos >= y2)
+
+        row = plan_by_day.get(day_key)
+        if row is None:
+            row = WorkShiftDay(
+                user_id=int(uid),
+                day=d,
+                kind="work" if is_work else "off",
+                hours=None,
+                start_time=None,
+                end_time=None,
+                is_emergency=False,
+            )
+            session.add(row)
+            plan_by_day[day_key] = row
+            created += 1
+        else:
+            row.kind = "work" if is_work else "off"
+            updated += 1
+
+        if is_work:
+            row.start_time = DEFAULT_SHIFT_START
+            row.end_time = DEFAULT_SHIFT_END
+            row.hours = 8
+        else:
+            row.start_time = None
+            row.end_time = None
+            row.hours = None
+
+        d = d + timedelta(days=1)
+
+    await session.flush()
+    return {"ok": True, "created": int(created), "updated": int(updated), "skipped": int(skipped)}
+
+
+@app.post("/api/salaries/shifts/{shift_id}/amount/update")
+@app.post("/crm/api/salaries/shifts/{shift_id}/amount/update")
+async def salaries_api_shift_amount_update(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    amt_raw = str(body.get("amount") or "").strip().replace(",", ".")
+    month = str(body.get("month") or "").strip()
+    if not amt_raw:
+        return JSONResponse({"ok": False, "error": "bad_amount"}, status_code=400)
+    try:
+        amt_dec = Decimal(amt_raw)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_amount"}, status_code=400)
+    if amt_dec <= 0:
+        return JSONResponse({"ok": False, "error": "bad_amount"}, status_code=400)
+
+    shift = (
+        await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+    ).scalar_one_or_none()
+    if shift is None:
+        raise HTTPException(status_code=404)
+
+    # base shift rate from profile (backward compatible hour_rate)
+    base_rate_dec: Decimal | None = None
+    try:
+        base_rate_dec = await load_user_hour_rate(session=session, user_id=int(getattr(shift, "user_id", 0) or 0))
+    except Exception:
+        base_rate_dec = None
+    base_rate_int = int(base_rate_dec) if base_rate_dec is not None else 0
+    amt_int = int(q2(amt_dec))
+
+    shift.amount_submitted = amt_int
+    if base_rate_int > 0:
+        shift.amount_default = base_rate_int
+
+    if base_rate_int > 0 and amt_int == base_rate_int:
+        # no approval required
+        shift.approval_required = False
+        shift.amount_approved = amt_int
+        shift.approved_by_user_id = int(getattr(actor, "id", 0) or 0) or None
+        shift.approved_at = utc_now()
+    else:
+        # approval required
+        shift.approval_required = True
+        shift.amount_approved = None
+        shift.approved_by_user_id = None
+        shift.approved_at = None
+
+    session.add(shift)
+    await session.flush()
+
+    # month param is accepted for frontend compatibility, no extra behavior here
+    _ = month
+    return {"ok": True}
+
+
+@app.post("/api/salaries/shifts/{shift_id}/amount/approve")
+@app.post("/crm/api/salaries/shifts/{shift_id}/amount/approve")
+async def salaries_api_shift_amount_approve(
+    shift_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    shift = (
+        await session.execute(select(ShiftInstance).where(ShiftInstance.id == int(shift_id)))
+    ).scalar_one_or_none()
+    if shift is None:
+        raise HTTPException(status_code=404)
+
+    if getattr(shift, "amount_submitted", None) is None:
+        return JSONResponse({"ok": False, "error": "no_requested_amount"}, status_code=400)
+
+    shift.amount_approved = int(getattr(shift, "amount_submitted", 0) or 0)
+    shift.approval_required = False
+    shift.approved_by_user_id = int(getattr(actor, "id", 0) or 0) or None
+    shift.approved_at = utc_now()
+    session.add(shift)
+    await session.flush()
+
+    return {"ok": True}
+
 async def load_user(session: AsyncSession, user_id: int) -> User:
     res = await session.execute(select(User).where(User.id == user_id).where(User.is_deleted == False))
     user = res.scalar_one_or_none()
@@ -2577,7 +2814,6 @@ async def salaries_user_shifts_page(
                 str(getattr(u, "last_name", "") or "").strip(),
             ]
         ).strip()
-        or str(getattr(u, "username", "") or "").strip()
         or f"#{int(user_id)}"
     )
 
@@ -2738,7 +2974,7 @@ async def salaries_api_grid(
         items.append(
             {
                 "user_id": uid,
-                "name": fio or str(getattr(u, "username", "") or "") or f"#{uid}",
+                "name": fio or f"#{uid}",
                 "color": str(getattr(u, "color", "") or "") or None,
                 "hour_rate": hour_rate_s,
                 "accrued": f"{totals.accrued:.2f}",
@@ -3540,6 +3776,15 @@ async def salaries_api_shifts_list(
         manual_hours_val = getattr(s, "manual_hours", None)
         manual_amount_val = getattr(s, "manual_amount_override", None)
 
+        rate_val = getattr(s, "hour_rate", None)
+        rate_s = (f"{Decimal(str(rate_val)):.2f}" if rate_val is not None else None)
+        req_amt = getattr(s, "requested_amount", None)
+        appr_amt = getattr(s, "approved_amount", None)
+        is_amt_appr = bool(getattr(s, "is_amount_approved", False))
+        # If calc layer doesn't provide these (older), fall back to None/False
+        req_amt_s = (f"{Decimal(str(req_amt)):.2f}" if req_amt is not None else None)
+        appr_amt_s = (f"{Decimal(str(appr_amt)):.2f}" if appr_amt is not None else None)
+
         try:
             logger.info(
                 "salaries_shift_flags",
@@ -3566,9 +3811,15 @@ async def salaries_api_shifts_list(
                 "actual_hours": (str(getattr(s, "actual_hours", "") or "") or None),
                 "manual_hours": (str(manual_hours_val) if manual_hours_val is not None else None),
                 "manual_amount_override": (str(manual_amount_val) if manual_amount_val is not None else None),
+                "shift_rate": rate_s,
                 "base_amount": f"{getattr(s, 'base_amount', Decimal('0')):.2f}",
+                "requested_amount": req_amt_s,
+                "approved_amount": appr_amt_s,
+                "is_amount_approved": bool(is_amt_appr),
+                "approval_required": (bool(not is_amt_appr) and (req_amt_s is not None) and (req_amt_s != rate_s)) if (req_amt_s is not None and rate_s is not None) else (bool(not is_amt_appr) and (req_amt_s is not None)),
                 "adjustments_amount": f"{getattr(s, 'adjustments_amount', Decimal('0')):.2f}",
                 "total_amount": f"{getattr(s, 'total_amount', Decimal('0')):.2f}",
+                "final_amount": f"{getattr(s, 'total_amount', Decimal('0')):.2f}",
                 "is_paid": bool(paid_map.get(int(sid), False)),
                 "comment": comment_map.get(int(sid)),
                 "adjustments_count": int(len(adjs)),
@@ -4065,6 +4316,74 @@ async def salaries_api_payouts_create(
     )
 
     return {"ok": True, "id": int(getattr(payout, "id", 0) or 0)}
+
+
+@app.post("/api/salaries/payouts/{payout_id:int}/update")
+@app.post("/crm/api/salaries/payouts/{payout_id:int}/update")
+async def salaries_api_payout_update(
+    payout_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    amount_raw = str(body.get("amount") or "").strip().replace(",", ".")
+    try:
+        amount = Decimal(amount_raw)
+    except Exception:
+        raise HTTPException(status_code=400)
+    if amount < 0:
+        raise HTTPException(status_code=400)
+
+    ps_raw = str(body.get("period_start") or "").strip()
+    pe_raw = str(body.get("period_end") or "").strip()
+    ps = None
+    pe = None
+    if ps_raw and pe_raw:
+        try:
+            ps = date.fromisoformat(ps_raw)
+            pe = date.fromisoformat(pe_raw)
+        except Exception:
+            raise HTTPException(status_code=400)
+        if ps > pe:
+            raise HTTPException(status_code=400)
+
+    comment = str(body.get("comment") or "").strip() or None
+    if comment is not None and comment.lower() in {"none", "null", "undefined"}:
+        comment = None
+
+    from shared.services.salaries_service import update_salary_payout
+
+    try:
+        res = await update_salary_payout(
+            session=session,
+            payout_id=int(payout_id),
+            amount=amount,
+            period_start=ps,
+            period_end=pe,
+            comment=comment,
+            updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "payout_not_found":
+            raise HTTPException(status_code=404, detail="Выплата не найдена")
+        if code == "bad_period":
+            raise HTTPException(status_code=400, detail="Неверный период")
+        raise HTTPException(status_code=400, detail="Ошибка обновления")
+
+    return {"ok": True, "before": res.get("before"), "after": res.get("after")}
 
 
 @app.get("/purchases/archive", response_class=HTMLResponse, name="purchases_archive")
@@ -4746,8 +5065,7 @@ async def schedule_page_public(
                             str(getattr(actor, "last_name", "") or "").strip(),
                         ]
                     ).strip()
-                    or str(getattr(actor, "username", "") or "")
-                    or f"User #{int(getattr(actor, 'id'))}"
+                    or f"#{int(getattr(actor, 'id'))}"
                 ),
                 "color": str(getattr(actor, "color", "") or ""),
             }
@@ -5195,8 +5513,6 @@ async def schedule_api_delete(
     actor = await load_staff_user(session, admin_id)
     rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
     is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
-    if not is_admin_or_manager:
-        raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     body = await request.json()
     if not isinstance(body, dict):
@@ -5213,6 +5529,8 @@ async def schedule_api_delete(
 
     uid = int(actor.id)
     if target_user_id is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
         try:
             uid = int(target_user_id)
         except Exception:
