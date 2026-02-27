@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import time as dtime
 
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
@@ -176,6 +177,11 @@ def _kb_yes_no(*, yes_data: str, no_data: str, yes_text: str = "Да", no_text: 
             [InlineKeyboardButton(text=yes_text, callback_data=yes_data), InlineKeyboardButton(text=no_text, callback_data=no_data)],
         ]
     )
+
+
+@router.message(Command("schedule"))
+async def schedule_command(message: Message, state: FSMContext):
+    await schedule_entry(message, state)
 
 
 def _kb_emergency_comment() -> InlineKeyboardMarkup:

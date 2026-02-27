@@ -293,7 +293,7 @@
 
   function renderHistoryForSelected(){
     if(!historyEl) return;
-    const it = shiftById(selectedShiftId);
+    const it = shiftByDayIso(selectedDayIso);
     if(!it){
       historyEl.innerHTML = '<div class="muted">Выберите смену</div>';
       return;
@@ -471,7 +471,7 @@
   function syncConfirmUi(it){
     try {
       if(!confirmWrapEl) return;
-      if(!it || !selectedShiftId){
+      if(!it || !String(selectedDayIso || '').trim()){
         confirmWrapEl.style.display = 'none';
         return;
       }
@@ -520,11 +520,12 @@
     return null;
   }
 
-  function selectShiftById(id){
-    selectedShiftId = Number(id || 0);
-    const it = shiftById(selectedShiftId);
+  function selectShiftByDay(dayIso){
+    selectedDayIso = String(dayIso || '').trim();
+    const it = shiftByDayIso(selectedDayIso);
     if(!it){
-      if(selectedEl) selectedEl.textContent = 'Выберите день';
+      selectedShiftId = 0;
+      if(selectedEl) selectedEl.textContent = selectedDayIso ? selectedDayIso : 'Выберите день';
       if(editorEl) editorEl.style.display = 'none';
       if(editorEmptyEl) editorEmptyEl.style.display = '';
       if(hintEl) hintEl.style.display = '';
@@ -533,6 +534,7 @@
       return;
     }
 
+    selectedShiftId = Number(it.shift_id || 0);
     if(selectedEl) selectedEl.textContent = String(it.day || '');
     if(editorEl) editorEl.style.display = '';
     if(editorEmptyEl) editorEmptyEl.style.display = 'none';
@@ -542,6 +544,13 @@
     try { if(mhEl) mhEl.value = String(it.manual_hours || ''); } catch(_) {}
     try { if(maEl) maEl.value = String(it.manual_amount_override || ''); } catch(_) {}
     try { if(cEl) cEl.value = String(it.comment || ''); } catch(_) {}
+
+    const plannedOnly = (Number(it.shift_id || 0) <= 0);
+    try {
+      if(adjDeltaEl) adjDeltaEl.disabled = plannedOnly;
+      if(adjCommentEl) adjCommentEl.disabled = plannedOnly;
+      if(adjAddBtn) adjAddBtn.disabled = plannedOnly;
+    } catch(_){ }
 
     setErr(errEl, null);
     setErr(adjErrEl, null);
@@ -581,32 +590,7 @@
   }
 
   function selectDay(dayIso){
-    selectedDayIso = String(dayIso || '').trim();
-    if(!selectedDayIso){
-      selectShiftById(0);
-      return;
-    }
-    const it = shiftByDayIso(selectedDayIso);
-    if(!it){
-      selectedShiftId = 0;
-      if(selectedEl) selectedEl.textContent = selectedDayIso;
-      if(editorEl) editorEl.style.display = 'none';
-      if(editorEmptyEl) editorEmptyEl.style.display = '';
-      if(hintEl) hintEl.style.display = 'none';
-      initialSnapshot = null;
-      try{
-        document.querySelectorAll('.schedule-day').forEach((el)=>el.classList.remove('salary-shifts-day-selected'));
-        const d = document.querySelector('[data-salary-shifts-day="' + CSS.escape(selectedDayIso) + '"]');
-        if(d) d.classList.add('salary-shifts-day-selected');
-      }catch(_){ }
-      try {
-        if(editorCardEl && editorCardEl.scrollIntoView){
-          editorCardEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      } catch(_){ }
-      return;
-    }
-    selectShiftById(Number(it.shift_id || 0));
+    selectShiftByDay(String(dayIso || '').trim());
   }
 
   function renderAdjustments(it){
@@ -659,6 +643,8 @@
       const paid = isPaid(it);
       const showMeta = !!it && (!onlyDev || needsReview);
 
+      const plannedOnly = !!it && (Number(it.shift_id || 0) <= 0);
+
       const dayClass = 'schedule-day'
         + (other ? ' other' : '')
         + ((kind === 'worked' || kind === 'overtime') ? ' work' : '')
@@ -667,7 +653,7 @@
       const meta = showMeta ? (
         '<div class="salary-shifts-day-meta">'
           + '<div class="salary-shifts-day-badges">'
-            + stateBadge(kind)
+            + (plannedOnly ? '<span class="salary-shifts-state-badge needs_review">⚠️ Не отмечено</span>' : stateBadge(kind))
             + (needsReview ? '<span class="salary-shifts-state-badge needs_review">⚠️ Требует подтверждения</span>' : '')
             + (confirmed ? '<span class="salary-shifts-state-badge confirmed">✅ Подтверждено</span>' : '')
             + (paid ? '<span class="salary-shifts-state-badge paid">💰 Выплачено</span>' : '')
@@ -730,7 +716,7 @@
       render();
       await loadSummary();
       try {
-        if (selectedShiftId) syncConfirmUi(shiftById(selectedShiftId));
+        if (selectedDayIso) syncConfirmUi(shiftByDayIso(selectedDayIso));
       } catch(_){ }
     } catch (e){
       shifts = [];
@@ -739,8 +725,8 @@
   }
 
   async function confirmSelectedShift(){
-    if(!selectedShiftId) return;
-    const it = shiftById(selectedShiftId);
+    if(!selectedDayIso) return;
+    const it = shiftByDayIso(selectedDayIso);
     if(!it) return;
     if(isConfirmed(it)) return;
     if(!isDeviation(it)) return;
@@ -755,10 +741,25 @@
 
     try {
       if(confirmBtn) confirmBtn.disabled = true;
-      const r = await apiFetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/confirm', {
+      const sid = Number(it.shift_id || 0);
+      const url = (sid > 0)
+        ? (apiBase() + '/salaries/shifts/' + String(sid) + '/confirm')
+        : (apiBase() + '/salaries/shifts/planned/confirm');
+      const payload = (sid > 0)
+        ? '{}'
+        : JSON.stringify({
+            user_id: userId,
+            day: String(it.day || selectedDayIso || '').trim(),
+            month: dateToYm(view),
+            state: String(it.state || 'worked'),
+            manual_hours: String(it.manual_hours || ''),
+            manual_amount_override: String(it.manual_amount_override || ''),
+            comment: String(it.comment || '').trim(),
+          });
+      const r = await apiFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: '{}'
+        body: payload
       });
       if(r.status === 403){
         window.location.href = pageBase() + '/salaries';
@@ -823,7 +824,7 @@
   }
 
   async function save(){
-    if(!selectedShiftId) return;
+    if(!selectedDayIso) return;
     setErr(errEl, null);
     setFieldError(labelCommentEl, commentFieldErrEl, null);
     try {
@@ -842,10 +843,18 @@
         setFieldError(labelCommentEl, commentFieldErrEl, 'Комментарий обязателен при изменениях');
         return;
       }
-      const r = await apiFetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/update', {
+      const it = shiftByDayIso(selectedDayIso);
+      const sid = Number(it && it.shift_id ? it.shift_id : 0);
+      const url = (sid > 0)
+        ? (apiBase() + '/salaries/shifts/' + String(sid) + '/update')
+        : (apiBase() + '/salaries/shifts/planned/confirm');
+      const bodyPayload = (sid > 0)
+        ? JSON.stringify(payload)
+        : JSON.stringify(Object.assign({ user_id: userId, day: String(selectedDayIso) }, payload));
+      const r = await apiFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: bodyPayload,
       });
       if(r.status === 403){
         window.location.href = pageBase() + '/salaries';
@@ -878,7 +887,10 @@
   }
 
   async function addAdj(){
-    if(!selectedShiftId) return;
+    if(!selectedDayIso) return;
+    const it = shiftByDayIso(selectedDayIso);
+    const sid = Number(it && it.shift_id ? it.shift_id : 0);
+    if(sid <= 0) return;
     setErr(adjErrEl, null);
     try { if(labelAdjDeltaEl) labelAdjDeltaEl.classList.remove('is-error'); } catch(_) {}
     try { if(labelAdjCommentEl) labelAdjCommentEl.classList.remove('is-error'); } catch(_) {}
@@ -896,7 +908,7 @@
     }
     try {
       if(adjAddBtn) adjAddBtn.disabled = true;
-      const r = await apiFetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/adjustments/create', {
+      const r = await apiFetch(apiBase() + '/salaries/shifts/' + String(sid) + '/adjustments/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ month: dateToYm(view), delta_amount: delta, comment: comment }),

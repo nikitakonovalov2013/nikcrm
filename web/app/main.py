@@ -1222,6 +1222,162 @@ async def api_broadcasts_rate(
     return {"ok": True}
 
 
+@app.post("/api/salaries/shifts/planned/confirm")
+@app.post("/crm/api/salaries/shifts/planned/confirm")
+async def salaries_api_planned_shift_confirm(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+
+    try:
+        user_id = int(body.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    day_raw = str(body.get("day") or "").strip()
+    if user_id <= 0 or not day_raw:
+        raise HTTPException(status_code=422, detail="Неверные параметры")
+
+    try:
+        day_val = datetime.strptime(day_raw, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверная дата")
+
+    # Ensure there is a WORK plan for this day (we don't create salary shifts out of thin air)
+    plan = (
+        await session.execute(
+            select(WorkShiftDay)
+            .where(WorkShiftDay.user_id == int(user_id))
+            .where(WorkShiftDay.day == day_val)
+        )
+    ).scalars().first()
+    if plan is None or str(getattr(plan, "kind", "")) != "work":
+        raise HTTPException(status_code=404, detail="Плановая смена не найдена")
+
+    # Find or create shift instance for this planned day.
+    shift = (
+        await session.execute(
+            select(ShiftInstance)
+            .where(ShiftInstance.user_id == int(user_id))
+            .where(ShiftInstance.day == day_val)
+        )
+    ).scalars().first()
+    if shift is None:
+        ph = None
+        try:
+            if getattr(plan, "hours", None) is not None:
+                ph = int(getattr(plan, "hours"))
+        except Exception:
+            ph = None
+        shift = ShiftInstance(
+            user_id=int(user_id),
+            day=day_val,
+            planned_hours=ph,
+            is_emergency=bool(getattr(plan, "is_emergency", False)),
+            started_at=None,
+            ended_at=None,
+            status=ShiftInstanceStatus.PLANNED,
+        )
+        session.add(shift)
+        await session.flush()
+
+    state = str(body.get("state") or "worked").strip() or "worked"
+    manual_hours_raw = body.get("manual_hours")
+    manual_amount_override_raw = body.get("manual_amount_override")
+    comment = str(body.get("comment") or "").strip() or None
+    month = str(body.get("month") or "").strip()
+
+    try:
+        state_enum = SalaryShiftState(str(state))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_state"}, status_code=422)
+
+    manual_hours: Decimal | None = None
+    if manual_hours_raw is not None and str(manual_hours_raw).strip() != "":
+        try:
+            manual_hours = Decimal(str(manual_hours_raw).strip().replace(",", "."))
+        except Exception:
+            return JSONResponse({"ok": False, "error": "bad_manual_hours"}, status_code=400)
+
+    manual_amount_override: Decimal | None = None
+    if manual_amount_override_raw is not None and str(manual_amount_override_raw).strip() != "":
+        try:
+            manual_amount_override = Decimal(str(manual_amount_override_raw).strip().replace(",", "."))
+        except Exception:
+            return JSONResponse({"ok": False, "error": "bad_manual_amount"}, status_code=400)
+
+    period_start = None
+    period_end = None
+    if month:
+        y, mo = _parse_month_ym(month)
+        period_start, period_end = _month_period(y, mo)
+
+    try:
+        await update_salary_shift_state(
+            session=session,
+            shift_id=int(getattr(shift, "id", 0) or 0),
+            state=state_enum,
+            manual_hours=manual_hours,
+            manual_amount_override=manual_amount_override,
+            comment=comment,
+            updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+            notify_employee=True,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "comment_required":
+            return JSONResponse({"ok": False, "error": "comment_required"}, status_code=400)
+        if code == "shift_not_found":
+            return JSONResponse({"ok": False, "error": "shift_not_found"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+
+    st_row = (
+        await session.execute(
+            select(SalaryShiftStateRow).where(SalaryShiftStateRow.shift_id == int(getattr(shift, "id", 0) or 0))
+        )
+    ).scalars().first()
+    if st_row is not None:
+        st_row.confirmed_at = utc_now()
+        st_row.confirmed_by_user_id = int(getattr(actor, "id", 0) or 0) or None
+        session.add(st_row)
+        await session.flush()
+
+    try:
+        session.add(
+            SalaryShiftAudit(
+                shift_id=int(getattr(shift, "id", 0) or 0),
+                actor_user_id=int(getattr(actor, "id", 0) or 0) or None,
+                event_type="planned_shift_confirm",
+                before=None,
+                after={
+                    "day": str(day_val),
+                    "state": str(state_enum.value),
+                    "manual_hours": (str(manual_hours) if manual_hours is not None else None),
+                    "manual_amount_override": (str(manual_amount_override) if manual_amount_override is not None else None),
+                },
+                meta={"user_id": int(user_id)},
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    return {"ok": True, "shift_id": int(getattr(shift, "id", 0) or 0)}
+
+
 @app.post("/api/schedule/autofill")
 @app.post("/crm/api/schedule/autofill")
 async def schedule_api_autofill(
@@ -3776,6 +3932,19 @@ async def salaries_api_shifts_list(
         manual_hours_val = getattr(s, "manual_hours", None)
         manual_amount_val = getattr(s, "manual_amount_override", None)
 
+        is_planned_only = bool(sid <= 0)
+        opened_flag = False
+        closed_flag = False
+        if not is_planned_only:
+            try:
+                opened_flag = bool(getattr(s, "started_at", None) is not None)
+            except Exception:
+                opened_flag = False
+            try:
+                closed_flag = bool(getattr(s, "ended_at", None) is not None)
+            except Exception:
+                closed_flag = False
+
         rate_val = getattr(s, "hour_rate", None)
         rate_s = (f"{Decimal(str(rate_val)):.2f}" if rate_val is not None else None)
         req_amt = getattr(s, "requested_amount", None)
@@ -3803,6 +3972,9 @@ async def salaries_api_shifts_list(
             {
                 "shift_id": sid,
                 "day": str(getattr(s, "day", "")),
+                "planned": bool(True),
+                "opened": bool(False if is_planned_only else opened_flag),
+                "closed": bool(False if is_planned_only else closed_flag),
                 "state": str(getattr(s, "state", "")),
                 "needs_review": bool(getattr(s, "needs_review", False)),
                 "confirmed_at": confirmed_at_map.get(int(sid)),

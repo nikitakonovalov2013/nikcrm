@@ -11,7 +11,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import settings
-from shared.enums import SalaryShiftState
+from shared.enums import SalaryShiftState, ShiftInstanceStatus
 from shared.models import (
     User,
     WorkShiftDay,
@@ -230,15 +230,50 @@ async def calc_user_shifts(
     adj_sum = {int(r[0]): Decimal(r[1]) for r in adj_rows}
 
     out = []
-    for s in shifts:
-        st_row = await _ensure_salary_shift_state(session=session, shift=s)
-        plan = plans.get(int(s.day.toordinal()))
+    shifts_by_day: dict[int, ShiftInstance] = {int(getattr(s, "day").toordinal()): s for s in shifts if getattr(s, "day", None) is not None}
+
+    # Include all planned WORK days even without any fact ShiftInstance.
+    all_day_keys = set(shifts_by_day.keys()) | {k for k, p in plans.items() if str(getattr(p, "kind", "")) == "work"}
+
+    for day_key in sorted(all_day_keys):
+        plan = plans.get(int(day_key))
+        s = shifts_by_day.get(int(day_key))
+
         planned_hours = None
         if plan is not None and getattr(plan, "hours", None) is not None:
             planned_hours = Decimal(int(getattr(plan, "hours")))
-        elif getattr(s, "planned_hours", None) is not None:
+        elif s is not None and getattr(s, "planned_hours", None) is not None:
             planned_hours = Decimal(int(getattr(s, "planned_hours")))
 
+        if s is None:
+            if plan is None or str(getattr(plan, "kind", "")) != "work":
+                continue
+            # Planned but not opened/closed: return a virtual row (shift_id=0)
+            out.append(
+                calc_shift_salary(
+                    shift_id=0,
+                    user_id=int(user_id),
+                    day=getattr(plan, "day"),
+                    hour_rate=hour_rate,
+                    planned_hours=planned_hours,
+                    shift_status=ShiftInstanceStatus.PLANNED,
+                    started_at=None,
+                    ended_at=None,
+                    state=SalaryShiftState.NEEDS_REVIEW,
+                    manual_hours=None,
+                    manual_amount_override=None,
+                    requested_amount=None,
+                    approved_amount=None,
+                    approval_required=None,
+                    approved_at=None,
+                    adjustments_amount=DEC_0,
+                    confirmed_at=None,
+                    confirmed_by_user_id=None,
+                )
+            )
+            continue
+
+        st_row = await _ensure_salary_shift_state(session=session, shift=s)
         out.append(
             calc_shift_salary(
                 shift_id=int(s.id),

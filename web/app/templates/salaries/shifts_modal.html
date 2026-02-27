@@ -87,6 +87,7 @@
 
           <div class="sm-actions">
             <button id="salary-shift-save" class="btn" type="button">Сохранить</button>
+            <button id="salary-shift-confirm" class="btn-outline" type="button" style="display:none;">Подтвердить смену</button>
           </div>
 
           <div class="sm-section">
@@ -130,6 +131,7 @@
   const cEl = document.getElementById('salary-shift-comment');
   const errEl = document.getElementById('salary-shift-error');
   const saveBtn = document.getElementById('salary-shift-save');
+  const confirmBtn = document.getElementById('salary-shift-confirm');
 
   const reqAmtEl = document.getElementById('salary-shift-requested-amount');
   const amtErrEl = document.getElementById('salary-shift-amount-error');
@@ -146,21 +148,29 @@
   const adjAddBtn = document.getElementById('salary-adj-add');
 
   let shifts = [];
-  let selectedShiftId = 0;
+  let selectedKey = '';
 
   function apiBase(){
     const m = document.querySelector('meta[name="crm-api-base"]');
     return (m && m.getAttribute('content')) ? m.getAttribute('content') : '/crm/api';
   }
 
+  try {
+    if(confirmBtn) confirmBtn.addEventListener('click', confirmShift);
+  } catch(_){ }
+
   async function reloadAndReselect(){
-    const keep = Number(selectedShiftId || 0);
+    const keep = String(selectedKey || '');
     await load();
     if(keep) selectShift(keep);
   }
 
   async function saveRequestedAmount(){
-    if(!selectedShiftId) return;
+    if(!selectedKey) return;
+    const it = findShift(selectedKey);
+    if(!it) return;
+    const sid = Number(it.shift_id || 0);
+    if(sid <= 0) return;
     setErr(amtErrEl, null);
     const v = String(reqAmtEl && reqAmtEl.value ? reqAmtEl.value : '').trim();
     if(!v){
@@ -170,7 +180,7 @@
     try {
       if(amtSaveBtn) amtSaveBtn.disabled = true;
       if(amtApproveBtn) amtApproveBtn.disabled = true;
-      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/amount/update', {
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(sid) + '/amount/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ month: month, amount: v }),
@@ -188,19 +198,23 @@
     } finally {
       try { if(amtSaveBtn) amtSaveBtn.disabled = false; } catch(_){ }
       try {
-        const it = findShift(selectedShiftId);
-        if(amtApproveBtn) amtApproveBtn.disabled = !(it && it.approval_required);
+        const it2 = findShift(selectedKey);
+        if(amtApproveBtn) amtApproveBtn.disabled = !(it2 && it2.approval_required);
       } catch(_){ }
     }
   }
 
   async function approveRequestedAmount(){
-    if(!selectedShiftId) return;
+    if(!selectedKey) return;
+    const it = findShift(selectedKey);
+    if(!it) return;
+    const sid = Number(it.shift_id || 0);
+    if(sid <= 0) return;
     setErr(amtErrEl, null);
     try {
       if(amtApproveBtn) amtApproveBtn.disabled = true;
       if(amtSaveBtn) amtSaveBtn.disabled = true;
-      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/amount/approve', {
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(sid) + '/amount/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
@@ -220,8 +234,8 @@
     } finally {
       try { if(amtSaveBtn) amtSaveBtn.disabled = false; } catch(_){ }
       try {
-        const it = findShift(selectedShiftId);
-        if(amtApproveBtn) amtApproveBtn.disabled = !(it && it.approval_required);
+        const it2 = findShift(selectedKey);
+        if(amtApproveBtn) amtApproveBtn.disabled = !(it2 && it2.approval_required);
       } catch(_){ }
     }
   }
@@ -242,17 +256,23 @@
     target.textContent = String(msg);
   }
 
-  function findShift(shiftId){
-    const sid = Number(shiftId || 0);
+  function shiftKey(it){
+    const sid = Number(it && it.shift_id ? it.shift_id : 0);
+    if(sid > 0) return 'id:' + String(sid);
+    return 'day:' + String(it && it.day ? it.day : '');
+  }
+
+  function findShift(key){
+    const k = String(key || '');
     for (let i=0;i<shifts.length;i++){
-      if(Number(shifts[i].shift_id||0) === sid) return shifts[i];
+      if(shiftKey(shifts[i]) === k) return shifts[i];
     }
     return null;
   }
 
-  function selectShift(shiftId){
-    selectedShiftId = Number(shiftId || 0);
-    const it = findShift(selectedShiftId);
+  function selectShift(key){
+    selectedKey = String(key || '');
+    const it = findShift(selectedKey);
     if(!it){
       if(selectedEl) selectedEl.textContent = 'Выберите смену слева';
       if(formWrap) formWrap.style.display = 'none';
@@ -270,9 +290,30 @@
     setErr(adjErrEl, null);
     setErr(amtErrEl, null);
 
+    const sid = Number(it.shift_id || 0);
+    const plannedOnly = (sid <= 0);
+    try {
+      if(reqAmtEl) reqAmtEl.disabled = plannedOnly;
+      if(amtSaveBtn) amtSaveBtn.disabled = plannedOnly;
+      if(amtApproveBtn) amtApproveBtn.disabled = plannedOnly || !(it && it.approval_required);
+    } catch(_){ }
+
+    try {
+      if(adjDeltaEl) adjDeltaEl.disabled = plannedOnly;
+      if(adjCommentEl) adjCommentEl.disabled = plannedOnly;
+      if(adjAddBtn) adjAddBtn.disabled = plannedOnly;
+    } catch(_){ }
+
     try {
       if(amtApproveBtn){
         amtApproveBtn.disabled = !(it && it.approval_required);
+      }
+    } catch(_){ }
+
+    try {
+      if(confirmBtn){
+        const need = !!(it && it.needs_review);
+        confirmBtn.style.display = need ? '' : 'none';
       }
     } catch(_){ }
 
@@ -296,8 +337,11 @@
     }).join('');
   }
 
-  function statusBadge(state){
+  function statusBadge(state, it){
     const s = String(state || 'worked');
+    const sid = Number(it && it.shift_id ? it.shift_id : 0);
+    const isPlannedOnly = (sid <= 0);
+    if(isPlannedOnly) return '<span class="sm-badge orange">⚠️ Не отмечено</span>';
     if(s === 'worked') return '<span class="sm-badge green">✅ Отработано</span>';
     if(s === 'day_off') return '<span class="sm-badge yellow">🟡 Выходной</span>';
     if(s === 'overtime') return '<span class="sm-badge purple">⚡ Переработка</span>';
@@ -388,10 +432,11 @@
         const total = fmtRub(it.final_amount || it.total_amount);
         const sid = Number(it.shift_id || 0);
         const review = (it && (it.needs_review || it.approval_required)) ? ' ⚠️' : '';
+        const key = shiftKey(it);
         return (
-          '<tr data-salary-shift-row="' + String(sid) + '">' +
+          '<tr data-salary-shift-row="' + String(key) + '">' +
             '<td>' + day + (review ? ' <span title="Требует подтверждения">⚠️</span>' : '') + '</td>' +
-            '<td>' + statusBadge(state) + '</td>' +
+            '<td>' + statusBadge(state, it) + '</td>' +
             '<td>' + planned + ' / ' + actual + '</td>' +
             '<td><b>' + total + '</b></td>' +
           '</tr>'
@@ -402,21 +447,21 @@
         if(tr.dataset.bound === '1') return;
         tr.dataset.bound = '1';
         tr.addEventListener('click', ()=>{
-          const sid = Number(tr.dataset.salaryShiftRow || 0);
-          if(!sid) return;
+          const key = String(tr.dataset.salaryShiftRow || '');
+          if(!key) return;
           try {
             document.querySelectorAll('[data-salary-shift-row]').forEach((x)=>x.classList.remove('sm-row-active'));
             tr.classList.add('sm-row-active');
           } catch(_) {}
-          selectShift(sid);
+          selectShift(key);
         });
       });
 
       // auto select first
-      if(!selectedShiftId && items.length){
-        selectShift(Number(items[0].shift_id || 0));
+      if(!selectedKey && items.length){
+        selectShift(shiftKey(items[0]));
       } else {
-        selectShift(selectedShiftId);
+        selectShift(selectedKey);
       }
 
     } catch(e){
@@ -425,8 +470,10 @@
   }
 
   async function save(){
-    if(!selectedShiftId) return;
+    if(!selectedKey) return;
     setErr(errEl, null);
+    const it = findShift(selectedKey);
+    if(!it) return;
     try {
       if(saveBtn) saveBtn.disabled = true;
       const payload = {
@@ -436,10 +483,17 @@
         manual_amount_override: String(maEl && maEl.value ? maEl.value : '').trim(),
         comment: String(cEl && cEl.value ? cEl.value : '').trim(),
       };
-      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const sid = Number(it.shift_id || 0);
+      const url = (sid > 0)
+        ? (apiBase() + '/salaries/shifts/' + String(sid) + '/update')
+        : (apiBase() + '/salaries/shifts/planned/confirm');
+      const bodyPayload = (sid > 0)
+        ? payload
+        : Object.assign({ user_id: userId, day: String(it.day || '') }, payload);
+      const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyPayload),
       });
       if(r.status === 403){
         window.location.href = '/crm/salaries';
@@ -472,8 +526,68 @@
     }
   }
 
+  async function confirmShift(){
+    if(!selectedKey) return;
+    setErr(errEl, null);
+    const it = findShift(selectedKey);
+    if(!it) return;
+
+    try {
+      if(confirmBtn) confirmBtn.disabled = true;
+      const sid = Number(it.shift_id || 0);
+      if(sid > 0){
+        const r = await fetch(apiBase() + '/salaries/shifts/' + String(sid) + '/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if(r.status === 403){ window.location.href = '/crm/salaries'; return; }
+        const d = await r.json().catch(()=> ({}));
+        if(!d || !d.ok){
+          setErr(errEl, 'Не удалось подтвердить');
+          return;
+        }
+      } else {
+        // For planned-only, confirmation is done via planned/confirm which creates ShiftInstance on demand.
+        const payload = {
+          user_id: userId,
+          day: String(it.day || ''),
+          month: month,
+          state: String(stateEl && stateEl.value ? stateEl.value : 'worked').trim(),
+          manual_hours: String(mhEl && mhEl.value ? mhEl.value : '').trim(),
+          manual_amount_override: String(maEl && maEl.value ? maEl.value : '').trim(),
+          comment: String(cEl && cEl.value ? cEl.value : '').trim(),
+        };
+        const r = await fetch(apiBase() + '/salaries/shifts/planned/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if(r.status === 403){ window.location.href = '/crm/salaries'; return; }
+        const d = await r.json().catch(()=> ({}));
+        if(!d || !d.ok){
+          const code = String(d && d.error ? d.error : 'bad');
+          if(code === 'comment_required') setErr(errEl, 'Комментарий обязателен');
+          else setErr(errEl, 'Не удалось подтвердить');
+          return;
+        }
+      }
+
+      try { window.dispatchEvent(new CustomEvent('close-modal')); } catch(_) {}
+      try { window.dispatchEvent(new CustomEvent('salary-grid-refresh')); } catch(_) {}
+    } catch(_e){
+      setErr(errEl, 'Ошибка подтверждения');
+    } finally {
+      try { if(confirmBtn) confirmBtn.disabled = false; } catch(_){ }
+    }
+  }
+
   async function addAdj(){
-    if(!selectedShiftId) return;
+    if(!selectedKey) return;
+    const it = findShift(selectedKey);
+    if(!it) return;
+    const sid = Number(it.shift_id || 0);
+    if(sid <= 0) return;
     setErr(adjErrEl, null);
     const delta = String(adjDeltaEl && adjDeltaEl.value ? adjDeltaEl.value : '').trim();
     const comment = String(adjCommentEl && adjCommentEl.value ? adjCommentEl.value : '').trim();
@@ -487,7 +601,7 @@
     }
     try {
       if(adjAddBtn) adjAddBtn.disabled = true;
-      const r = await fetch(apiBase() + '/salaries/shifts/' + String(selectedShiftId) + '/adjustments/create', {
+      const r = await fetch(apiBase() + '/salaries/shifts/' + String(sid) + '/adjustments/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ month: month, delta_amount: delta, comment: comment }),
