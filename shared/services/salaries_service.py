@@ -141,21 +141,53 @@ async def calc_user_period_totals(
     period_start: date,
     period_end: date,
 ) -> SalaryPeriodTotals:
-    # accrued (sum of per-shift totals)
-    items = await calc_user_shifts(session=session, user_id=user_id, period_start=period_start, period_end=period_end)
-    accrued = q2(sum((it.total_amount for it in items), DEC_0))
-    needs_review_total = int(sum((1 for it in items if bool(getattr(it, "needs_review", False))), 0))
+    # Month accrual: only worked/closed (or manually confirmed) shifts.
+    items_month = await calc_user_shifts(
+        session=session,
+        user_id=user_id,
+        period_start=period_start,
+        period_end=period_end,
+        include_plans=True,
+        only_accruable=True,
+    )
+    accrued_month = q2(sum((it.total_amount for it in items_month), DEC_0))
+    needs_review_total = int(sum((1 for it in items_month if bool(getattr(it, "needs_review", False))), 0))
 
-    paid = (await session.execute(
-        select(func.coalesce(func.sum(SalaryPayout.amount), 0))
-        .where(SalaryPayout.user_id == int(user_id))
-        .where(SalaryPayout.period_start == period_start)
-        .where(SalaryPayout.period_end == period_end)
-    )).scalar_one()
+    paid_month = (
+        await session.execute(
+            select(func.coalesce(func.sum(SalaryPayout.amount), 0))
+            .where(SalaryPayout.user_id == int(user_id))
+            .where(SalaryPayout.period_start == period_start)
+            .where(SalaryPayout.period_end == period_end)
+        )
+    ).scalar_one()
+    paid_month = q2(Decimal(paid_month))
 
-    paid = q2(Decimal(paid))
-    balance = q2(accrued - paid)
-    return SalaryPeriodTotals(accrued=accrued, paid=paid, balance=balance, needs_review_total=needs_review_total)
+    # Cross-month balance: all-time accrued (worked/closed/confirmed only) minus all-time payouts.
+    min_shift_day = (
+        await session.execute(select(func.min(ShiftInstance.day)).where(ShiftInstance.user_id == int(user_id)))
+    ).scalar_one()
+    all_start = min_shift_day if min_shift_day is not None else period_start
+
+    items_all = await calc_user_shifts(
+        session=session,
+        user_id=user_id,
+        period_start=all_start,
+        period_end=period_end,
+        include_plans=False,
+        only_accruable=True,
+    )
+    accrued_all = q2(sum((it.total_amount for it in items_all), DEC_0))
+
+    paid_all = (
+        await session.execute(
+            select(func.coalesce(func.sum(SalaryPayout.amount), 0)).where(SalaryPayout.user_id == int(user_id))
+        )
+    ).scalar_one()
+    paid_all = q2(Decimal(paid_all))
+
+    balance = q2(accrued_all - paid_all)
+    return SalaryPeriodTotals(accrued=accrued_month, paid=paid_month, balance=balance, needs_review_total=needs_review_total)
 
 
 async def _ensure_salary_shift_state(
@@ -188,6 +220,8 @@ async def calc_user_shifts(
     user_id: int,
     period_start: date,
     period_end: date,
+    include_plans: bool = True,
+    only_accruable: bool = False,
 ) -> list:
     # load shifts + plans
     shifts = list(
@@ -203,21 +237,23 @@ async def calc_user_shifts(
         .all()
     )
 
-    plans = {
-        int(p.day.toordinal()): p
-        for p in list(
-            (
-                await session.execute(
-                    select(WorkShiftDay)
-                    .where(WorkShiftDay.user_id == int(user_id))
-                    .where(WorkShiftDay.day >= period_start)
-                    .where(WorkShiftDay.day <= period_end)
+    plans: dict[int, WorkShiftDay] = {}
+    if include_plans:
+        plans = {
+            int(p.day.toordinal()): p
+            for p in list(
+                (
+                    await session.execute(
+                        select(WorkShiftDay)
+                        .where(WorkShiftDay.user_id == int(user_id))
+                        .where(WorkShiftDay.day >= period_start)
+                        .where(WorkShiftDay.day <= period_end)
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-    }
+        }
 
     hour_rate = await load_user_hour_rate(session=session, user_id=int(user_id))
 
@@ -235,6 +271,23 @@ async def calc_user_shifts(
     # Include all planned WORK days even without any fact ShiftInstance.
     all_day_keys = set(shifts_by_day.keys()) | {k for k, p in plans.items() if str(getattr(p, "kind", "")) == "work"}
 
+    def _is_accruable_shift(*, s: ShiftInstance, st_row: SalaryShiftStateRow | None) -> bool:
+        try:
+            if st_row is not None and getattr(st_row, "confirmed_at", None) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(s, "ended_at", None) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            st = getattr(s, "status", None)
+            return bool(st in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
+        except Exception:
+            return False
+
     for day_key in sorted(all_day_keys):
         plan = plans.get(int(day_key))
         s = shifts_by_day.get(int(day_key))
@@ -249,31 +302,34 @@ async def calc_user_shifts(
             if plan is None or str(getattr(plan, "kind", "")) != "work":
                 continue
             # Planned but not opened/closed: return a virtual row (shift_id=0)
-            out.append(
-                calc_shift_salary(
-                    shift_id=0,
-                    user_id=int(user_id),
-                    day=getattr(plan, "day"),
-                    hour_rate=hour_rate,
-                    planned_hours=planned_hours,
-                    shift_status=ShiftInstanceStatus.PLANNED,
-                    started_at=None,
-                    ended_at=None,
-                    state=SalaryShiftState.NEEDS_REVIEW,
-                    manual_hours=None,
-                    manual_amount_override=None,
-                    requested_amount=None,
-                    approved_amount=None,
-                    approval_required=None,
-                    approved_at=None,
-                    adjustments_amount=DEC_0,
-                    confirmed_at=None,
-                    confirmed_by_user_id=None,
+            if not only_accruable:
+                out.append(
+                    calc_shift_salary(
+                        shift_id=0,
+                        user_id=int(user_id),
+                        day=getattr(plan, "day"),
+                        hour_rate=hour_rate,
+                        planned_hours=planned_hours,
+                        shift_status=ShiftInstanceStatus.PLANNED,
+                        started_at=None,
+                        ended_at=None,
+                        state=SalaryShiftState.NEEDS_REVIEW,
+                        manual_hours=None,
+                        manual_amount_override=None,
+                        requested_amount=None,
+                        approved_amount=None,
+                        approval_required=None,
+                        approved_at=None,
+                        adjustments_amount=DEC_0,
+                        confirmed_at=None,
+                        confirmed_by_user_id=None,
+                    )
                 )
-            )
             continue
 
         st_row = await _ensure_salary_shift_state(session=session, shift=s)
+        if only_accruable and (not _is_accruable_shift(s=s, st_row=st_row)):
+            continue
         out.append(
             calc_shift_salary(
                 shift_id=int(s.id),

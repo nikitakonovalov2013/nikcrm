@@ -3262,6 +3262,7 @@ async def salaries_api_dashboard(
                 user_id=uid,
                 period_start=period_start,
                 period_end=period_end,
+                only_accruable=True,
             )
             for s in shifts_calc:
                 day = str(getattr(s, "day", "") or "")
