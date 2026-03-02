@@ -3696,6 +3696,69 @@ async def salaries_api_dashboard(
             except Exception:
                 return False
 
+        # Daily FOT (today in Moscow TZ): sum of base per-shift rates for ALL shifts scheduled for today.
+        daily_fot_amount = Decimal("0")
+        daily_fot_shifts_count = 0
+        daily_fot_missing_rate_count = 0
+        daily_fot_sample: list[dict] = []
+        try:
+            from shared.utils import MOSCOW_TZ
+
+            today_msk = datetime.now(MOSCOW_TZ).date()
+            t_db_daily = pytime.perf_counter()
+            daily_plans = list(
+                (
+                    await session.execute(
+                        select(WorkShiftDay.id, WorkShiftDay.user_id)
+                        .where(WorkShiftDay.day == today_msk)
+                        .where(WorkShiftDay.kind == "work")
+                    )
+                ).all()
+            )
+            db_time_sec += float(pytime.perf_counter() - t_db_daily)
+
+            daily_fot_shifts_count = int(len(daily_plans))
+            for pid, uid in daily_plans:
+                pid_i = int(pid or 0)
+                uid_i = int(uid or 0)
+                if pid_i > 0 and uid_i > 0 and len(daily_fot_sample) < 5:
+                    daily_fot_sample.append({"plan_id": pid_i, "user_id": uid_i})
+
+                rate = user_rate.get(uid_i)
+                if rate is None:
+                    daily_fot_missing_rate_count += 1
+                    continue
+                daily_fot_amount = q2(daily_fot_amount + q2(Decimal(rate)))
+
+            # Debug: compare plans vs instances for today
+            try:
+                t_db_inst = pytime.perf_counter()
+                inst_cnt = (
+                    await session.execute(select(func.count(ShiftInstance.id)).where(ShiftInstance.day == today_msk))
+                ).scalar_one()
+                db_time_sec += float(pytime.perf_counter() - t_db_inst)
+            except Exception:
+                inst_cnt = None
+
+            try:
+                logger.info(
+                    "salaries_daily_fot_calc",
+                    extra={
+                        "today_msk": str(today_msk),
+                        "plan_shifts_count": int(daily_fot_shifts_count),
+                        "instance_shifts_count": (int(inst_cnt) if inst_cnt is not None else None),
+                        "sample": daily_fot_sample,
+                        "missing_rate_count": int(daily_fot_missing_rate_count),
+                        "daily_fot_amount": f"{q2(daily_fot_amount):.2f}",
+                    },
+                )
+            except Exception:
+                pass
+        except Exception:
+            daily_fot_amount = Decimal("0")
+            daily_fot_shifts_count = 0
+            daily_fot_missing_rate_count = 0
+
         accrued_by_day: dict[str, Decimal] = {}
         count_needs_review_by_day: dict[str, int] = {}
 
@@ -3918,6 +3981,9 @@ async def salaries_api_dashboard(
                 "sum_positive_balance": f"{q2(sum_positive_balance):.2f}",
                 "sum_negative_balance_abs": f"{q2(sum_negative_balance_abs):.2f}",
                 "count_needs_review": int(count_needs_review),
+                "daily_fot_amount": f"{q2(daily_fot_amount):.2f}",
+                "daily_fot_shifts_count": int(daily_fot_shifts_count),
+                "daily_fot_missing_rate_count": int(daily_fot_missing_rate_count),
                 "adjustments": {
                     "count": int(adj_count),
                     "plus": f"{q2(adj_plus):.2f}",
@@ -3958,6 +4024,110 @@ async def salaries_api_dashboard(
             )
         except Exception:
             pass
+
+
+@app.get("/api/salaries/daily_fot")
+@app.get("/crm/api/salaries/daily_fot")
+async def salaries_api_daily_fot(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        from shared.utils import MOSCOW_TZ
+
+        today_msk = datetime.now(MOSCOW_TZ).date()
+    except Exception:
+        today_msk = date.today()
+
+    # Users list matches dashboard scope (active approved staff)
+    res = await session.execute(
+        select(User.id, User.hour_rate, User.rate_k)
+        .where(User.is_deleted == False)
+        .where(User.status == UserStatus.APPROVED)
+        .order_by(User.id)
+    )
+    users_rows = list(res.all())
+    user_ids = [int(r[0]) for r in users_rows if int(r[0] or 0) > 0]
+
+    user_rate: dict[int, Decimal | None] = {}
+    for r in users_rows:
+        uid = int(r[0] or 0)
+        if uid <= 0:
+            continue
+        hr = r[1]
+        rk = r[2]
+        if hr is not None:
+            try:
+                user_rate[uid] = Decimal(str(hr))
+            except Exception:
+                user_rate[uid] = None
+        elif rk is not None:
+            try:
+                user_rate[uid] = Decimal(int(rk))
+            except Exception:
+                user_rate[uid] = None
+        else:
+            user_rate[uid] = None
+
+    if not user_ids:
+        return {"ok": True, "amount": "0.00"}
+
+    daily_plans = list(
+        (
+            await session.execute(
+                select(WorkShiftDay.id, WorkShiftDay.user_id)
+                .where(WorkShiftDay.day == today_msk)
+                .where(WorkShiftDay.kind == "work")
+            )
+        ).all()
+    )
+    if not daily_plans:
+        return {"ok": True, "amount": "0.00", "shifts_count": 0, "missing_rate_count": 0}
+
+    amount = Decimal("0")
+    missing_rate_count = 0
+    sample: list[dict] = []
+    for pid, uid in daily_plans:
+        pid_i = int(pid or 0)
+        uid_i = int(uid or 0)
+        if pid_i > 0 and uid_i > 0 and len(sample) < 5:
+            sample.append({"plan_id": pid_i, "user_id": uid_i})
+
+        rate = user_rate.get(uid_i)
+        if rate is None:
+            missing_rate_count += 1
+            continue
+        amount = q2(amount + q2(Decimal(rate)))
+
+    try:
+        inst_cnt = (
+            await session.execute(select(func.count(ShiftInstance.id)).where(ShiftInstance.day == today_msk))
+        ).scalar_one()
+    except Exception:
+        inst_cnt = None
+
+    try:
+        logger.info(
+            "salaries_daily_fot_endpoint_calc",
+            extra={
+                "today_msk": str(today_msk),
+                "plan_shifts_count": int(len(daily_plans)),
+                "instance_shifts_count": (int(inst_cnt) if inst_cnt is not None else None),
+                "sample": sample,
+                "missing_rate_count": int(missing_rate_count),
+                "daily_fot_amount": f"{q2(amount):.2f}",
+            },
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "amount": f"{q2(amount):.2f}", "shifts_count": int(len(daily_plans)), "missing_rate_count": int(missing_rate_count)}
 
 
 @app.get("/api/salaries/payouts")

@@ -68,6 +68,11 @@
             <div class="sal-v" id="sal-kpi-accrued">—</div>
           </div>
           <div class="sal-kpi-card">
+            <div class="sal-k">Дневной ФОТ</div>
+            <div class="sal-v" id="sal-kpi-daily-fot">—</div>
+            <div class="sal-h" id="sal-kpi-daily-fot-sub">—</div>
+          </div>
+          <div class="sal-kpi-card">
             <div class="sal-k">Выплачено за месяц</div>
             <div class="sal-v" id="sal-kpi-paid">—</div>
           </div>
@@ -164,6 +169,11 @@
     <div class="sal-summary-card">
       <div class="sal-summary-k">Итого начислено</div>
       <div class="sal-summary-v" id="salary-totals-accrued">—</div>
+    </div>
+    <div class="sal-summary-card">
+      <div class="sal-summary-k">Дневной ФОТ</div>
+      <div class="sal-summary-v" id="salary-totals-daily-fot">—</div>
+      <div class="sal-summary-h" id="salary-totals-daily-fot-sub" style="margin-top:6px; color:#667085; font-size:12px;">—</div>
     </div>
     <div class="sal-summary-card">
       <div class="sal-summary-k">Итого выплачено</div>
@@ -304,6 +314,8 @@
   const dashRoot = document.getElementById('salary-dashboard');
   const dashPeriodEl = document.getElementById('salary-dashboard-period');
   const kpiAccruedEl = document.getElementById('sal-kpi-accrued');
+  const kpiDailyFotEl = document.getElementById('sal-kpi-daily-fot');
+  const kpiDailyFotSubEl = document.getElementById('sal-kpi-daily-fot-sub');
   const kpiPaidEl = document.getElementById('sal-kpi-paid');
   const kpiPosEl = document.getElementById('sal-kpi-pos');
   const kpiNegEl = document.getElementById('sal-kpi-neg');
@@ -320,6 +332,8 @@
 
   const totalsRoot = document.getElementById('salary-totals');
   const totalsAccruedEl = document.getElementById('salary-totals-accrued');
+  const totalsDailyFotEl = document.getElementById('salary-totals-daily-fot');
+  const totalsDailyFotSubEl = document.getElementById('salary-totals-daily-fot-sub');
   const totalsPaidEl = document.getElementById('salary-totals-paid');
   const totalsBalanceEl = document.getElementById('salary-totals-balance');
   const totalsCountEl = document.getElementById('salary-totals-count');
@@ -959,8 +973,26 @@
       if(dashPeriodEl) dashPeriodEl.textContent = 'Период: ' + String(data.period_label || data.month || '');
 
       const kpi = data.kpi || {};
+      try { window.__salaryKpi = kpi; } catch(_){ }
       const adj = (kpi && kpi.adjustments) ? kpi.adjustments : {};
       if(kpiAccruedEl) kpiAccruedEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_accrued) + '</span>';
+      if(kpiDailyFotEl){
+        const v = (kpi && kpi.daily_fot_amount !== undefined && kpi.daily_fot_amount !== null) ? kpi.daily_fot_amount : 0;
+        const n = moneyNum(v);
+        const cls = (n < 0) ? 'neg' : 'pos';
+        kpiDailyFotEl.innerHTML = '<span class="sal-pill ' + cls + '">' + fmtRubPretty(v) + '</span>';
+      }
+      if(kpiDailyFotSubEl){
+        const c = Number((kpi && kpi.daily_fot_missing_rate_count) || 0) || 0;
+        const sc = Number((kpi && kpi.daily_fot_shifts_count) || 0) || 0;
+        if(sc > 0 && c > 0){
+          kpiDailyFotSubEl.style.display = '';
+          kpiDailyFotSubEl.textContent = 'Нет ставки: ' + String(c);
+        } else {
+          kpiDailyFotSubEl.style.display = 'none';
+          kpiDailyFotSubEl.textContent = '';
+        }
+      }
       if(kpiPaidEl) kpiPaidEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_paid) + '</span>';
       if(kpiPosEl) kpiPosEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(kpi.sum_positive_balance) + '</span>';
       if(kpiNegEl) kpiNegEl.innerHTML = '<span class="sal-pill neg">' + fmtRubPretty(kpi.sum_negative_balance_abs) + '</span>';
@@ -1070,6 +1102,24 @@
     try {
       if(totalsRoot) totalsRoot.style.display = list.length ? '' : 'none';
       if(totalsAccruedEl) totalsAccruedEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(accrued) + '</span>';
+      if(totalsDailyFotEl){
+        const v = (window.__salaryKpi && window.__salaryKpi.daily_fot_amount !== undefined && window.__salaryKpi.daily_fot_amount !== null) ? window.__salaryKpi.daily_fot_amount : 0;
+        const n = moneyNum(v);
+        const cls = (n < 0) ? 'neg' : 'pos';
+        totalsDailyFotEl.innerHTML = '<span class="sal-pill ' + cls + '">' + fmtRubPretty(v) + '</span>';
+      }
+      if(totalsDailyFotSubEl){
+        const k = window.__salaryKpi || {};
+        const c = Number(k.daily_fot_missing_rate_count || 0) || 0;
+        const sc = Number(k.daily_fot_shifts_count || 0) || 0;
+        if(sc > 0 && c > 0){
+          totalsDailyFotSubEl.style.display = '';
+          totalsDailyFotSubEl.textContent = 'Нет ставки: ' + String(c);
+        } else {
+          totalsDailyFotSubEl.style.display = 'none';
+          totalsDailyFotSubEl.textContent = '';
+        }
+      }
       if(totalsPaidEl) totalsPaidEl.innerHTML = '<span class="sal-pill pos">' + fmtRubPretty(paid) + '</span>';
       if(totalsBalanceEl){
         const cls = (balance < 0) ? 'neg' : 'pos';
@@ -2007,7 +2057,27 @@
   }
 
   async function applyEmployees(){
-    try { await load(); } catch(_){ }
+    try {
+      await load();
+    } catch(_){
+    }
+    try {
+      const r = await apiFetch(apiBase() + '/salaries/daily_fot');
+      if(r && r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      const d = await r.json().catch(()=> ({}));
+      if(d && d.ok){
+        try {
+          if(!window.__salaryKpi) window.__salaryKpi = {};
+          window.__salaryKpi.daily_fot_amount = (d.amount !== undefined && d.amount !== null) ? d.amount : 0;
+          window.__salaryKpi.daily_fot_shifts_count = Number(d.shifts_count || 0) || 0;
+          window.__salaryKpi.daily_fot_missing_rate_count = Number(d.missing_rate_count || 0) || 0;
+        } catch(_){ }
+        try {
+          const filtered = applyFilters(rawItems);
+          updateTotals(filtered);
+        } catch(_){ }
+      }
+    } catch(_){ }
   }
 
   function rerenderEmployees(){
