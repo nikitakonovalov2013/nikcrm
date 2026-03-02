@@ -510,6 +510,9 @@
             '</div>' +
           '</div>' +
           '<div class="spm-form">' +
+            '<label class="spm-label" style="max-width:360px;">Дата выплаты<span class="spm-req">*</span>' +
+              '<input id="spe-created-at" class="input" type="datetime-local" value="" />' +
+            '</label>' +
             '<label class="spm-label" id="spe-label-amount">' +
               '<span class="spm-label-row"><span>Сумма выплаты</span><span class="spm-req">*</span></span>' +
               '<input id="spe-amount" class="input" type="text" inputmode="decimal" value="' + String(p.amount || '').replace(/"/g,'&quot;') + '" />' +
@@ -539,6 +542,7 @@
     const commentEl = document.getElementById('spe-comment');
     const psEl = document.getElementById('spe-ps');
     const peEl = document.getElementById('spe-pe');
+    const createdAtEl = document.getElementById('spe-created-at');
     const errEl = document.getElementById('spe-error');
     const cancelBtn = document.getElementById('spe-cancel');
     const saveBtn = document.getElementById('spe-save');
@@ -570,6 +574,27 @@
 
     try { if(cancelBtn) cancelBtn.addEventListener('click', ()=>{ openPayoutDetailModal(pid); }); } catch(_){ }
 
+    function toInputDateTime(v){
+      try {
+        const raw = String(v || '').trim();
+        if(!raw) return '';
+        const dt = new Date(raw);
+        if(!dt || !Number.isFinite(dt.getTime())) return '';
+        const yy = String(dt.getFullYear());
+        const mm = String(dt.getMonth()+1).padStart(2,'0');
+        const dd = String(dt.getDate()).padStart(2,'0');
+        const hh = String(dt.getHours()).padStart(2,'0');
+        const mi = String(dt.getMinutes()).padStart(2,'0');
+        return yy + '-' + mm + '-' + dd + 'T' + hh + ':' + mi;
+      } catch(_){
+        return '';
+      }
+    }
+
+    try {
+      if(createdAtEl) createdAtEl.value = toInputDateTime(p.created_at);
+    } catch(_){ }
+
     async function onSave(){
       setErr(null);
       setAmountError(false);
@@ -584,6 +609,11 @@
       const comment = String(commentEl && commentEl.value ? commentEl.value : '').trim();
       const ps = String(psEl && psEl.value ? psEl.value : '').trim();
       const pe = String(peEl && peEl.value ? peEl.value : '').trim();
+      const createdAt = String(createdAtEl && createdAtEl.value ? createdAtEl.value : '').trim();
+      if(!createdAt){
+        setErr('Укажите дату выплаты');
+        return;
+      }
       if(ps && pe && ps > pe){
         setErr('Неверный период: дата начала позже даты конца');
         return;
@@ -594,7 +624,7 @@
         const r = await apiFetch(apiBase() + '/salaries/payouts/' + encodeURIComponent(String(pid)) + '/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ amount: rawAmount, comment: comment, period_start: ps, period_end: pe })
+          body: JSON.stringify({ amount: rawAmount, comment: comment, period_start: ps, period_end: pe, created_at: createdAt })
         });
         if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
         const d = await r.json().catch(()=> ({}));
@@ -692,7 +722,7 @@
         return (
           '<tr class="sal-tr-click" data-pj-open-row="' + String(id) + '">' +
             '<td data-label="Дата"><span class="sal-muted">' + when + '</span></td>' +
-            '<td data-label="Сотрудник"><b' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + '>' + uname.replace(/</g,'&lt;') + '</b></td>' +
+            '<td data-label="Сотрудник"><b' + (safeColor ? (' style="color:' + safeColor + ';"') : '') + '">' + uname.replace(/</g,'&lt;') + '</b></td>' +
             '<td data-label="Период"><span class="sal-muted">' + period + '</span></td>' +
             '<td data-label="Сумма"><span class="sal-pill ' + amtCls + '">' + amt + '</span></td>' +
             '<td data-label="Кто создал"><span class="sal-muted">' + actor.replace(/</g,'&lt;') + '</span></td>' +
@@ -1338,8 +1368,8 @@
 
   async function openPayoutModal(userId, userName, month){
     const p = monthPeriod(month);
-    const periodStart = (p && p.start) ? p.start : null;
-    const periodEnd = (p && p.end) ? p.end : null;
+    let periodStart = (p && p.start) ? p.start : null;
+    let periodEnd = (p && p.end) ? p.end : null;
 
     openModal(
       '<div class="salary-modal salary-pay-modal">' +
@@ -1347,7 +1377,7 @@
           '<div class="spm-head">' +
             '<div>' +
               '<h3 class="spm-title">Выплата — ' + String(userName || ('#' + String(userId))).replace(/</g,'&lt;') + '</h3>' +
-              '<div class="spm-sub">Период: <b>' + fmtDateRu(periodStart) + '—' + fmtDateRu(periodEnd) + '</b></div>' +
+              '<div class="spm-sub" id="spm-period-sub">Период: <b>' + fmtDateRu(periodStart) + '—' + fmtDateRu(periodEnd) + '</b></div>' +
             '</div>' +
           '</div>' +
           '<div class="spm-grid">' +
@@ -1369,6 +1399,15 @@
             '</div>' +
           '</div>' +
           '<div class="spm-form">' +
+            '<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">' +
+              '<label class="spm-label" style="flex:1; min-width:220px;">Период с' +
+                '<input id="spm-ps" class="input" type="date" value="' + String(periodStart || '').replace(/"/g,'&quot;') + '" />' +
+              '</label>' +
+              '<label class="spm-label" style="flex:1; min-width:220px;">Период по' +
+                '<input id="spm-pe" class="input" type="date" value="' + String(periodEnd || '').replace(/"/g,'&quot;') + '" />' +
+              '</label>' +
+            '</div>' +
+            '<div class="spm-hint" style="margin-top:2px;">Смен в периоде: <b id="spm-shifts-count">—</b>. Рекомендуемая сумма: <b id="spm-suggested-amount">—</b></div>' +
             '<label class="spm-label" id="spm-label-amount">' +
               '<span class="spm-label-row"><span>Сумма выплаты</span><span class="spm-req">*</span></span>' +
               '<input id="spm-amount" class="input" type="text" inputmode="decimal" placeholder="Например, 15000" />' +
@@ -1398,6 +1437,11 @@
     const balanceAfterEl = document.getElementById('spm-balance-after');
     const amountEl = document.getElementById('spm-amount');
     const commentEl = document.getElementById('spm-comment');
+    const psEl = document.getElementById('spm-ps');
+    const peEl = document.getElementById('spm-pe');
+    const periodSubEl = document.getElementById('spm-period-sub');
+    const shiftsCountEl = document.getElementById('spm-shifts-count');
+    const suggestedAmountEl = document.getElementById('spm-suggested-amount');
     const errEl = document.getElementById('spm-error');
     const cancelBtn = document.getElementById('spm-cancel');
     const confirmBtn = document.getElementById('spm-confirm');
@@ -1406,6 +1450,8 @@
     const quickAccruedBtn = document.getElementById('spm-quick-accrued');
 
     let lastSummary = { accrued: null, paid: null, balance: null };
+    let lastSuggest = { shifts_count: null, suggested_amount: null };
+    let amountTouched = false;
 
     function setErr(msg){
       if(!errEl) return;
@@ -1490,9 +1536,72 @@
 
     updateBalanceAfter();
 
+    async function loadSuggest(){
+      try {
+        const ps = String(psEl && psEl.value ? psEl.value : '').trim();
+        const pe = String(peEl && peEl.value ? peEl.value : '').trim();
+        if(!ps || !pe || ps > pe){
+          lastSuggest = { shifts_count: null, suggested_amount: null };
+          if(shiftsCountEl) shiftsCountEl.textContent = '—';
+          if(suggestedAmountEl) suggestedAmountEl.textContent = '—';
+          return;
+        }
+        const url = apiBase() + '/salaries/payouts/suggest?user_id=' + encodeURIComponent(String(userId)) + '&period_start=' + encodeURIComponent(ps) + '&period_end=' + encodeURIComponent(pe);
+        const r = await apiFetch(url);
+        if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+        const data = await r.json().catch(()=> ({}));
+        if(!data || !data.ok){
+          lastSuggest = { shifts_count: null, suggested_amount: null };
+          if(shiftsCountEl) shiftsCountEl.textContent = '—';
+          if(suggestedAmountEl) suggestedAmountEl.textContent = '—';
+          return;
+        }
+        const n = Number(data.shifts_count);
+        const sAmt = data.suggested_amount;
+        lastSuggest = { shifts_count: Number.isFinite(n) ? n : 0, suggested_amount: sAmt };
+        if(shiftsCountEl) shiftsCountEl.textContent = String(Number.isFinite(n) ? n : 0);
+        if(suggestedAmountEl) suggestedAmountEl.textContent = fmtRubPretty(sAmt);
+
+        // Auto-fill amount (editable). If user already typed manually, do not override.
+        if(amountEl && !amountTouched){
+          try { amountEl.value = String(sAmt || '').replace(',', '.'); } catch(_){ }
+          updateBalanceAfter();
+        }
+      } catch(_){
+        lastSuggest = { shifts_count: null, suggested_amount: null };
+        if(shiftsCountEl) shiftsCountEl.textContent = '—';
+        if(suggestedAmountEl) suggestedAmountEl.textContent = '—';
+      }
+    }
+
+    function refreshPeriodSub(){
+      try {
+        const ps = String(psEl && psEl.value ? psEl.value : '').trim();
+        const pe = String(peEl && peEl.value ? peEl.value : '').trim();
+        if(periodSubEl) periodSubEl.innerHTML = 'Период: <b>' + fmtDateRu(ps) + '—' + fmtDateRu(pe) + '</b>';
+      } catch(_){ }
+    }
+
+    refreshPeriodSub();
+    try { await loadSuggest(); } catch(_){ }
+
     async function onConfirm(){
       setErr(null);
       setAmountError(false);
+
+      const ps = String(psEl && psEl.value ? psEl.value : '').trim();
+      const pe = String(peEl && peEl.value ? peEl.value : '').trim();
+      if(!ps || !pe){
+        setErr('Укажите период выплаты');
+        return;
+      }
+      if(ps > pe){
+        setErr('Неверный период: дата начала позже даты конца');
+        return;
+      }
+      periodStart = ps;
+      periodEnd = pe;
+
       const rawAmount = String(amountEl && amountEl.value ? amountEl.value : '').trim().replace(',', '.');
       const amountNum = Number(rawAmount);
       if(!rawAmount || !Number.isFinite(amountNum) || amountNum <= 0){
@@ -1522,7 +1631,8 @@
         }
         const data = await r.json().catch(()=> ({}));
         if(!data || !data.ok){
-          setErr('Не удалось создать выплату');
+          const msg = (data && (data.detail || data.error_message || data.error)) ? String(data.detail || data.error_message || data.error) : 'Не удалось создать выплату';
+          setErr(msg);
           return;
         }
         closeModal();
@@ -1549,18 +1659,22 @@
 
     try {
       if(confirmBtn) confirmBtn.addEventListener('click', onConfirm);
-      if(amountEl) amountEl.addEventListener('input', ()=>{ setAmountError(false); setErr(null); updateBalanceAfter(); });
+      if(amountEl) amountEl.addEventListener('input', ()=>{ amountTouched = true; setAmountError(false); setErr(null); updateBalanceAfter(); });
       if(amountEl) amountEl.addEventListener('keydown', (e)=>{ if(e.key === 'Enter'){ e.preventDefault(); onConfirm(); } });
+      if(psEl) psEl.addEventListener('change', ()=>{ amountTouched = false; refreshPeriodSub(); loadSuggest(); });
+      if(peEl) peEl.addEventListener('change', ()=>{ amountTouched = false; refreshPeriodSub(); loadSuggest(); });
       if(quickBalanceBtn) quickBalanceBtn.addEventListener('click', ()=>{
         const bal = parseMoney(lastSummary.balance);
         if(!Number.isFinite(bal) || bal <= 0) return;
         try { if(amountEl) amountEl.value = String(Math.round(bal)); } catch(_){ }
+        amountTouched = true;
         updateBalanceAfter();
       });
       if(quickAccruedBtn) quickAccruedBtn.addEventListener('click', ()=>{
         const a = parseMoney(lastSummary.accrued);
         if(!Number.isFinite(a) || a <= 0) return;
         try { if(amountEl) amountEl.value = String(Math.round(a)); } catch(_){ }
+        amountTouched = true;
         updateBalanceAfter();
       });
     } catch(_){ }

@@ -3247,6 +3247,43 @@ async def salaries_api_grid(
             )
             db_time_sec += float(pytime.perf_counter() - t_db2)
 
+        paid_shift_ids: set[int] = set()
+        shift_ids_all = [int(r[0]) for r in shifts_rows if int(r[0] or 0) > 0]
+        if shift_ids_all:
+            from sqlalchemy import exists, or_
+            from shared.models import SalaryPayoutShift
+
+            t_db_paid = pytime.perf_counter()
+            paid_shift_ids = set(
+                int(x)
+                for x in list(
+                    (
+                        await session.execute(
+                            select(ShiftInstance.id)
+                            .where(ShiftInstance.id.in_([int(x) for x in shift_ids_all]))
+                            .where(
+                                or_(
+                                    exists(
+                                        select(1).select_from(SalaryPayoutShift).where(SalaryPayoutShift.shift_id == ShiftInstance.id)
+                                    ),
+                                    exists(
+                                        select(1)
+                                        .select_from(SalaryPayout)
+                                        .where(SalaryPayout.user_id == ShiftInstance.user_id)
+                                        .where(ShiftInstance.day >= SalaryPayout.period_start)
+                                        .where(ShiftInstance.day <= SalaryPayout.period_end)
+                                    ),
+                                )
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if int(x or 0) > 0
+            )
+            db_time_sec += float(pytime.perf_counter() - t_db_paid)
+
         def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
             try:
                 if confirmed_at is not None:
@@ -3289,6 +3326,9 @@ async def salaries_api_grid(
         ) in shifts_rows:
             uid_i = int(uid or 0)
             if uid_i <= 0:
+                continue
+            sid_i = int(sid or 0)
+            if sid_i > 0 and sid_i in paid_shift_ids:
                 continue
             if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
                 continue
@@ -3366,7 +3406,7 @@ async def salaries_api_grid(
             paid_month = q2(paid_month_map.get(uid, Decimal("0")))
             accrued_all = q2(accrued_all_map.get(uid, Decimal("0")))
             paid_all = q2(paid_all_map.get(uid, Decimal("0")))
-            balance = q2(accrued_all - paid_all)
+            balance = q2(accrued_all)
             items.append(
                 {
                     "user_id": uid,
@@ -3603,6 +3643,43 @@ async def salaries_api_dashboard(
             )
             db_time_sec += float(pytime.perf_counter() - t_db2)
 
+        paid_shift_ids: set[int] = set()
+        shift_ids_all = [int(r[0]) for r in shifts_rows if int(r[0] or 0) > 0]
+        if shift_ids_all:
+            from sqlalchemy import exists, or_
+            from shared.models import SalaryPayoutShift
+
+            t_db_paid = pytime.perf_counter()
+            paid_shift_ids = set(
+                int(x)
+                for x in list(
+                    (
+                        await session.execute(
+                            select(ShiftInstance.id)
+                            .where(ShiftInstance.id.in_([int(x) for x in shift_ids_all]))
+                            .where(
+                                or_(
+                                    exists(
+                                        select(1).select_from(SalaryPayoutShift).where(SalaryPayoutShift.shift_id == ShiftInstance.id)
+                                    ),
+                                    exists(
+                                        select(1)
+                                        .select_from(SalaryPayout)
+                                        .where(SalaryPayout.user_id == ShiftInstance.user_id)
+                                        .where(ShiftInstance.day >= SalaryPayout.period_start)
+                                        .where(ShiftInstance.day <= SalaryPayout.period_end)
+                                    ),
+                                )
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if int(x or 0) > 0
+            )
+            db_time_sec += float(pytime.perf_counter() - t_db_paid)
+
         def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
             try:
                 if confirmed_at is not None:
@@ -3648,6 +3725,9 @@ async def salaries_api_dashboard(
         ) in shifts_rows:
             uid_i = int(uid or 0)
             if uid_i <= 0:
+                continue
+            sid_i = int(sid or 0)
+            if sid_i > 0 and sid_i in paid_shift_ids:
                 continue
             if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
                 continue
@@ -3732,12 +3812,12 @@ async def salaries_api_dashboard(
             name = fio or f"#{uid}"
 
             if user_rate.get(uid) is None:
-                bal_nr = q2(accrued_all_map.get(uid, Decimal("0")) - paid_all_map.get(uid, Decimal("0")))
+                bal_nr = q2(accrued_all_map.get(uid, Decimal("0")))
                 no_rate.append({"user_id": uid, "name": name, "balance": f"{q2(bal_nr):.2f}"})
 
             accrued_m = q2(accrued_month_map.get(uid, Decimal("0")))
             paid_m = q2(paid_month_map.get(uid, Decimal("0")))
-            bal = q2(accrued_all_map.get(uid, Decimal("0")) - paid_all_map.get(uid, Decimal("0")))
+            bal = q2(accrued_all_map.get(uid, Decimal("0")))
 
             sum_accrued += q2(accrued_m)
             sum_paid += q2(paid_m)
@@ -3926,7 +4006,22 @@ async def salaries_api_payouts_journal(
     if user_id > 0:
         query = query.where(SalaryPayout.user_id == int(user_id))
     if period_start is not None and period_end is not None:
-        query = query.where(SalaryPayout.period_start == period_start).where(SalaryPayout.period_end == period_end)
+        from sqlalchemy import and_
+
+        from shared.utils import MOSCOW_TZ
+
+        # Filter by payout *created_at* month only.
+        # month_start/next_month_start are defined in Moscow time at 00:00.
+        month_start_local = datetime(int(y), int(mo), 1, 0, 0, tzinfo=MOSCOW_TZ)
+        if int(mo) >= 12:
+            next_month_start_local = datetime(int(y) + 1, 1, 1, 0, 0, tzinfo=MOSCOW_TZ)
+        else:
+            next_month_start_local = datetime(int(y), int(mo) + 1, 1, 0, 0, tzinfo=MOSCOW_TZ)
+
+        month_start_utc = month_start_local.astimezone(timezone.utc)
+        next_month_start_utc = next_month_start_local.astimezone(timezone.utc)
+
+        query = query.where(and_(SalaryPayout.created_at >= month_start_utc, SalaryPayout.created_at < next_month_start_utc))
     if user_q:
         import re
         from sqlalchemy import and_, or_
@@ -4959,16 +5054,30 @@ async def salaries_api_payouts_create(
         raise HTTPException(status_code=404)
     notify_tg_id = int(getattr(u, "tg_id", 0) or 0) or None
 
-    payout = await create_salary_payout(
-        session=session,
-        user_id=int(user_id),
-        amount=amount,
-        period_start=period_start,
-        period_end=period_end,
-        comment=comment,
-        created_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
-        notify_tg_id=notify_tg_id,
-    )
+    try:
+        payout = await create_salary_payout(
+            session=session,
+            user_id=int(user_id),
+            amount=amount,
+            period_start=period_start,
+            period_end=period_end,
+            comment=comment,
+            created_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+            notify_tg_id=notify_tg_id,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "no_shifts_to_pay":
+            return JSONResponse(
+                {"ok": False, "error": "no_shifts_to_pay", "error_message": "Нет смен для выплаты за выбранный период"},
+                status_code=400,
+            )
+        if code == "shifts_already_paid":
+            return JSONResponse(
+                {"ok": False, "error": "shifts_already_paid", "error_message": "Смены за выбранный период уже выплачены"},
+                status_code=409,
+            )
+        return JSONResponse({"ok": False, "error": "bad_request", "error_message": "Не удалось создать выплату"}, status_code=400)
 
     return {"ok": True, "id": int(getattr(payout, "id", 0) or 0)}
 
@@ -5018,6 +5127,24 @@ async def salaries_api_payout_update(
     if comment is not None and comment.lower() in {"none", "null", "undefined"}:
         comment = None
 
+    created_at_raw = str(body.get("created_at") or "").strip()
+    created_at = None
+    if created_at_raw:
+        try:
+            from datetime import timezone
+
+            from shared.utils import MOSCOW_TZ
+
+            # Expect browser datetime-local: YYYY-MM-DDTHH:MM (no timezone).
+            dt_naive = datetime.fromisoformat(str(created_at_raw).replace(" ", "T"))
+            if dt_naive.tzinfo is None:
+                dt_local = dt_naive.replace(tzinfo=MOSCOW_TZ)
+            else:
+                dt_local = dt_naive
+            created_at = dt_local.astimezone(timezone.utc)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Неверная дата выплаты")
+
     from shared.services.salaries_service import update_salary_payout
 
     try:
@@ -5028,6 +5155,7 @@ async def salaries_api_payout_update(
             period_start=ps,
             period_end=pe,
             comment=comment,
+            created_at=created_at,
             updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
         )
     except ValueError as e:
@@ -5036,6 +5164,8 @@ async def salaries_api_payout_update(
             raise HTTPException(status_code=404, detail="Выплата не найдена")
         if code == "bad_period":
             raise HTTPException(status_code=400, detail="Неверный период")
+        if code == "bad_created_at":
+            raise HTTPException(status_code=400, detail="Неверная дата выплаты")
         raise HTTPException(status_code=400, detail="Ошибка обновления")
 
     return {"ok": True, "before": res.get("before"), "after": res.get("after")}
@@ -8945,6 +9075,59 @@ async def supplies_create(
 async def supplies_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
     await session.execute(delete(MaterialSupply).where(MaterialSupply.id == item_id))
+    res = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/supplies_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+
+
+@app.post("/materials/supplies/{item_id}/update")
+async def supplies_update(
+    item_id: int,
+    request: Request,
+    material_id: int = Form(...),
+    employee_id: int | None = Form(None),
+    amount: Decimal = Form(...),
+    date: str = Form(...),
+    admin_id: int = Depends(require_staff),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    from datetime import datetime as dt
+    d = dt.strptime(date, "%Y-%m-%d").date()
+    res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
+    rec = res.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(404)
+    try:
+        if Decimal(amount) <= 0:
+            raise HTTPException(400, detail="amount must be > 0")
+    except Exception:
+        raise HTTPException(400, detail="invalid amount")
+    rec.material_id = material_id
+    rec.employee_id = employee_id or None
+    rec.amount = amount
+    rec.date = d
+    await session.flush()
+    res2 = await session.execute(
+        select(MaterialSupply)
+        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
+        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
+    )
+    items = res2.scalars().all()
+    return templates.TemplateResponse(
+        "materials/partials/supplies_table.html",
+        {"request": request, "items": items, "is_oob": True},
+        headers={"HX-Trigger": "close-modal"},
+    )
+ 
     res = await session.execute(
         select(MaterialSupply)
         .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))

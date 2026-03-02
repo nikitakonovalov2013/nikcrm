@@ -321,14 +321,32 @@ class SalaryPayout(Base):
     period_end: Mapped[date] = mapped_column(Date)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     user: Mapped["User"] = relationship(back_populates="salary_payouts", lazy="selectin", foreign_keys=[user_id])
     created_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[created_by_user_id])
+    shifts: Mapped[list["SalaryPayoutShift"]] = relationship(
+        back_populates="payout",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_salary_payouts_user_created_at", "user_id", "created_at"),
     )
+
+
+class SalaryPayoutShift(Base):
+    __tablename__ = "salary_payout_shifts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    payout_id: Mapped[int] = mapped_column(ForeignKey("salary_payouts.id", ondelete="CASCADE"), index=True)
+    shift_id: Mapped[int] = mapped_column(ForeignKey("shift_instances.id", ondelete="CASCADE"), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    payout: Mapped["SalaryPayout"] = relationship(back_populates="shifts", lazy="selectin")
+    shift: Mapped["ShiftInstance"] = relationship(lazy="selectin")
 
 
 class SalaryShiftAudit(Base):

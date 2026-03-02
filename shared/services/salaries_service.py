@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import httpx
 from sqlalchemy import select, func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import settings
@@ -20,6 +21,7 @@ from shared.models import (
     SalaryShiftStateRow,
     SalaryAdjustment,
     SalaryPayout,
+    SalaryPayoutShift,
     SalaryShiftAudit,
     SalaryPayoutAudit,
 )
@@ -154,7 +156,6 @@ async def calc_user_period_totals(
     period_start: date,
     period_end: date,
 ) -> SalaryPeriodTotals:
-    # Month accrual: only worked/closed (or manually confirmed) shifts.
     items_month = await calc_user_shifts(
         session=session,
         user_id=user_id,
@@ -163,7 +164,19 @@ async def calc_user_period_totals(
         include_plans=True,
         only_accruable=True,
     )
-    accrued_month = q2(sum((it.total_amount for it in items_month), DEC_0))
+
+    paid_shift_ids_month = await _list_paid_shift_ids(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    items_month_unpaid = [
+        it
+        for it in items_month
+        if int(getattr(it, "shift_id", 0) or 0) <= 0 or int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids_month
+    ]
+    accrued_month = q2(sum((it.total_amount for it in items_month_unpaid), DEC_0))
     needs_review_total = int(sum((1 for it in items_month if bool(getattr(it, "needs_review", False))), 0))
 
     paid_month = (
@@ -187,7 +200,18 @@ async def calc_user_period_totals(
         include_plans=False,
         only_accruable=True,
     )
-    accrued_all = q2(sum((it.total_amount for it in items_all), DEC_0))
+    paid_shift_ids_all = await _list_paid_shift_ids(
+        session=session,
+        user_id=int(user_id),
+        period_start=all_start,
+        period_end=period_end,
+    )
+    items_all_unpaid = [
+        it
+        for it in items_all
+        if int(getattr(it, "shift_id", 0) or 0) <= 0 or int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids_all
+    ]
+    accrued_all = q2(sum((it.total_amount for it in items_all_unpaid), DEC_0))
 
     paid_all = (
         await session.execute(
@@ -198,8 +222,84 @@ async def calc_user_period_totals(
     ).scalar_one()
     paid_all = q2(Decimal(paid_all))
 
-    balance = q2(accrued_all - paid_all)
+    # Debt is now defined as sum of unpaid accruals (>= cutoff).
+    balance = q2(accrued_all)
     return SalaryPeriodTotals(accrued=accrued_month, paid=paid_month, balance=balance, needs_review_total=needs_review_total)
+
+
+async def _list_paid_shift_ids(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_start: date,
+    period_end: date,
+) -> set[int]:
+    # A) explicit payout ↔ shift links
+    rows_linked = list(
+        (
+            await session.execute(
+                select(SalaryPayoutShift.shift_id)
+                .join(ShiftInstance, ShiftInstance.id == SalaryPayoutShift.shift_id)
+                .where(ShiftInstance.user_id == int(user_id))
+                .where(ShiftInstance.day >= period_start)
+                .where(ShiftInstance.day <= period_end)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # B) legacy payouts: treat shift as paid if it is covered by ANY payout period for the user
+    rows_by_period = list(
+        (
+            await session.execute(
+                select(ShiftInstance.id)
+                .join(SalaryPayout, SalaryPayout.user_id == ShiftInstance.user_id)
+                .where(ShiftInstance.user_id == int(user_id))
+                .where(ShiftInstance.day >= period_start)
+                .where(ShiftInstance.day <= period_end)
+                .where(ShiftInstance.day >= SalaryPayout.period_start)
+                .where(ShiftInstance.day <= SalaryPayout.period_end)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    out = {int(x) for x in rows_linked if int(x or 0) > 0}
+    out |= {int(x) for x in rows_by_period if int(x or 0) > 0}
+    return out
+
+
+async def suggest_salary_payout_for_period(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_start: date,
+    period_end: date,
+) -> dict:
+    items = await calc_user_shifts(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+        include_plans=False,
+        only_accruable=True,
+    )
+    paid_shift_ids = await _list_paid_shift_ids(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    eligible = [it for it in items if int(getattr(it, "shift_id", 0) or 0) > 0 and int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids]
+    suggested_amount = q2(sum((it.total_amount for it in eligible), DEC_0))
+    shift_ids = [int(getattr(it, "shift_id", 0) or 0) for it in eligible]
+    return {
+        "suggested_amount": suggested_amount,
+        "shifts_count": int(len(shift_ids)),
+        "shift_ids": shift_ids,
+    }
 
 
 async def _ensure_salary_shift_state(
@@ -610,7 +710,7 @@ async def list_salary_payouts_for_user(
 ) -> list[SalaryPayout]:
     lim = max(1, min(100, int(limit)))
     off = max(0, int(offset))
-    return list(
+    rows = list(
         (
             await session.execute(
                 select(SalaryPayout)
@@ -623,6 +723,7 @@ async def list_salary_payouts_for_user(
         .scalars()
         .all()
     )
+    return rows
 
 
 async def create_salary_payout(
@@ -637,6 +738,16 @@ async def create_salary_payout(
     notify_tg_id: int | None,
 ) -> SalaryPayout:
     amt = q2(Decimal(amount))
+
+    suggest = await suggest_salary_payout_for_period(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    shift_ids: list[int] = list(suggest.get("shift_ids") or [])
+    if not shift_ids:
+        raise ValueError("no_shifts_to_pay")
 
     totals_before = await calc_user_period_totals(
         session=session,
@@ -656,25 +767,35 @@ async def create_salary_payout(
     session.add(p)
     await session.flush()
 
-    # full payout -> mark shifts as paid
-    if amt >= totals_before.balance:
-        shifts = list(
-            (
-                await session.execute(
-                    select(ShiftInstance)
-                    .where(ShiftInstance.user_id == int(user_id))
-                    .where(ShiftInstance.day >= period_start)
-                    .where(ShiftInstance.day <= period_end)
-                )
+    # Link payout to eligible shifts (do not allow double-pay).
+    stmt = (
+        insert(SalaryPayoutShift)
+        .values([
+            {"payout_id": int(getattr(p, "id", 0) or 0), "shift_id": int(sid)}
+            for sid in shift_ids
+        ])
+        .on_conflict_do_nothing(index_elements=[SalaryPayoutShift.shift_id])
+        .returning(SalaryPayoutShift.shift_id)
+    )
+    inserted_shift_ids = list((await session.execute(stmt)).scalars().all())
+    if len(inserted_shift_ids) != len(shift_ids):
+        raise ValueError("shifts_already_paid")
+
+    # Sync shift_state.is_paid for UI badge (legacy field).
+    shifts = list(
+        (
+            await session.execute(
+                select(ShiftInstance).where(ShiftInstance.id.in_([int(x) for x in shift_ids]))
             )
-            .scalars()
-            .all()
         )
-        for s in shifts:
-            st_row = await _ensure_salary_shift_state(session=session, shift=s)
-            st_row.is_paid = True
-            st_row.updated_by_user_id = int(created_by_user_id) if created_by_user_id is not None else None
-            session.add(st_row)
+        .scalars()
+        .all()
+    )
+    for s in shifts:
+        st_row = await _ensure_salary_shift_state(session=session, shift=s)
+        st_row.is_paid = True
+        st_row.updated_by_user_id = int(created_by_user_id) if created_by_user_id is not None else None
+        session.add(st_row)
 
     totals_after = await calc_user_period_totals(
         session=session,
@@ -741,6 +862,7 @@ async def update_salary_payout(
     period_start: date | None,
     period_end: date | None,
     comment: str | None,
+    created_at: datetime | None,
     updated_by_user_id: int | None,
 ) -> dict:
     p = (
@@ -756,6 +878,7 @@ async def update_salary_payout(
     old_pe = getattr(p, "period_end", None)
     old_amount = getattr(p, "amount", None)
     old_comment = getattr(p, "comment", None)
+    old_created_at = getattr(p, "created_at", None)
 
     # If period_start/period_end not provided -> keep existing
     new_ps = period_start if period_start is not None else old_ps
@@ -767,6 +890,9 @@ async def update_salary_payout(
 
     new_amount = q2(Decimal(amount))
     new_comment = (str(comment).strip() or None) if comment is not None else None
+    new_created_at = created_at if created_at is not None else old_created_at
+    if new_created_at is None:
+        raise ValueError("bad_created_at")
 
     totals_before_old = await calc_user_period_totals(
         session=session,
@@ -780,6 +906,7 @@ async def update_salary_payout(
     p.comment = new_comment
     p.period_start = new_ps
     p.period_end = new_pe
+    p.created_at = new_created_at
     session.add(p)
     await session.flush()
 
@@ -828,6 +955,7 @@ async def update_salary_payout(
         "comment": (str(old_comment).strip() if old_comment is not None and str(old_comment).strip() else None),
         "period_start": str(old_ps) if old_ps is not None else None,
         "period_end": str(old_pe) if old_pe is not None else None,
+        "created_at": str(old_created_at) if old_created_at is not None else None,
         "paid": str(totals_before_old.paid),
         "balance": str(totals_before_old.balance),
     }
@@ -836,6 +964,7 @@ async def update_salary_payout(
         "comment": (str(new_comment).strip() if new_comment is not None and str(new_comment).strip() else None),
         "period_start": str(new_ps),
         "period_end": str(new_pe),
+        "created_at": str(new_created_at) if new_created_at is not None else None,
         "paid": str(totals_after_new.paid),
         "balance": str(totals_after_new.balance),
     }
@@ -853,6 +982,7 @@ async def update_salary_payout(
                         "amount": bool(str(before.get("amount") or "") != str(after.get("amount") or "")),
                         "comment": bool((before.get("comment") or None) != (after.get("comment") or None)),
                         "period": bool((before.get("period_start"), before.get("period_end")) != (after.get("period_start"), after.get("period_end"))),
+                        "created_at": bool((before.get("created_at") or None) != (after.get("created_at") or None)),
                     }
                 },
             )
