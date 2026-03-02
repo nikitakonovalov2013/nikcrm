@@ -257,6 +257,7 @@ class SalarySettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     pin_hash: Mapped[str] = mapped_column(String(256))
+    balance_cutoff_date: Mapped[date] = mapped_column(Date, nullable=False, default=date(2026, 3, 1))
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

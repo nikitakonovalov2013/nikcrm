@@ -16,6 +16,7 @@ from shared.models import (
     User,
     WorkShiftDay,
     ShiftInstance,
+    SalarySettings,
     SalaryShiftStateRow,
     SalaryAdjustment,
     SalaryPayout,
@@ -23,6 +24,7 @@ from shared.models import (
     SalaryPayoutAudit,
 )
 from shared.services.salaries_calc import calc_shift_salary, q2, DEC_0
+from shared.services.salaries_pin import get_salary_settings
 from shared.utils import utc_now
 
 
@@ -80,6 +82,17 @@ class SalaryPeriodTotals:
     paid: Decimal
     balance: Decimal
     needs_review_total: int
+
+
+async def get_balance_cutoff_date(*, session: AsyncSession) -> date:
+    try:
+        st: SalarySettings = await get_salary_settings(session)
+        d = getattr(st, "balance_cutoff_date", None)
+        if isinstance(d, date):
+            return d
+    except Exception:
+        pass
+    return date(2026, 3, 1)
 
 
 async def _tg_send_html(*, chat_id: int, text: str) -> None:
@@ -163,11 +176,8 @@ async def calc_user_period_totals(
     ).scalar_one()
     paid_month = q2(Decimal(paid_month))
 
-    # Cross-month balance: all-time accrued (worked/closed/confirmed only) minus all-time payouts.
-    min_shift_day = (
-        await session.execute(select(func.min(ShiftInstance.day)).where(ShiftInstance.user_id == int(user_id)))
-    ).scalar_one()
-    all_start = min_shift_day if min_shift_day is not None else period_start
+    cutoff = await get_balance_cutoff_date(session=session)
+    all_start = cutoff
 
     items_all = await calc_user_shifts(
         session=session,
@@ -181,7 +191,9 @@ async def calc_user_period_totals(
 
     paid_all = (
         await session.execute(
-            select(func.coalesce(func.sum(SalaryPayout.amount), 0)).where(SalaryPayout.user_id == int(user_id))
+            select(func.coalesce(func.sum(SalaryPayout.amount), 0))
+            .where(SalaryPayout.user_id == int(user_id))
+            .where(func.date(SalaryPayout.created_at) >= cutoff)
         )
     ).scalar_one()
     paid_all = q2(Decimal(paid_all))

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import SalarySettings
+from datetime import date
 
 
 def hash_salary_pin(pin: str) -> str:
@@ -22,7 +23,12 @@ def is_valid_salary_pin(pin: str) -> bool:
 async def get_salary_settings(session: AsyncSession) -> SalarySettings:
     row = (await session.execute(select(SalarySettings).order_by(SalarySettings.id.asc()).limit(1))).scalars().first()
     if row is None:
-        row = SalarySettings(id=1, pin_hash=hash_salary_pin("000000"), updated_by_user_id=None)
+        row = SalarySettings(
+            id=1,
+            pin_hash=hash_salary_pin("000000"),
+            balance_cutoff_date=date(2026, 3, 1),
+            updated_by_user_id=None,
+        )
         session.add(row)
         await session.flush()
     return row

@@ -1,6 +1,7 @@
 import builtins
 
 import asyncio
+import time as pytime
 
 from fastapi import FastAPI, Depends, Request, Response, HTTPException, status, Form, UploadFile, File, Header
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -21,6 +22,7 @@ from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 from shared.config import settings
 from shared.db import get_async_session
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import event
 from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus, PurchaseStatus, SalaryShiftState
 from shared.models import User
 from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
@@ -101,7 +103,8 @@ from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
 from shared.services.salaries_service import calc_user_period_totals
 from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
 from shared.services.salaries_service import calc_user_shifts, update_salary_shift_state, create_salary_adjustment
-from shared.services.salaries_calc import q2
+from shared.services.salaries_service import get_balance_cutoff_date
+from shared.services.salaries_calc import q2, calc_shift_salary
 
 from shared.models import SalaryPayout
 from shared.models import SalaryPayoutAudit
@@ -3092,53 +3095,311 @@ async def salaries_api_grid(
         raise HTTPException(status_code=400)
     period_start, period_end = _month_period(y, mo)
 
-    res = await session.execute(
-        select(User)
-        .where(User.is_deleted == False)
-        .where(User.status == UserStatus.APPROVED)
-        .order_by(User.first_name, User.last_name, User.id)
-    )
-    users = list(res.scalars().all())
+    perf_t0 = pytime.perf_counter()
+    sql_count = 0
+    db_time_sec = 0.0
 
-    items: list[dict] = []
-    for u in users:
-        uid = int(getattr(u, "id", 0) or 0)
-        if uid <= 0:
-            continue
-        totals = await calc_user_period_totals(
-            session=session,
-            user_id=uid,
-            period_start=period_start,
-            period_end=period_end,
+    def _before_cursor_execute(*_args, **_kwargs):
+        nonlocal sql_count
+        sql_count += 1
+
+    sync_engine = getattr(getattr(session, "bind", None), "sync_engine", None)
+    if sync_engine is not None:
+        try:
+            event.listen(sync_engine, "before_cursor_execute", _before_cursor_execute)
+        except Exception:
+            pass
+
+    try:
+        t_db0 = pytime.perf_counter()
+        res = await session.execute(
+            select(
+                User.id,
+                User.first_name,
+                User.last_name,
+                User.color,
+                User.hour_rate,
+                User.rate_k,
+            )
+            .where(User.is_deleted == False)
+            .where(User.status == UserStatus.APPROVED)
+            .order_by(User.first_name, User.last_name, User.id)
         )
-        fio = (" ".join([str(getattr(u, "first_name", "") or "").strip(), str(getattr(u, "last_name", "") or "").strip()]).strip())
-        hour_rate_val = getattr(u, "hour_rate", None)
-        if hour_rate_val is None:
+        users_rows = list(res.all())
+        user_ids = [int(r[0]) for r in users_rows if int(r[0] or 0) > 0]
+        db_time_sec += float(pytime.perf_counter() - t_db0)
+
+        cutoff = await get_balance_cutoff_date(session=session)
+
+        # payouts aggregates
+        paid_month_map: dict[int, Decimal] = {}
+        paid_all_map: dict[int, Decimal] = {}
+
+        if user_ids:
+            t_db1 = pytime.perf_counter()
+            paid_month_rows = list(
+                (
+                    await session.execute(
+                        select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
+                        .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
+                        .where(SalaryPayout.period_start == period_start)
+                        .where(SalaryPayout.period_end == period_end)
+                        .group_by(SalaryPayout.user_id)
+                    )
+                ).all()
+            )
+            for uid, amt in paid_month_rows:
+                try:
+                    paid_month_map[int(uid)] = q2(Decimal(amt))
+                except Exception:
+                    paid_month_map[int(uid)] = Decimal("0")
+
+            paid_all_rows = list(
+                (
+                    await session.execute(
+                        select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
+                        .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
+                        .where(func.date(SalaryPayout.created_at) >= cutoff)
+                        .group_by(SalaryPayout.user_id)
+                    )
+                ).all()
+            )
+            for uid, amt in paid_all_rows:
+                try:
+                    paid_all_map[int(uid)] = q2(Decimal(amt))
+                except Exception:
+                    paid_all_map[int(uid)] = Decimal("0")
+            db_time_sec += float(pytime.perf_counter() - t_db1)
+
+        # hour rate per user (rate_k fallback)
+        user_rate: dict[int, Decimal | None] = {}
+        for r in users_rows:
+            uid = int(r[0] or 0)
+            if uid <= 0:
+                continue
+            hr = r[4]
+            rk = r[5]
+            if hr is not None:
+                try:
+                    user_rate[uid] = Decimal(str(hr))
+                except Exception:
+                    user_rate[uid] = None
+            elif rk is not None:
+                try:
+                    user_rate[uid] = Decimal(int(rk))
+                except Exception:
+                    user_rate[uid] = None
+            else:
+                user_rate[uid] = None
+
+        # shifts up to period_end (for month + all-time balance)
+        shifts_rows = []
+        if user_ids:
+            t_db2 = pytime.perf_counter()
+            shifts_lower = cutoff if cutoff < period_start else period_start
+            shifts_rows = list(
+                (
+                    await session.execute(
+                        select(
+                            ShiftInstance.id,
+                            ShiftInstance.user_id,
+                            ShiftInstance.day,
+                            ShiftInstance.planned_hours,
+                            ShiftInstance.status,
+                            ShiftInstance.started_at,
+                            ShiftInstance.ended_at,
+                            ShiftInstance.amount_submitted,
+                            ShiftInstance.amount_approved,
+                            ShiftInstance.approval_required,
+                            ShiftInstance.approved_at,
+                            SalaryShiftStateRow.state,
+                            SalaryShiftStateRow.manual_hours,
+                            SalaryShiftStateRow.manual_amount_override,
+                            SalaryShiftStateRow.confirmed_at,
+                            SalaryShiftStateRow.confirmed_by_user_id,
+                            func.coalesce(func.sum(SalaryAdjustment.delta_amount), 0).label("adj_sum"),
+                        )
+                        .outerjoin(SalaryShiftStateRow, SalaryShiftStateRow.shift_id == ShiftInstance.id)
+                        .outerjoin(SalaryAdjustment, SalaryAdjustment.shift_id == ShiftInstance.id)
+                        .where(ShiftInstance.user_id.in_([int(x) for x in user_ids]))
+                        .where(ShiftInstance.day >= shifts_lower)
+                        .where(ShiftInstance.day <= period_end)
+                        .group_by(
+                            ShiftInstance.id,
+                            ShiftInstance.user_id,
+                            ShiftInstance.day,
+                            ShiftInstance.planned_hours,
+                            ShiftInstance.status,
+                            ShiftInstance.started_at,
+                            ShiftInstance.ended_at,
+                            ShiftInstance.amount_submitted,
+                            ShiftInstance.amount_approved,
+                            ShiftInstance.approval_required,
+                            ShiftInstance.approved_at,
+                            SalaryShiftStateRow.state,
+                            SalaryShiftStateRow.manual_hours,
+                            SalaryShiftStateRow.manual_amount_override,
+                            SalaryShiftStateRow.confirmed_at,
+                            SalaryShiftStateRow.confirmed_by_user_id,
+                        )
+                    )
+                ).all()
+            )
+            db_time_sec += float(pytime.perf_counter() - t_db2)
+
+        def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
             try:
-                rk = getattr(u, "rate_k", None)
-                if rk is not None:
-                    hour_rate_val = Decimal(int(rk))
+                if confirmed_at is not None:
+                    return True
             except Exception:
                 pass
-        hour_rate_s = None
-        try:
-            if hour_rate_val is not None:
-                hour_rate_s = f"{Decimal(str(hour_rate_val)):.2f}"
-        except Exception:
-            hour_rate_s = (str(hour_rate_val) or None) if hour_rate_val is not None else None
+            try:
+                if ended_at is not None:
+                    return True
+            except Exception:
+                pass
+            try:
+                return bool(status_val in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
+            except Exception:
+                return False
 
-        items.append(
-            {
-                "user_id": uid,
-                "name": fio or f"#{uid}",
-                "color": str(getattr(u, "color", "") or "") or None,
-                "hour_rate": hour_rate_s,
-                "accrued": f"{totals.accrued:.2f}",
-                "paid": f"{totals.paid:.2f}",
-                "balance": f"{totals.balance:.2f}",
-                "needs_review_total": int(getattr(totals, "needs_review_total", 0) or 0),
-            }
+        # calc totals in python but without per-user queries
+        accrued_month_map: dict[int, Decimal] = {}
+        needs_review_map: dict[int, int] = {}
+        accrued_all_map: dict[int, Decimal] = {}
+
+        for (
+            sid,
+            uid,
+            day,
+            planned_hours_i,
+            st_val,
+            started_at,
+            ended_at,
+            amount_submitted,
+            amount_approved,
+            approval_required,
+            approved_at,
+            salary_state,
+            manual_hours,
+            manual_amount_override,
+            confirmed_at,
+            confirmed_by_user_id,
+            adj_sum,
+        ) in shifts_rows:
+            uid_i = int(uid or 0)
+            if uid_i <= 0:
+                continue
+            if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
+                continue
+
+            hr = user_rate.get(uid_i)
+            planned_hours = None
+            try:
+                planned_hours = Decimal(int(planned_hours_i)) if planned_hours_i is not None else None
+            except Exception:
+                planned_hours = None
+
+            req_amt = None
+            appr_amt = None
+            try:
+                req_amt = Decimal(int(amount_submitted)) if amount_submitted is not None else None
+            except Exception:
+                req_amt = None
+            try:
+                appr_amt = Decimal(int(amount_approved)) if amount_approved is not None else None
+            except Exception:
+                appr_amt = None
+
+            try:
+                adj_amt = Decimal(adj_sum or 0)
+            except Exception:
+                adj_amt = Decimal("0")
+
+            st_effective = salary_state if salary_state is not None else SalaryShiftState.WORKED
+            calc = calc_shift_salary(
+                shift_id=int(sid),
+                user_id=int(uid_i),
+                day=day,
+                hour_rate=hr,
+                planned_hours=planned_hours,
+                shift_status=st_val,
+                started_at=started_at,
+                ended_at=ended_at,
+                state=st_effective,
+                manual_hours=manual_hours,
+                manual_amount_override=manual_amount_override,
+                requested_amount=req_amt,
+                approved_amount=appr_amt,
+                approval_required=(bool(approval_required) if approval_required is not None else None),
+                approved_at=approved_at,
+                adjustments_amount=adj_amt,
+                confirmed_at=confirmed_at,
+                confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),
+            )
+
+            total_amt = q2(Decimal(getattr(calc, "total_amount", Decimal("0")) or Decimal("0")))
+            if day is not None and day >= cutoff:
+                accrued_all_map[uid_i] = q2(accrued_all_map.get(uid_i, Decimal("0")) + total_amt)
+
+            if day is not None and (day >= period_start and day <= period_end):
+                accrued_month_map[uid_i] = q2(accrued_month_map.get(uid_i, Decimal("0")) + total_amt)
+                if bool(getattr(calc, "needs_review", False)):
+                    needs_review_map[uid_i] = int(needs_review_map.get(uid_i, 0)) + 1
+
+        # build response
+        items: list[dict] = []
+        for r in users_rows:
+            uid = int(r[0] or 0)
+            if uid <= 0:
+                continue
+            fio = (" ".join([str(r[1] or "").strip(), str(r[2] or "").strip()]).strip())
+            hour_rate_val = user_rate.get(uid)
+            hour_rate_s = None
+            try:
+                if hour_rate_val is not None:
+                    hour_rate_s = f"{Decimal(str(hour_rate_val)):.2f}"
+            except Exception:
+                hour_rate_s = (str(hour_rate_val) or None) if hour_rate_val is not None else None
+
+            accrued_month = q2(accrued_month_map.get(uid, Decimal("0")))
+            paid_month = q2(paid_month_map.get(uid, Decimal("0")))
+            accrued_all = q2(accrued_all_map.get(uid, Decimal("0")))
+            paid_all = q2(paid_all_map.get(uid, Decimal("0")))
+            balance = q2(accrued_all - paid_all)
+            items.append(
+                {
+                    "user_id": uid,
+                    "name": fio or f"#{uid}",
+                    "color": str(r[3] or "") or None,
+                    "hour_rate": hour_rate_s,
+                    "accrued": f"{accrued_month:.2f}",
+                    "paid": f"{paid_month:.2f}",
+                    "balance": f"{balance:.2f}",
+                    "needs_review_total": int(needs_review_map.get(uid, 0) or 0),
+                }
+            )
+    finally:
+        if sync_engine is not None:
+            try:
+                event.remove(sync_engine, "before_cursor_execute", _before_cursor_execute)
+            except Exception:
+                pass
+
+    perf_build_sec = float(pytime.perf_counter() - perf_t0)
+    try:
+        logger.info(
+            "salaries_api_grid_perf",
+            extra={
+                "month": f"{int(y):04d}-{int(mo):02d}",
+                "count_users": int(len(items)),
+                "sql_queries": int(sql_count),
+                "db_time_ms": int(db_time_sec * 1000),
+                "total_time_ms": int(perf_build_sec * 1000),
+            },
         )
+    except Exception:
+        pass
 
     return {
         "ok": True,
@@ -3167,235 +3428,456 @@ async def salaries_api_dashboard(
         raise HTTPException(status_code=400)
     period_start, period_end = _month_period(int(y), int(mo))
 
-    # load users (same set as grid)
-    res = await session.execute(
-        select(User)
-        .where(User.is_deleted == False)
-        .where(User.status == UserStatus.APPROVED)
-        .order_by(User.first_name, User.last_name, User.id)
-    )
-    users = list(res.scalars().all())
+    perf_t0 = pytime.perf_counter()
+    sql_count = 0
+    db_time_sec = 0.0
 
-    # KPI based on existing calculation function (authoritative)
-    grid_items: list[dict] = []
-    sum_accrued = Decimal("0")
-    sum_paid = Decimal("0")
-    sum_positive_balance = Decimal("0")
-    sum_negative_balance_abs = Decimal("0")
-    count_needs_review = 0
+    def _before_cursor_execute(*_args, **_kwargs):
+        nonlocal sql_count
+        sql_count += 1
 
-    no_rate: list[dict] = []
-
-    # series by day
-    accrued_by_day: dict[str, Decimal] = {}
-    count_needs_review_by_day: dict[str, int] = {}
-
-    for u in users:
-        uid = int(getattr(u, "id", 0) or 0)
-        if uid <= 0:
-            continue
-        totals = await calc_user_period_totals(
-            session=session,
-            user_id=uid,
-            period_start=period_start,
-            period_end=period_end,
-        )
-        fio = (
-            " ".join(
-                [
-                    str(getattr(u, "first_name", "") or "").strip(),
-                    str(getattr(u, "last_name", "") or "").strip(),
-                ]
-            ).strip()
-        )
-        name = fio or str(getattr(u, "username", "") or "") or f"#{uid}"
-
-        hour_rate_val = getattr(u, "hour_rate", None)
-        if hour_rate_val is None:
-            try:
-                rk = getattr(u, "rate_k", None)
-                if rk is not None:
-                    hour_rate_val = Decimal(int(rk))
-            except Exception:
-                pass
-        totals_accrued_raw = getattr(totals, "accrued", None)
-        totals_paid_raw = getattr(totals, "paid", None)
-        totals_balance_raw = getattr(totals, "balance", None)
+    sync_engine = getattr(getattr(session, "bind", None), "sync_engine", None)
+    if sync_engine is not None:
         try:
-            totals_accrued = Decimal(str(totals_accrued_raw if totals_accrued_raw is not None else 0))
-        except Exception:
-            totals_accrued = Decimal("0")
-        try:
-            totals_paid = Decimal(str(totals_paid_raw if totals_paid_raw is not None else 0))
-        except Exception:
-            totals_paid = Decimal("0")
-        try:
-            totals_balance = Decimal(str(totals_balance_raw if totals_balance_raw is not None else 0))
-        except Exception:
-            totals_balance = Decimal("0")
-
-        if hour_rate_val is None:
-            no_rate.append({"user_id": uid, "name": name, "balance": f"{q2(totals_balance):.2f}"})
-
-        sum_accrued += q2(totals_accrued)
-        sum_paid += q2(totals_paid)
-        bal = q2(totals_balance)
-        if bal > 0:
-            sum_positive_balance += bal
-        elif bal < 0:
-            sum_negative_balance_abs += q2(abs(bal))
-        count_needs_review += int(getattr(totals, "needs_review_total", 0) or 0)
-
-        grid_items.append(
-            {
-                "user_id": uid,
-                "name": name,
-                "balance": f"{bal:.2f}",
-                "needs_review_total": int(getattr(totals, "needs_review_total", 0) or 0),
-            }
-        )
-
-        # accrue by day: compute per-user shifts (keeps calc logic intact)
-        try:
-            shifts_calc = await calc_user_shifts(
-                session=session,
-                user_id=uid,
-                period_start=period_start,
-                period_end=period_end,
-                only_accruable=True,
-            )
-            for s in shifts_calc:
-                day = str(getattr(s, "day", "") or "")
-                if not day:
-                    continue
-                amt = q2(Decimal(getattr(s, "total_amount", Decimal("0")) or Decimal("0")))
-                accrued_by_day[day] = q2(accrued_by_day.get(day, Decimal("0")) + amt)
-                if bool(getattr(s, "needs_review", False)):
-                    count_needs_review_by_day[day] = int(count_needs_review_by_day.get(day, 0)) + 1
+            event.listen(sync_engine, "before_cursor_execute", _before_cursor_execute)
         except Exception:
             pass
 
-    # adjustments stats for month (count + plus/minus)
-    adj_count = 0
-    adj_plus = Decimal("0")
-    adj_minus = Decimal("0")
     try:
-        adj_rows = list(
-            (
+        # users
+        t_db0 = pytime.perf_counter()
+        res = await session.execute(
+            select(
+                User.id,
+                User.first_name,
+                User.last_name,
+                User.hour_rate,
+                User.rate_k,
+            )
+            .where(User.is_deleted == False)
+            .where(User.status == UserStatus.APPROVED)
+            .order_by(User.first_name, User.last_name, User.id)
+        )
+        users_rows = list(res.all())
+        user_ids = [int(r[0]) for r in users_rows if int(r[0] or 0) > 0]
+        db_time_sec += float(pytime.perf_counter() - t_db0)
+
+        # hour rate per user (rate_k fallback)
+        user_rate: dict[int, Decimal | None] = {}
+        no_rate: list[dict] = []
+        for r in users_rows:
+            uid = int(r[0] or 0)
+            if uid <= 0:
+                continue
+            hr = r[3]
+            rk = r[4]
+            if hr is not None:
+                try:
+                    user_rate[uid] = Decimal(str(hr))
+                except Exception:
+                    user_rate[uid] = None
+            elif rk is not None:
+                try:
+                    user_rate[uid] = Decimal(int(rk))
+                except Exception:
+                    user_rate[uid] = None
+            else:
+                user_rate[uid] = None
+
+        cutoff = await get_balance_cutoff_date(session=session)
+
+        # payouts per month + per day
+        paid_month_map: dict[int, Decimal] = {}
+        paid_all_map: dict[int, Decimal] = {}
+        paid_by_day: dict[str, Decimal] = {}
+
+        if user_ids:
+            t_db1 = pytime.perf_counter()
+            paid_month_rows = list(
+                (
+                    await session.execute(
+                        select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
+                        .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
+                        .where(SalaryPayout.period_start == period_start)
+                        .where(SalaryPayout.period_end == period_end)
+                        .group_by(SalaryPayout.user_id)
+                    )
+                ).all()
+            )
+            for uid, amt in paid_month_rows:
+                try:
+                    paid_month_map[int(uid)] = q2(Decimal(amt))
+                except Exception:
+                    paid_month_map[int(uid)] = Decimal("0")
+
+            paid_all_rows = list(
+                (
+                    await session.execute(
+                        select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
+                        .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
+                        .where(func.date(SalaryPayout.created_at) >= cutoff)
+                        .group_by(SalaryPayout.user_id)
+                    )
+                ).all()
+            )
+            for uid, amt in paid_all_rows:
+                try:
+                    paid_all_map[int(uid)] = q2(Decimal(amt))
+                except Exception:
+                    paid_all_map[int(uid)] = Decimal("0")
+
+            paid_series_rows = list(
+                (
+                    await session.execute(
+                        select(
+                            func.date(SalaryPayout.created_at).label("day"),
+                            func.coalesce(func.sum(SalaryPayout.amount), 0),
+                        )
+                        .where(SalaryPayout.period_start == period_start)
+                        .where(SalaryPayout.period_end == period_end)
+                        .group_by(func.date(SalaryPayout.created_at))
+                    )
+                ).all()
+            )
+            for day, amt in paid_series_rows:
+                if not day:
+                    continue
+                try:
+                    paid_by_day[str(day)] = q2(Decimal(amt))
+                except Exception:
+                    paid_by_day[str(day)] = Decimal("0")
+            db_time_sec += float(pytime.perf_counter() - t_db1)
+
+        # shifts (month + all-time up to period_end)
+        shifts_rows = []
+        if user_ids:
+            t_db2 = pytime.perf_counter()
+            shifts_lower = cutoff if cutoff < period_start else period_start
+            shifts_rows = list(
+                (
+                    await session.execute(
+                        select(
+                            ShiftInstance.id,
+                            ShiftInstance.user_id,
+                            ShiftInstance.day,
+                            ShiftInstance.planned_hours,
+                            ShiftInstance.status,
+                            ShiftInstance.started_at,
+                            ShiftInstance.ended_at,
+                            ShiftInstance.amount_submitted,
+                            ShiftInstance.amount_approved,
+                            ShiftInstance.approval_required,
+                            ShiftInstance.approved_at,
+                            SalaryShiftStateRow.state,
+                            SalaryShiftStateRow.manual_hours,
+                            SalaryShiftStateRow.manual_amount_override,
+                            SalaryShiftStateRow.confirmed_at,
+                            SalaryShiftStateRow.confirmed_by_user_id,
+                            func.coalesce(func.sum(SalaryAdjustment.delta_amount), 0).label("adj_sum"),
+                        )
+                        .outerjoin(SalaryShiftStateRow, SalaryShiftStateRow.shift_id == ShiftInstance.id)
+                        .outerjoin(SalaryAdjustment, SalaryAdjustment.shift_id == ShiftInstance.id)
+                        .where(ShiftInstance.user_id.in_([int(x) for x in user_ids]))
+                        .where(ShiftInstance.day >= shifts_lower)
+                        .where(ShiftInstance.day <= period_end)
+                        .group_by(
+                            ShiftInstance.id,
+                            ShiftInstance.user_id,
+                            ShiftInstance.day,
+                            ShiftInstance.planned_hours,
+                            ShiftInstance.status,
+                            ShiftInstance.started_at,
+                            ShiftInstance.ended_at,
+                            ShiftInstance.amount_submitted,
+                            ShiftInstance.amount_approved,
+                            ShiftInstance.approval_required,
+                            ShiftInstance.approved_at,
+                            SalaryShiftStateRow.state,
+                            SalaryShiftStateRow.manual_hours,
+                            SalaryShiftStateRow.manual_amount_override,
+                            SalaryShiftStateRow.confirmed_at,
+                            SalaryShiftStateRow.confirmed_by_user_id,
+                        )
+                    )
+                ).all()
+            )
+            db_time_sec += float(pytime.perf_counter() - t_db2)
+
+        def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
+            try:
+                if confirmed_at is not None:
+                    return True
+            except Exception:
+                pass
+            try:
+                if ended_at is not None:
+                    return True
+            except Exception:
+                pass
+            try:
+                return bool(status_val in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
+            except Exception:
+                return False
+
+        accrued_by_day: dict[str, Decimal] = {}
+        count_needs_review_by_day: dict[str, int] = {}
+
+        # totals per user
+        accrued_month_map: dict[int, Decimal] = {}
+        needs_review_map: dict[int, int] = {}
+        accrued_all_map: dict[int, Decimal] = {}
+
+        for (
+            sid,
+            uid,
+            day,
+            planned_hours_i,
+            st_val,
+            started_at,
+            ended_at,
+            amount_submitted,
+            amount_approved,
+            approval_required,
+            approved_at,
+            salary_state,
+            manual_hours,
+            manual_amount_override,
+            confirmed_at,
+            confirmed_by_user_id,
+            adj_sum,
+        ) in shifts_rows:
+            uid_i = int(uid or 0)
+            if uid_i <= 0:
+                continue
+            if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
+                continue
+
+            hr = user_rate.get(uid_i)
+            planned_hours = None
+            try:
+                planned_hours = Decimal(int(planned_hours_i)) if planned_hours_i is not None else None
+            except Exception:
+                planned_hours = None
+
+            req_amt = None
+            appr_amt = None
+            try:
+                req_amt = Decimal(int(amount_submitted)) if amount_submitted is not None else None
+            except Exception:
+                req_amt = None
+            try:
+                appr_amt = Decimal(int(amount_approved)) if amount_approved is not None else None
+            except Exception:
+                appr_amt = None
+
+            try:
+                adj_amt = Decimal(adj_sum or 0)
+            except Exception:
+                adj_amt = Decimal("0")
+
+            st_effective = salary_state if salary_state is not None else SalaryShiftState.WORKED
+            calc = calc_shift_salary(
+                shift_id=int(sid),
+                user_id=int(uid_i),
+                day=day,
+                hour_rate=hr,
+                planned_hours=planned_hours,
+                shift_status=st_val,
+                started_at=started_at,
+                ended_at=ended_at,
+                state=st_effective,
+                manual_hours=manual_hours,
+                manual_amount_override=manual_amount_override,
+                requested_amount=req_amt,
+                approved_amount=appr_amt,
+                approval_required=(bool(approval_required) if approval_required is not None else None),
+                approved_at=approved_at,
+                adjustments_amount=adj_amt,
+                confirmed_at=confirmed_at,
+                confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),
+            )
+
+            total_amt = q2(Decimal(getattr(calc, "total_amount", Decimal("0")) or Decimal("0")))
+            if day is not None and day >= cutoff:
+                accrued_all_map[uid_i] = q2(accrued_all_map.get(uid_i, Decimal("0")) + total_amt)
+
+            if day is not None and (day >= period_start and day <= period_end):
+                accrued_month_map[uid_i] = q2(accrued_month_map.get(uid_i, Decimal("0")) + total_amt)
+                dkey = str(day)
+                accrued_by_day[dkey] = q2(accrued_by_day.get(dkey, Decimal("0")) + total_amt)
+                if bool(getattr(calc, "needs_review", False)):
+                    needs_review_map[uid_i] = int(needs_review_map.get(uid_i, 0)) + 1
+                    count_needs_review_by_day[dkey] = int(count_needs_review_by_day.get(dkey, 0)) + 1
+
+        # KPI + lists from aggregated maps
+        grid_items: list[dict] = []
+        sum_accrued = Decimal("0")
+        sum_paid = Decimal("0")
+        sum_positive_balance = Decimal("0")
+        sum_negative_balance_abs = Decimal("0")
+        count_needs_review = 0
+
+        for r in users_rows:
+            uid = int(r[0] or 0)
+            if uid <= 0:
+                continue
+            fio = (
+                " ".join(
+                    [
+                        str(r[1] or "").strip(),
+                        str(r[2] or "").strip(),
+                    ]
+                ).strip()
+            )
+            name = fio or f"#{uid}"
+
+            if user_rate.get(uid) is None:
+                bal_nr = q2(accrued_all_map.get(uid, Decimal("0")) - paid_all_map.get(uid, Decimal("0")))
+                no_rate.append({"user_id": uid, "name": name, "balance": f"{q2(bal_nr):.2f}"})
+
+            accrued_m = q2(accrued_month_map.get(uid, Decimal("0")))
+            paid_m = q2(paid_month_map.get(uid, Decimal("0")))
+            bal = q2(accrued_all_map.get(uid, Decimal("0")) - paid_all_map.get(uid, Decimal("0")))
+
+            sum_accrued += q2(accrued_m)
+            sum_paid += q2(paid_m)
+            if bal > 0:
+                sum_positive_balance += bal
+            elif bal < 0:
+                sum_negative_balance_abs += q2(abs(bal))
+            count_needs_review += int(needs_review_map.get(uid, 0) or 0)
+
+            grid_items.append(
+                {
+                    "user_id": uid,
+                    "name": name,
+                    "balance": f"{bal:.2f}",
+                    "needs_review_total": int(needs_review_map.get(uid, 0) or 0),
+                }
+            )
+
+        # adjustments stats for month (count + plus/minus)
+        adj_count = 0
+        adj_plus = Decimal("0")
+        adj_minus = Decimal("0")
+        try:
+            t_db3 = pytime.perf_counter()
+            adj_row = (
                 await session.execute(
-                    select(SalaryAdjustment.delta_amount)
+                    select(
+                        func.count(SalaryAdjustment.id),
+                        func.coalesce(func.sum(case((SalaryAdjustment.delta_amount > 0, SalaryAdjustment.delta_amount), else_=0)), 0),
+                        func.coalesce(func.sum(case((SalaryAdjustment.delta_amount < 0, -SalaryAdjustment.delta_amount), else_=0)), 0),
+                    )
                     .join(ShiftInstance, ShiftInstance.id == SalaryAdjustment.shift_id)
                     .where(ShiftInstance.day >= period_start)
                     .where(ShiftInstance.day <= period_end)
                 )
-            ).all()
-        )
-        for r in adj_rows:
-            try:
-                v = q2(Decimal(r[0]))
-            except Exception:
-                continue
-            adj_count += 1
-            if v > 0:
-                adj_plus += v
-            elif v < 0:
-                adj_minus += q2(abs(v))
-    except Exception:
-        pass
+            ).first()
+            db_time_sec += float(pytime.perf_counter() - t_db3)
+            if adj_row:
+                try:
+                    adj_count = int(adj_row[0] or 0)
+                except Exception:
+                    adj_count = 0
+                try:
+                    adj_plus = q2(Decimal(adj_row[1] or 0))
+                except Exception:
+                    adj_plus = Decimal("0")
+                try:
+                    adj_minus = q2(Decimal(adj_row[2] or 0))
+                except Exception:
+                    adj_minus = Decimal("0")
+        except Exception:
+            pass
 
-    # payouts series for month (by created_at day, only payouts for this period)
-    paid_by_day: dict[str, Decimal] = {}
-    try:
-        payouts = list(
-            (
-                await session.execute(
-                    select(SalaryPayout)
-                    .where(SalaryPayout.period_start == period_start)
-                    .where(SalaryPayout.period_end == period_end)
-                    .order_by(SalaryPayout.created_at.asc(), SalaryPayout.id.asc())
-                )
-            )
-            .scalars()
-            .all()
+        top_balance = sorted(
+            [x for x in grid_items if Decimal(str(x.get("balance") or "0")) > 0],
+            key=lambda x: Decimal(str(x.get("balance") or "0")),
+            reverse=True,
+        )[:5]
+        top_needs_review = sorted(grid_items, key=lambda x: int(x.get("needs_review_total") or 0), reverse=True)[:5]
+        negative_balance = sorted(
+            [x for x in grid_items if Decimal(str(x.get("balance") or "0")) < 0],
+            key=lambda x: Decimal(str(x.get("balance") or "0")),
         )
-        for p in payouts:
+
+        def _series_from_map(m: dict[str, Decimal]) -> list[dict]:
+            return [
+                {"day": k, "amount": f"{q2(Decimal(v)):.2f}"}
+                for k, v in sorted(m.items(), key=lambda kv: kv[0])
+            ]
+
+        def _series_int_from_map(m: dict[str, int]) -> list[dict]:
+            return [{"day": k, "count": int(v)} for k, v in sorted(m.items(), key=lambda kv: kv[0])]
+
+        month_ru = [
+            "Январь",
+            "Февраль",
+            "Март",
+            "Апрель",
+            "Май",
+            "Июнь",
+            "Июль",
+            "Август",
+            "Сентябрь",
+            "Октябрь",
+            "Ноябрь",
+            "Декабрь",
+        ][int(mo) - 1]
+
+        return {
+            "ok": True,
+            "month": f"{int(y):04d}-{int(mo):02d}",
+            "period_start": str(period_start),
+            "period_end": str(period_end),
+            "period_label": f"{month_ru} {int(y)}",
+            "kpi": {
+                "sum_accrued": f"{q2(sum_accrued):.2f}",
+                "sum_paid": f"{q2(sum_paid):.2f}",
+                "sum_positive_balance": f"{q2(sum_positive_balance):.2f}",
+                "sum_negative_balance_abs": f"{q2(sum_negative_balance_abs):.2f}",
+                "count_needs_review": int(count_needs_review),
+                "adjustments": {
+                    "count": int(adj_count),
+                    "plus": f"{q2(adj_plus):.2f}",
+                    "minus": f"{q2(adj_minus):.2f}",
+                },
+            },
+            "series": {
+                "accrued_by_day": _series_from_map(accrued_by_day),
+                "paid_by_day": _series_from_map(paid_by_day),
+                "needs_review_by_day": _series_int_from_map(count_needs_review_by_day),
+            },
+            "lists": {
+                "top_balance": top_balance,
+                "top_needs_review": top_needs_review,
+                "no_rate": no_rate,
+                "negative_balance": negative_balance,
+            },
+        }
+
+    finally:
+        if sync_engine is not None:
             try:
-                dt = getattr(p, "created_at", None)
-                day = str(dt.date()) if dt is not None else ""
-                if not day:
-                    continue
-                amt = q2(Decimal(getattr(p, "amount", Decimal("0")) or Decimal("0")))
-                paid_by_day[day] = q2(paid_by_day.get(day, Decimal("0")) + amt)
+                event.remove(sync_engine, "before_cursor_execute", _before_cursor_execute)
             except Exception:
                 pass
-    except Exception:
-        pass
 
-    top_balance = sorted(
-        [x for x in grid_items if Decimal(str(x.get("balance") or "0")) > 0],
-        key=lambda x: Decimal(str(x.get("balance") or "0")),
-        reverse=True,
-    )[:5]
-    top_needs_review = sorted(grid_items, key=lambda x: int(x.get("needs_review_total") or 0), reverse=True)[:5]
-    negative_balance = sorted(
-        [x for x in grid_items if Decimal(str(x.get("balance") or "0")) < 0],
-        key=lambda x: Decimal(str(x.get("balance") or "0")),
-    )
-
-    def _series_from_map(m: dict[str, Decimal]) -> list[dict]:
-        return [
-            {"day": k, "amount": f"{q2(Decimal(v)):.2f}"}
-            for k, v in sorted(m.items(), key=lambda kv: kv[0])
-        ]
-
-    def _series_int_from_map(m: dict[str, int]) -> list[dict]:
-        return [{"day": k, "count": int(v)} for k, v in sorted(m.items(), key=lambda kv: kv[0])]
-
-    month_ru = [
-        "Январь",
-        "Февраль",
-        "Март",
-        "Апрель",
-        "Май",
-        "Июнь",
-        "Июль",
-        "Август",
-        "Сентябрь",
-        "Октябрь",
-        "Ноябрь",
-        "Декабрь",
-    ][int(mo) - 1]
-
-    return {
-        "ok": True,
-        "month": f"{int(y):04d}-{int(mo):02d}",
-        "period_start": str(period_start),
-        "period_end": str(period_end),
-        "period_label": f"{month_ru} {int(y)}",
-        "kpi": {
-            "sum_accrued": f"{q2(sum_accrued):.2f}",
-            "sum_paid": f"{q2(sum_paid):.2f}",
-            "sum_positive_balance": f"{q2(sum_positive_balance):.2f}",
-            "sum_negative_balance_abs": f"{q2(sum_negative_balance_abs):.2f}",
-            "count_needs_review": int(count_needs_review),
-            "adjustments": {
-                "count": int(adj_count),
-                "plus": f"{q2(adj_plus):.2f}",
-                "minus": f"{q2(adj_minus):.2f}",
-            },
-        },
-        "series": {
-            "accrued_by_day": _series_from_map(accrued_by_day),
-            "paid_by_day": _series_from_map(paid_by_day),
-            "needs_review_by_day": _series_int_from_map(count_needs_review_by_day),
-        },
-        "lists": {
-            "top_balance": top_balance,
-            "top_needs_review": top_needs_review,
-            "no_rate": no_rate,
-            "negative_balance": negative_balance,
-        },
-    }
+        perf_build_sec = float(pytime.perf_counter() - perf_t0)
+        try:
+            logger.info(
+                "salaries_api_dashboard_perf",
+                extra={
+                    "month": f"{int(y):04d}-{int(mo):02d}",
+                    "count_users": int(len(users_rows) if 'users_rows' in locals() else 0),
+                    "sql_queries": int(sql_count),
+                    "db_time_ms": int(db_time_sec * 1000),
+                    "total_time_ms": int(perf_build_sec * 1000),
+                },
+            )
+        except Exception:
+            pass
 
 
 @app.get("/api/salaries/payouts")
