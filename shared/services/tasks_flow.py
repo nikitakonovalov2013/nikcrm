@@ -194,14 +194,18 @@ async def enqueue_task_sent_to_review_notifications(
     actor_name: str | None,
     event_id: int,
 ) -> None:
-    """Notify creator when task is moved to REVIEW ('На проверку')."""
+    """Notify all participants when task is moved to REVIEW ('На проверку')."""
 
     task_id = int(getattr(task, "id", 0) or 0)
     title_h = _task_title_html(task)
 
     actor_id = int(actor_user_id)
-    creator_id = int(getattr(task, "created_by_user_id", 0) or 0) or 0
-    if creator_id <= 0 or creator_id == actor_id:
+    recipients, meta = _notification_recipients_for_task(task)
+    if actor_id > 0:
+        recipients = sorted({int(x) for x in (recipients or []) if int(x) > 0} | {int(actor_id)})
+        meta["recipients"] = [int(x) for x in recipients]
+
+    if not recipients:
         return
 
     actor_name_str = (str(actor_name).strip() if actor_name else "")
@@ -209,32 +213,32 @@ async def enqueue_task_sent_to_review_notifications(
     text = f"🟡 Задача #{task_id} {title_h} передана на проверку: {actor_name_h}"
 
     ns = TaskNotificationService(session)
-    tg_map = await ns.resolve_recipients_tg_ids(user_ids=[int(creator_id)])
-    tg_id = int(tg_map.get(int(creator_id), 0) or 0)
-    if tg_id <= 0:
-        try:
-            logger.warning(
-                "TASK_NOTIFY_SKIP reason=no_tg_id type=sent_to_review task_id=%s user_id=%s",
-                int(task_id),
-                int(creator_id),
-            )
-        except Exception:
-            pass
-        return
-
-    await ns.enqueue(
-        task_id=int(task_id),
-        recipient_user_id=int(creator_id),
-        type="sent_to_review",
-        payload={
-            "task_id": int(task_id),
-            "text": str(text),
-            "actor_user_id": int(actor_id),
-            "actor_name": (actor_name_str or None),
-            "event_id": int(event_id),
-        },
-        dedupe_key=f"sent_to_review:{int(event_id)}",
-    )
+    tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipients))
+    for rid in recipients:
+        tg_id = int(tg_map.get(int(rid), 0) or 0)
+        if tg_id <= 0:
+            try:
+                logger.warning(
+                    "TASK_NOTIFY_SKIP reason=no_tg_id type=sent_to_review task_id=%s user_id=%s",
+                    int(task_id),
+                    int(rid),
+                )
+            except Exception:
+                pass
+            continue
+        await ns.enqueue(
+            task_id=int(task_id),
+            recipient_user_id=int(rid),
+            type="sent_to_review",
+            payload={
+                "task_id": int(task_id),
+                "text": str(text),
+                "actor_user_id": int(actor_id),
+                "actor_name": (actor_name_str or None),
+                "event_id": int(event_id),
+            },
+            dedupe_key=f"sent_to_review:{int(event_id)}",
+        )
 
 
 async def enqueue_task_status_changed_notifications(
@@ -248,16 +252,19 @@ async def enqueue_task_status_changed_notifications(
     comment: str | None,
     event_id: int,
 ) -> None:
-    """Generic status_changed notification (legacy behavior).
+    """Generic status_changed notification.
 
-    Recipients: all assignees + started_by + created_by, without duplicates, excluding actor.
+    Recipients: all assignees + started_by + created_by, without duplicates, INCLUDING actor.
     Skip users without tg_id with warning.
     """
 
     task_id = int(getattr(task, "id", 0) or 0)
     recipients, meta = _notification_recipients_for_task(task)
     actor_id = int(actor_user_id)
-    recipients = [int(rid) for rid in recipients if int(rid) > 0 and int(rid) != actor_id]
+    if actor_id > 0:
+        recipients = sorted({int(x) for x in (recipients or []) if int(x) > 0} | {int(actor_id)})
+    else:
+        recipients = [int(rid) for rid in recipients if int(rid) > 0]
     meta["recipients"] = [int(x) for x in recipients]
 
     if not recipients:

@@ -844,7 +844,6 @@ async def _run_broadcast_send(*, broadcast_id: int) -> None:
         except Exception:
             pass
 
-
 @app.get("/api/users/positions")
 @app.get("/crm/api/users/positions")
 async def api_users_positions(
@@ -7047,6 +7046,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
+    status_q = (request.query_params.get("status") or "").strip()
 
     if is_designer:
         mine = True
@@ -7090,6 +7090,9 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     elif due == "overdue":
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
+    if status_q in {TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value, TaskStatus.DONE.value}:
+        query = query.where(Task.status == TaskStatus(status_q))
+
     if assignee_id is not None:
         has_selected = exists(
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
@@ -7113,12 +7116,17 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             view["permissions"] = None
         items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(view)
 
-    columns = [
+    columns_all = [
         {"status": TaskStatus.NEW.value, "title": "Новые", "items": items_by[TaskStatus.NEW.value]},
         {"status": TaskStatus.IN_PROGRESS.value, "title": "В работе", "items": items_by[TaskStatus.IN_PROGRESS.value]},
         {"status": TaskStatus.REVIEW.value, "title": "На проверке", "items": items_by[TaskStatus.REVIEW.value]},
         {"status": TaskStatus.DONE.value, "title": "Выполнено", "items": items_by[TaskStatus.DONE.value]},
     ]
+
+    if status_q in {TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value, TaskStatus.DONE.value}:
+        columns = [c for c in columns_all if str(c.get("status") or "") == str(status_q)]
+    else:
+        columns = columns_all
 
     res_u = await session.execute(
         select(User)
@@ -7152,6 +7160,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             "mine": mine,
             "priority": priority,
             "due": due,
+            "status": status_q,
             "assignee_id": assignee_id,
             "users": users,
             "is_admin": is_admin,
@@ -7231,12 +7240,17 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             view["permissions"] = None
         items_by[(t.status.value if hasattr(t.status, "value") else str(t.status))].append(view)
 
-    columns = [
+    columns_all = [
         {"status": TaskStatus.NEW.value, "title": "Новые", "items": items_by[TaskStatus.NEW.value]},
         {"status": TaskStatus.IN_PROGRESS.value, "title": "В работе", "items": items_by[TaskStatus.IN_PROGRESS.value]},
         {"status": TaskStatus.REVIEW.value, "title": "На проверке", "items": items_by[TaskStatus.REVIEW.value]},
         {"status": TaskStatus.DONE.value, "title": "Выполнено", "items": items_by[TaskStatus.DONE.value]},
     ]
+
+    if status_q in {TaskStatus.NEW.value, TaskStatus.IN_PROGRESS.value, TaskStatus.DONE.value}:
+        columns = [c for c in columns_all if str(c.get("status") or "") == str(status_q)]
+    else:
+        columns = columns_all
 
     res_u = await session.execute(
         select(User)
@@ -7270,6 +7284,7 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             "mine": mine,
             "priority": priority,
             "due": due,
+            "status": status_q,
             "assignee_id": None,
             "users": users,
             "is_admin": is_admin,
@@ -7582,6 +7597,7 @@ async def tasks_api_create(
     due_at: str | None = Form(None),
     assignee_ids: list[int] = Form([]),
     photo: UploadFile | None = File(None),
+    photos: list[UploadFile] | None = File(None),
     admin_id: int = Depends(require_authenticated_user),
     session: AsyncSession = Depends(get_db),
 ):
@@ -7644,6 +7660,41 @@ async def tasks_api_create(
 
     session.add(TaskEvent(task_id=int(t.id), actor_user_id=int(actor.id), type=TaskEventType.CREATED, payload=None))
 
+    created_photo_paths: list[str] = []
+
+    # Backward-compatible single main photo
+    if photo:
+        try:
+            photo_key, photo_path = await _save_task_photo(photo=photo)
+            t.photo_key = str(photo_key)
+            t.photo_path = str(photo_path)
+            t.photo_url = _task_photo_url_from_key(t.photo_key)
+            if str(t.photo_path or "").strip():
+                created_photo_paths.append(str(t.photo_path).strip())
+        except Exception:
+            pass
+
+    # Multiple attachments (same mechanism as later additions: comment photos)
+    if photos:
+        try:
+            urls = await _save_uploads(photos)
+            if urls:
+                created_photo_paths.extend([str(x).strip() for x in (urls or []) if str(x).strip()])
+                actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
+                await shared_add_task_comment(
+                    session=session,
+                    task_id=int(t.id),
+                    author_user_id=int(actor.id),
+                    author_name=str(actor_name),
+                    text=None,
+                    photo_file_ids=[str(x) for x in (urls or []) if str(x).strip()],
+                    notify=False,
+                    notify_self=False,
+                    hard_send_tg=False,
+                )
+        except Exception:
+            pass
+
     try:
         # Notify assignees only (common tasks don't notify by default)
         users_assignees = list(getattr(t, "assignees", None) or [])
@@ -7652,6 +7703,7 @@ async def tasks_api_create(
             actor_name = (f"{(actor.first_name or '').strip()} {(actor.last_name or '').strip()}".strip() or f"#{int(actor.id)}")
             recipient_ids = [int(getattr(u, "id", 0) or 0) for u in users_assignees]
             tg_map = await ns.resolve_recipients_tg_ids(user_ids=list(recipient_ids))
+            uniq_photo_paths = sorted({str(x).strip() for x in (created_photo_paths or []) if str(x).strip()})
             for u in users_assignees:
                 rid = int(getattr(u, "id", 0) or 0)
                 if rid <= 0:
@@ -7666,20 +7718,12 @@ async def tasks_api_create(
                         "task_id": int(t.id),
                         "actor_user_id": int(actor.id),
                         "actor_name": actor_name,
+                        "photo_paths": uniq_photo_paths,
                     },
                     dedupe_key=f"created:{int(t.id)}",
                 )
     except Exception:
         pass
-
-    if photo:
-        try:
-            photo_key, photo_path = await _save_task_photo(photo=photo)
-            t.photo_key = str(photo_key)
-            t.photo_path = str(photo_path)
-            t.photo_url = _task_photo_url_from_key(t.photo_key)
-        except Exception:
-            pass
 
     return {"id": int(t.id)}
 

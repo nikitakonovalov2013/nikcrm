@@ -48,6 +48,15 @@
     {% endif %}
 
     <label class="tasks-filter">
+      <span class="tasks-filter-label">Дедлайн</span>
+      <select name="due">
+        <option value="" {% if not due %}selected{% endif %}>Все</option>
+        <option value="with_due" {% if due == 'with_due' %}selected{% endif %}>С дедлайном</option>
+        <option value="overdue" {% if due == 'overdue' %}selected{% endif %}>Просроченные</option>
+      </select>
+    </label>
+
+    <label class="tasks-filter">
       <span class="tasks-filter-label">Приоритет</span>
       <select name="priority">
         <option value="" {% if not priority %}selected{% endif %}>Все</option>
@@ -57,16 +66,16 @@
     </label>
 
     <label class="tasks-filter">
-      <span class="tasks-filter-label">Дедлайн</span>
-      <select name="due">
-        <option value="" {% if not due %}selected{% endif %}>Все</option>
-        <option value="with_due" {% if due == 'with_due' %}selected{% endif %}>С дедлайном</option>
-        <option value="overdue" {% if due == 'overdue' %}selected{% endif %}>Просроченные</option>
+      <span class="tasks-filter-label">Стадия</span>
+      <select name="status">
+        <option value="" {% if not status %}selected{% endif %}>Все</option>
+        <option value="new" {% if status == 'new' %}selected{% endif %}>Новые</option>
+        <option value="in_progress" {% if status == 'in_progress' %}selected{% endif %}>В работе</option>
+        <option value="done" {% if status == 'done' %}selected{% endif %}>Завершенные</option>
       </select>
     </label>
 
     <div class="tasks-filters-actions">
-      <button class="btn-outline" type="submit">Применить</button>
       <a class="btn-outline" href="{{ board_url or request.url_for('tasks_board') }}">Сбросить</a>
     </div>
   </div>
@@ -585,6 +594,35 @@
   applyCollapsedFromStorage();
   bindCollapseHandlers();
 
+  (function bindTasksFiltersAutoApply(){
+    const form = document.querySelector('form.tasks-filters');
+    if (!form) return;
+
+    let timer = null;
+    const submitNow = () => {
+      try { form.requestSubmit(); } catch (_) { try { form.submit(); } catch(__){} }
+    };
+    const submitDebounced = () => {
+      try { if (timer) clearTimeout(timer); } catch (_) {}
+      timer = setTimeout(submitNow, 350);
+    };
+
+    form.querySelectorAll('select, input[type="checkbox"], input[type="radio"]').forEach((el) => {
+      el.addEventListener('change', submitNow);
+    });
+
+    const searchInput = form.querySelector('input[name="q"]');
+    if (searchInput) {
+      searchInput.addEventListener('input', submitDebounced);
+      searchInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          submitNow();
+        }
+      });
+    }
+  })();
+
   function renderAssignees(users){
     if (!users || users.length === 0) return '<span class="muted">Общая</span>';
     return users.map(u => {
@@ -849,7 +887,9 @@
           '</div>' +
           '<div class="task-form-row">' +
             '<div class="form-label">Фото (опционально)</div>' +
-            '<input class="form-control" type="file" name="photo" accept="image/*" />' +
+            '<div class="muted" style="margin-bottom:6px;">Можно выбрать несколько</div>' +
+            '<input class="form-control" type="file" name="photos" accept="image/*" multiple />' +
+            '<div id="task-create-photos-preview" class="task-photos" style="margin-top:10px;"></div>' +
           '</div>' +
           '<div class="task-modal-footer">' +
             '<button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent(\'close-modal\'))">Отмена</button>' +
@@ -859,6 +899,34 @@
       '</div>'
     );
     openModal(html);
+
+    try {
+      const form = document.getElementById('task-create-form');
+      const inp = form ? form.querySelector('input[type=file][name=photos]') : null;
+      const prev = document.getElementById('task-create-photos-preview');
+      if (inp && prev) {
+        inp.addEventListener('change', () => {
+          try { prev.innerHTML = ''; } catch(_){ }
+          const files = (inp.files ? Array.from(inp.files) : []);
+          files.forEach(f => {
+            try {
+              if (!f || !f.type || !String(f.type).startsWith('image/')) return;
+              const url = URL.createObjectURL(f);
+              const a = document.createElement('a');
+              a.href = url;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              const img = document.createElement('img');
+              img.className = 'task-photo';
+              img.src = url;
+              img.alt = 'photo';
+              a.appendChild(img);
+              prev.appendChild(a);
+            } catch(_){ }
+          });
+        });
+      }
+    } catch (_){ }
   };
 
   window.tasksSubmitCreate = async function(ev){

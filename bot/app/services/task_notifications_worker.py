@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import asyncpg
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import FSInputFile
 
 from shared.config import settings
 from shared.db import get_async_session
@@ -22,6 +24,109 @@ from bot.app.utils.urls import build_tasks_board_magic_link
 
 
 _logger = logging.getLogger(__name__)
+
+
+def _photo_input_from_path(path_or_url: str):
+    s = str(path_or_url or "").strip()
+    if not s:
+        return None
+    if s.startswith("http://") or s.startswith("https://"):
+        return s
+    if s.startswith("/app/"):
+        p = Path(s)
+        if p.exists() and p.is_file():
+            return FSInputFile(str(p))
+        return None
+    if s.startswith("/crm/static/uploads/"):
+        rel = s.replace("/crm/static/uploads/", "").lstrip("/")
+        fs_path = (Path(__file__).resolve().parents[3] / "web" / "app" / "static" / "uploads" / rel)
+        if fs_path.exists() and fs_path.is_file():
+            return FSInputFile(str(fs_path))
+        # fallback for alternate mounts
+        fs_path2 = (Path(__file__).resolve().parents[3] / "data" / "uploads" / rel)
+        if fs_path2.exists() and fs_path2.is_file():
+            return FSInputFile(str(fs_path2))
+        return None
+    # tolerate payloads like "tasks/<name>.jpg" or "uploads/tasks/<name>.jpg"
+    rel2 = s.lstrip("/")
+    if rel2.startswith("uploads/"):
+        rel2 = rel2[len("uploads/") :]
+    if rel2.startswith("tasks/") or rel2.startswith("purchases/") or rel2.startswith("broadcasts/"):
+        fs_path3 = (Path(__file__).resolve().parents[3] / "web" / "app" / "static" / "uploads" / rel2)
+        if fs_path3.exists() and fs_path3.is_file():
+            return FSInputFile(str(fs_path3))
+    return None
+
+
+def _created_notification_photos(*, task, payload: dict) -> list:
+    raw: list[str] = []
+    for x in list(payload.get("photo_paths") or []):
+        sx = str(x or "").strip()
+        if sx:
+            raw.append(sx)
+    task_photo_path = str(getattr(task, "photo_path", "") or "").strip() if task is not None else ""
+    if task_photo_path:
+        raw.append(task_photo_path)
+
+    out: list = []
+    seen: set[str] = set()
+    for item in raw:
+        if item in seen:
+            continue
+        seen.add(item)
+        p = _photo_input_from_path(item)
+        if p is not None:
+            out.append(p)
+    return out
+
+
+def _public_base_url() -> str:
+    raw = str(getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+    if not raw:
+        raw = str(getattr(settings, "APP_URL", "") or "").strip()
+    if not raw:
+        raw = str(getattr(settings, "WEB_BASE_URL", "") or "").strip()
+    if not raw:
+        return ""
+    if raw.endswith("/"):
+        raw = raw[:-1]
+    if raw.endswith("/crm"):
+        raw = raw[: -len("/crm")]
+    return raw
+
+
+def _photo_public_url(path_or_url: str) -> str | None:
+    s = str(path_or_url or "").strip()
+    if not s:
+        return None
+    if s.startswith("http://") or s.startswith("https://"):
+        return s
+    if s.startswith("/crm/static/uploads/"):
+        base = _public_base_url()
+        return (base + s) if base else None
+    return None
+
+
+def _created_notification_photo_links(*, task, payload: dict) -> list[str]:
+    raw: list[str] = []
+    for x in list(payload.get("photo_paths") or []):
+        sx = str(x or "").strip()
+        if sx:
+            raw.append(sx)
+    task_photo_path = str(getattr(task, "photo_path", "") or "").strip() if task is not None else ""
+    if task_photo_path:
+        raw.append(task_photo_path)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if item in seen:
+            continue
+        seen.add(item)
+        u = _photo_public_url(item)
+        if u:
+            out.append(str(u))
+    return out
 
 
 def _asyncpg_dsn() -> str:
@@ -425,13 +530,66 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                             edited = False
 
                             if not edited:
-                                sent = await bot.send_message(
-                                    chat_id=chat_id,
-                                    text=text,
-                                    parse_mode="HTML",
-                                    reply_markup=kb,
-                                    disable_web_page_preview=True,
-                                )
+                                sent = None
+                                fallback_text = text
+                                if typ == "created":
+                                    try:
+                                        created_photos = _created_notification_photos(task=task2, payload=payload)
+                                    except Exception:
+                                        created_photos = []
+                                    try:
+                                        created_photo_links = _created_notification_photo_links(task=task2, payload=payload)
+                                    except Exception:
+                                        created_photo_links = []
+                                    try:
+                                        _logger.info(
+                                            "TASK_NOTIFY_CREATED_PHOTOS task_id=%s notification_id=%s count=%s payload_photo_paths=%s task_photo_path=%s",
+                                            int(task_id),
+                                            int(getattr(n, "id", 0) or 0),
+                                            int(len(created_photos or [])),
+                                            int(len(list(payload.get("photo_paths") or []))),
+                                            str(getattr(task2, "photo_path", "") or ""),
+                                        )
+                                    except Exception:
+                                        pass
+                                    if created_photos:
+                                        try:
+                                            sent = await bot.send_photo(
+                                                chat_id=chat_id,
+                                                photo=created_photos[0],
+                                                caption=text,
+                                                parse_mode="HTML",
+                                                reply_markup=kb,
+                                            )
+                                            for extra_photo in created_photos[1:]:
+                                                try:
+                                                    await bot.send_photo(chat_id=chat_id, photo=extra_photo)
+                                                except Exception:
+                                                    pass
+                                        except Exception as e:
+                                            emsg = str(e or "")
+                                            if ("too big for a photo" in emsg.lower()) and created_photo_links:
+                                                links_block = "\n".join([format_plain_url("📎 Фото:", str(u)) for u in created_photo_links])
+                                                fallback_text = f"{text}\n\n<b>Фото (ссылка):</b>\n{links_block}"
+                                            try:
+                                                _logger.exception(
+                                                    "TASK_NOTIFY_CREATED_PHOTO_SEND_FAILED task_id=%s notification_id=%s chat_id=%s",
+                                                    int(task_id),
+                                                    int(getattr(n, "id", 0) or 0),
+                                                    int(chat_id),
+                                                )
+                                            except Exception:
+                                                pass
+                                            sent = None
+
+                                if sent is None:
+                                    sent = await bot.send_message(
+                                        chat_id=chat_id,
+                                        text=fallback_text,
+                                        parse_mode="HTML",
+                                        reply_markup=kb,
+                                        disable_web_page_preview=True,
+                                    )
                                 await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
                                 try:
                                     _logger.info(
