@@ -103,7 +103,7 @@ from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
 from shared.services.salaries_service import calc_user_period_totals
 from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
 from shared.services.salaries_service import calc_user_shifts, update_salary_shift_state, create_salary_adjustment
-from shared.services.salaries_service import get_balance_cutoff_date
+from shared.services.salaries_service import get_balance_cutoff_date, is_shift_accruable_for_balance
 from shared.services.shifts_rating import schedule_shift_rating_request_after_commit
 from shared.services.salaries_calc import q2, calc_shift_salary
 
@@ -3133,6 +3133,7 @@ async def salaries_api_grid(
         db_time_sec += float(pytime.perf_counter() - t_db0)
 
         cutoff = await get_balance_cutoff_date(session=session)
+        effective_start = cutoff if cutoff > period_start else period_start
 
         # payouts aggregates
         paid_month_map: dict[int, Decimal] = {}
@@ -3145,8 +3146,8 @@ async def salaries_api_grid(
                     await session.execute(
                         select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
                         .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
-                        .where(SalaryPayout.period_start == period_start)
-                        .where(SalaryPayout.period_end == period_end)
+                        .where(func.date(SalaryPayout.created_at) >= effective_start)
+                        .where(func.date(SalaryPayout.created_at) <= period_end)
                         .group_by(SalaryPayout.user_id)
                     )
                 ).all()
@@ -3199,7 +3200,7 @@ async def salaries_api_grid(
         shifts_rows = []
         if user_ids:
             t_db2 = pytime.perf_counter()
-            shifts_lower = cutoff if cutoff < period_start else period_start
+            shifts_lower = effective_start
             shifts_rows = list(
                 (
                     await session.execute(
@@ -3287,21 +3288,14 @@ async def salaries_api_grid(
             )
             db_time_sec += float(pytime.perf_counter() - t_db_paid)
 
-        def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
-            try:
-                if confirmed_at is not None:
-                    return True
-            except Exception:
-                pass
-            try:
-                if ended_at is not None:
-                    return True
-            except Exception:
-                pass
-            try:
-                return bool(status_val in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
-            except Exception:
-                return False
+        def _is_accruable_shift(*, status_val, started_at, ended_at, confirmed_at) -> bool:
+            return is_shift_accruable_for_balance(
+                status_val=status_val,
+                started_at=started_at,
+                ended_at=ended_at,
+                confirmed_at=confirmed_at,
+                include_opened=True,
+            )
 
         # calc totals in python but without per-user queries
         accrued_month_map: dict[int, Decimal] = {}
@@ -3330,10 +3324,7 @@ async def salaries_api_grid(
             uid_i = int(uid or 0)
             if uid_i <= 0:
                 continue
-            sid_i = int(sid or 0)
-            if sid_i > 0 and sid_i in paid_shift_ids:
-                continue
-            if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
+            if not _is_accruable_shift(status_val=st_val, started_at=started_at, ended_at=ended_at, confirmed_at=confirmed_at):
                 continue
 
             hr = user_rate.get(uid_i)
@@ -3387,7 +3378,7 @@ async def salaries_api_grid(
             if day is not None and day >= cutoff:
                 accrued_all_map[uid_i] = q2(accrued_all_map.get(uid_i, Decimal("0")) + total_amt)
 
-            if day is not None and (day >= period_start and day <= period_end):
+            if day is not None and (day >= effective_start and day <= period_end):
                 accrued_month_map[uid_i] = q2(accrued_month_map.get(uid_i, Decimal("0")) + total_amt)
                 if bool(getattr(calc, "needs_review", False)):
                     needs_review_map[uid_i] = int(needs_review_map.get(uid_i, 0)) + 1
@@ -3411,7 +3402,7 @@ async def salaries_api_grid(
             paid_month = q2(paid_month_map.get(uid, Decimal("0")))
             accrued_all = q2(accrued_all_map.get(uid, Decimal("0")))
             paid_all = q2(paid_all_map.get(uid, Decimal("0")))
-            balance = q2(accrued_all)
+            balance = q2(accrued_month - paid_month)
             items.append(
                 {
                     "user_id": uid,
@@ -3530,6 +3521,7 @@ async def salaries_api_dashboard(
                 user_rate[uid] = None
 
         cutoff = await get_balance_cutoff_date(session=session)
+        effective_start = cutoff if cutoff > period_start else period_start
 
         # payouts per month + per day
         paid_month_map: dict[int, Decimal] = {}
@@ -3543,8 +3535,8 @@ async def salaries_api_dashboard(
                     await session.execute(
                         select(SalaryPayout.user_id, func.coalesce(func.sum(SalaryPayout.amount), 0))
                         .where(SalaryPayout.user_id.in_([int(x) for x in user_ids]))
-                        .where(SalaryPayout.period_start == period_start)
-                        .where(SalaryPayout.period_end == period_end)
+                        .where(func.date(SalaryPayout.created_at) >= effective_start)
+                        .where(func.date(SalaryPayout.created_at) <= period_end)
                         .group_by(SalaryPayout.user_id)
                     )
                 ).all()
@@ -3578,8 +3570,8 @@ async def salaries_api_dashboard(
                             func.date(SalaryPayout.created_at).label("day"),
                             func.coalesce(func.sum(SalaryPayout.amount), 0),
                         )
-                        .where(SalaryPayout.period_start == period_start)
-                        .where(SalaryPayout.period_end == period_end)
+                        .where(func.date(SalaryPayout.created_at) >= effective_start)
+                        .where(func.date(SalaryPayout.created_at) <= period_end)
                         .group_by(func.date(SalaryPayout.created_at))
                     )
                 ).all()
@@ -3597,7 +3589,7 @@ async def salaries_api_dashboard(
         shifts_rows = []
         if user_ids:
             t_db2 = pytime.perf_counter()
-            shifts_lower = cutoff if cutoff < period_start else period_start
+            shifts_lower = effective_start
             shifts_rows = list(
                 (
                     await session.execute(
@@ -3685,21 +3677,14 @@ async def salaries_api_dashboard(
             )
             db_time_sec += float(pytime.perf_counter() - t_db_paid)
 
-        def _is_accruable_shift(*, status_val, ended_at, confirmed_at) -> bool:
-            try:
-                if confirmed_at is not None:
-                    return True
-            except Exception:
-                pass
-            try:
-                if ended_at is not None:
-                    return True
-            except Exception:
-                pass
-            try:
-                return bool(status_val in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
-            except Exception:
-                return False
+        def _is_accruable_shift(*, status_val, started_at, ended_at, confirmed_at) -> bool:
+            return is_shift_accruable_for_balance(
+                status_val=status_val,
+                started_at=started_at,
+                ended_at=ended_at,
+                confirmed_at=confirmed_at,
+                include_opened=True,
+            )
 
         # Daily FOT (today in Moscow TZ): sum of base per-shift rates for ALL shifts scheduled for today.
         daily_fot_amount = Decimal("0")
@@ -3794,10 +3779,7 @@ async def salaries_api_dashboard(
             uid_i = int(uid or 0)
             if uid_i <= 0:
                 continue
-            sid_i = int(sid or 0)
-            if sid_i > 0 and sid_i in paid_shift_ids:
-                continue
-            if not _is_accruable_shift(status_val=st_val, ended_at=ended_at, confirmed_at=confirmed_at):
+            if not _is_accruable_shift(status_val=st_val, started_at=started_at, ended_at=ended_at, confirmed_at=confirmed_at):
                 continue
 
             hr = user_rate.get(uid_i)
@@ -3851,7 +3833,7 @@ async def salaries_api_dashboard(
             if day is not None and day >= cutoff:
                 accrued_all_map[uid_i] = q2(accrued_all_map.get(uid_i, Decimal("0")) + total_amt)
 
-            if day is not None and (day >= period_start and day <= period_end):
+            if day is not None and (day >= effective_start and day <= period_end):
                 accrued_month_map[uid_i] = q2(accrued_month_map.get(uid_i, Decimal("0")) + total_amt)
                 dkey = str(day)
                 accrued_by_day[dkey] = q2(accrued_by_day.get(dkey, Decimal("0")) + total_amt)
@@ -3882,12 +3864,12 @@ async def salaries_api_dashboard(
             name = fio or f"#{uid}"
 
             if user_rate.get(uid) is None:
-                bal_nr = q2(accrued_all_map.get(uid, Decimal("0")))
+                bal_nr = q2(accrued_month_map.get(uid, Decimal("0")) - paid_month_map.get(uid, Decimal("0")))
                 no_rate.append({"user_id": uid, "name": name, "balance": f"{q2(bal_nr):.2f}"})
 
             accrued_m = q2(accrued_month_map.get(uid, Decimal("0")))
             paid_m = q2(paid_month_map.get(uid, Decimal("0")))
-            bal = q2(accrued_all_map.get(uid, Decimal("0")))
+            bal = q2(accrued_m - paid_m)
 
             sum_accrued += q2(accrued_m)
             sum_paid += q2(paid_m)

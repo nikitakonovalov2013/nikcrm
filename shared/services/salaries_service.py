@@ -86,15 +86,48 @@ class SalaryPeriodTotals:
     needs_review_total: int
 
 
+def is_shift_accruable_for_balance(
+    *,
+    status_val,
+    started_at,
+    ended_at,
+    confirmed_at,
+    include_opened: bool = True,
+) -> bool:
+    try:
+        if confirmed_at is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        if ended_at is not None:
+            return True
+    except Exception:
+        pass
+    if include_opened:
+        try:
+            if started_at is not None:
+                return True
+        except Exception:
+            pass
+    try:
+        if include_opened:
+            return bool(status_val in {ShiftInstanceStatus.STARTED, ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
+        return bool(status_val in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
+    except Exception:
+        return False
+
+
 async def get_balance_cutoff_date(*, session: AsyncSession) -> date:
+    floor = date(2026, 3, 2)
     try:
         st: SalarySettings = await get_salary_settings(session)
         d = getattr(st, "balance_cutoff_date", None)
         if isinstance(d, date):
-            return d
+            return d if d >= floor else floor
     except Exception:
         pass
-    return date(2026, 3, 1)
+    return floor
 
 
 async def _tg_send_html(*, chat_id: int, text: str) -> None:
@@ -156,74 +189,32 @@ async def calc_user_period_totals(
     period_start: date,
     period_end: date,
 ) -> SalaryPeriodTotals:
+    cutoff = await get_balance_cutoff_date(session=session)
+    effective_start = cutoff if cutoff > period_start else period_start
+
     items_month = await calc_user_shifts(
         session=session,
         user_id=user_id,
-        period_start=period_start,
+        period_start=effective_start,
         period_end=period_end,
         include_plans=True,
         only_accruable=True,
+        include_opened=True,
     )
-
-    paid_shift_ids_month = await _list_paid_shift_ids(
-        session=session,
-        user_id=int(user_id),
-        period_start=period_start,
-        period_end=period_end,
-    )
-    items_month_unpaid = [
-        it
-        for it in items_month
-        if int(getattr(it, "shift_id", 0) or 0) <= 0 or int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids_month
-    ]
-    accrued_month = q2(sum((it.total_amount for it in items_month_unpaid), DEC_0))
+    accrued_month = q2(sum((it.total_amount for it in items_month), DEC_0))
     needs_review_total = int(sum((1 for it in items_month if bool(getattr(it, "needs_review", False))), 0))
 
     paid_month = (
         await session.execute(
             select(func.coalesce(func.sum(SalaryPayout.amount), 0))
             .where(SalaryPayout.user_id == int(user_id))
-            .where(SalaryPayout.period_start == period_start)
-            .where(SalaryPayout.period_end == period_end)
+            .where(func.date(SalaryPayout.created_at) >= effective_start)
+            .where(func.date(SalaryPayout.created_at) <= period_end)
         )
     ).scalar_one()
     paid_month = q2(Decimal(paid_month))
 
-    cutoff = await get_balance_cutoff_date(session=session)
-    all_start = cutoff
-
-    items_all = await calc_user_shifts(
-        session=session,
-        user_id=user_id,
-        period_start=all_start,
-        period_end=period_end,
-        include_plans=False,
-        only_accruable=True,
-    )
-    paid_shift_ids_all = await _list_paid_shift_ids(
-        session=session,
-        user_id=int(user_id),
-        period_start=all_start,
-        period_end=period_end,
-    )
-    items_all_unpaid = [
-        it
-        for it in items_all
-        if int(getattr(it, "shift_id", 0) or 0) <= 0 or int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids_all
-    ]
-    accrued_all = q2(sum((it.total_amount for it in items_all_unpaid), DEC_0))
-
-    paid_all = (
-        await session.execute(
-            select(func.coalesce(func.sum(SalaryPayout.amount), 0))
-            .where(SalaryPayout.user_id == int(user_id))
-            .where(func.date(SalaryPayout.created_at) >= cutoff)
-        )
-    ).scalar_one()
-    paid_all = q2(Decimal(paid_all))
-
-    # Debt is now defined as sum of unpaid accruals (>= cutoff).
-    balance = q2(accrued_all)
+    balance = q2(accrued_month - paid_month)
     return SalaryPeriodTotals(accrued=accrued_month, paid=paid_month, balance=balance, needs_review_total=needs_review_total)
 
 
@@ -269,6 +260,52 @@ async def _list_paid_shift_ids(
     out = {int(x) for x in rows_linked if int(x or 0) > 0}
     out |= {int(x) for x in rows_by_period if int(x or 0) > 0}
     return out
+
+
+async def calc_user_balance(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_end: date,
+    cutoff_date: date,
+    include_opened: bool = True,
+    exclude_paid_shifts: bool = True,
+) -> Decimal:
+    all_start = cutoff_date
+    items_all = await calc_user_shifts(
+        session=session,
+        user_id=int(user_id),
+        period_start=all_start,
+        period_end=period_end,
+        include_plans=False,
+        only_accruable=True,
+        include_opened=bool(include_opened),
+    )
+
+    items_all_included = items_all
+    if exclude_paid_shifts:
+        paid_shift_ids_all = await _list_paid_shift_ids(
+            session=session,
+            user_id=int(user_id),
+            period_start=all_start,
+            period_end=period_end,
+        )
+        items_all_included = [
+            it
+            for it in items_all
+            if int(getattr(it, "shift_id", 0) or 0) <= 0 or int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids_all
+        ]
+
+    accrued_all = q2(sum((it.total_amount for it in items_all_included), DEC_0))
+    paid_all = (
+        await session.execute(
+            select(func.coalesce(func.sum(SalaryPayout.amount), 0))
+            .where(SalaryPayout.user_id == int(user_id))
+            .where(func.date(SalaryPayout.created_at) >= cutoff_date)
+        )
+    ).scalar_one()
+    paid_all = q2(Decimal(paid_all))
+    return q2(accrued_all - paid_all)
 
 
 async def suggest_salary_payout_for_period(
@@ -334,6 +371,7 @@ async def calc_user_shifts(
     period_end: date,
     include_plans: bool = True,
     only_accruable: bool = False,
+    include_opened: bool = False,
 ) -> list:
     # load shifts + plans
     shifts = list(
@@ -384,21 +422,13 @@ async def calc_user_shifts(
     all_day_keys = set(shifts_by_day.keys()) | {k for k, p in plans.items() if str(getattr(p, "kind", "")) == "work"}
 
     def _is_accruable_shift(*, s: ShiftInstance, st_row: SalaryShiftStateRow | None) -> bool:
-        try:
-            if st_row is not None and getattr(st_row, "confirmed_at", None) is not None:
-                return True
-        except Exception:
-            pass
-        try:
-            if getattr(s, "ended_at", None) is not None:
-                return True
-        except Exception:
-            pass
-        try:
-            st = getattr(s, "status", None)
-            return bool(st in {ShiftInstanceStatus.CLOSED, ShiftInstanceStatus.APPROVED})
-        except Exception:
-            return False
+        return is_shift_accruable_for_balance(
+            status_val=getattr(s, "status", None),
+            started_at=getattr(s, "started_at", None),
+            ended_at=getattr(s, "ended_at", None),
+            confirmed_at=(getattr(st_row, "confirmed_at", None) if st_row is not None else None),
+            include_opened=bool(include_opened),
+        )
 
     for day_key in sorted(all_day_keys):
         plan = plans.get(int(day_key))
