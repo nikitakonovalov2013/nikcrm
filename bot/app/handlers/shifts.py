@@ -20,6 +20,12 @@ from shared.models import User, WorkShiftDay, ShiftInstance, ShiftInstanceEvent
 
 from shared.services.shifts_domain import is_shift_active_status, is_shift_final_status
 from shared.services.shifts_service import get_today_working_staff_with_open_state
+from shared.services.shifts_rating import (
+    schedule_shift_rating_request_after_commit,
+    set_shift_rating,
+    shift_rating_result_text,
+    shift_rating_stars,
+)
 
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.keyboards.main import main_menu_kb
@@ -137,6 +143,58 @@ async def _noop(cb: CallbackQuery) -> None:
         await cb.answer()
     except Exception:
         pass
+
+
+@router.callback_query(F.data.startswith("shift_rate:"))
+async def shift_rate_set(cb: CallbackQuery) -> None:
+    parts = str(cb.data or "").split(":")
+    if len(parts) != 3:
+        await _cb_answer_safely(cb, "Ошибка")
+        return
+
+    try:
+        shift_id = int(parts[1])
+        rating = int(parts[2])
+    except Exception:
+        await _cb_answer_safely(cb, "Ошибка")
+        return
+
+    user = await ensure_registered_or_reply(cb)
+    if not user:
+        return
+
+    async with get_async_session() as session:
+        shift, code = await set_shift_rating(
+            session=session,
+            shift_id=int(shift_id),
+            user_id=int(getattr(user, "id", 0) or 0),
+            rating=int(rating),
+        )
+
+    if code == "bad_rating":
+        await _cb_answer_safely(cb, "Оценка должна быть 1–5")
+        return
+    if code == "not_found":
+        await _cb_answer_safely(cb, "Смена не найдена")
+        return
+    if code == "forbidden":
+        await _cb_answer_safely(cb, "Нет доступа")
+        return
+    if code == "not_closed":
+        await _cb_answer_safely(cb, "Смена ещё не завершена")
+        return
+
+    await _cb_answer_safely(cb, f"Спасибо! Оценка: {shift_rating_stars(int(rating))}")
+
+    if cb.message and shift is not None:
+        text = shift_rating_result_text(shift=shift, rating=int(rating))
+        try:
+            await cb.message.edit_text(text=str(text), parse_mode="HTML", reply_markup=None)
+        except Exception:
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
 
 def _kb_schedule_return() -> InlineKeyboardMarkup:
@@ -652,6 +710,7 @@ async def shift_close_ok(cb: CallbackQuery, state: FSMContext):
         shift.amount_submitted = shift.amount_approved
         shift.approval_required = False
         await session.flush()
+        schedule_shift_rating_request_after_commit(session=session, shift_id=int(shift.id))
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Смена закрыта")
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Сумма подтверждена руководителем")
 
@@ -907,6 +966,7 @@ async def shift_close_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
             shift.approval_required = False
             shift.status = ShiftInstanceStatus.APPROVED
             shift.amount_approved = amount
+            schedule_shift_rating_request_after_commit(session=session, shift_id=int(shift.id))
 
         await session.flush()
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Смена закрыта")
@@ -1022,6 +1082,7 @@ async def shift_close_edit_comment(message: Message, state: FSMContext):
             shift.approval_required = False
             shift.status = ShiftInstanceStatus.APPROVED
             shift.amount_approved = amount
+            schedule_shift_rating_request_after_commit(session=session, shift_id=int(shift.id))
 
         await session.flush()
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(user.id), type="Смена закрыта")
@@ -1170,6 +1231,7 @@ async def mgr_approve(cb: CallbackQuery, state: FSMContext):
         shift.approved_by_user_id = int(actor.id)
         shift.approved_at = utc_now()
         await session.flush()
+        schedule_shift_rating_request_after_commit(session=session, shift_id=int(shift.id))
         await _log_event(session, shift_id=int(shift.id), actor_user_id=int(actor.id), type="Сумма подтверждена руководителем")
 
         staff = (
@@ -1281,6 +1343,7 @@ async def mgr_edit_comment_skip(cb: CallbackQuery, state: FSMContext):
         shift.approved_by_user_id = int(actor.id)
         shift.approved_at = utc_now()
         await session.flush()
+        schedule_shift_rating_request_after_commit(session=session, shift_id=int(shift.id))
         await _log_event(
             session,
             shift_id=int(shift.id),

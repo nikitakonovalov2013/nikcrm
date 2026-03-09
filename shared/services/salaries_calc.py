@@ -25,6 +25,8 @@ class SalaryShiftCalc:
     actual_hours: Decimal | None
 
     state: SalaryShiftState
+    rating: int | None
+    rated_at: object | None
     needs_review: bool
     confirmed_at: object | None
     confirmed_by_user_id: int | None
@@ -64,6 +66,8 @@ def calc_shift_salary(
     started_at,
     ended_at,
     state: SalaryShiftState,
+    rating: int | None,
+    rated_at=None,
     manual_hours: Decimal | None,
     manual_amount_override: Decimal | None,
     requested_amount: Decimal | None,
@@ -143,6 +147,8 @@ def calc_shift_salary(
             planned_hours=planned_hours,
             actual_hours=actual_hours,
             state=state,
+            rating=(int(rating) if rating is not None else None),
+            rated_at=rated_at,
             needs_review=bool(needs_review),
             confirmed_at=confirmed_at,
             confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),
@@ -177,6 +183,8 @@ def calc_shift_salary(
         planned_hours=planned_hours,
         actual_hours=actual_hours,
         state=state,
+        rating=(int(rating) if rating is not None else None),
+        rated_at=rated_at,
         needs_review=bool(needs_review),
         confirmed_at=confirmed_at,
         confirmed_by_user_id=(int(confirmed_by_user_id) if confirmed_by_user_id is not None else None),

@@ -202,6 +202,11 @@ class ShiftInstance(Base):
     amount_submitted: Mapped[int | None] = mapped_column(Integer, nullable=True)
     amount_approved: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rating_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    rating_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False)
     approved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

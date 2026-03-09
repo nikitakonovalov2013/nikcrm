@@ -45,6 +45,7 @@
   const confirmWrapEl = document.getElementById('salary-shifts-confirm-wrap');
   const confirmBadgeEl = document.getElementById('salary-shifts-confirm-badge');
   const confirmBtn = document.getElementById('salary-shifts-confirm');
+  const ratingEl = document.getElementById('salary-shifts-rating');
 
   const commentFieldErrEl = document.getElementById('salary-shifts-comment-error');
   const labelStateEl = document.getElementById('salary-shifts-label-state');
@@ -417,6 +418,14 @@
       : s;
   }
 
+  function ratingLabel(it){
+    const r = (it && it.rating !== null && it.rating !== undefined) ? Number(it.rating) : null;
+    if (r !== null && Number.isFinite(r) && r >= 1 && r <= 5) {
+      return '⭐' + String(r);
+    }
+    return '—';
+  }
+
   function prettyManualHours(v){
     const h = fmtHoursHuman(v);
     return h ? h : '—';
@@ -529,6 +538,7 @@
       if(editorEl) editorEl.style.display = 'none';
       if(editorEmptyEl) editorEmptyEl.style.display = '';
       if(hintEl) hintEl.style.display = '';
+      try { if (ratingEl) ratingEl.textContent = '—'; } catch(_){ }
       initialSnapshot = null;
       try { syncConfirmUi(null); } catch(_){ }
       return;
@@ -560,6 +570,9 @@
     setFieldError(labelAdjCommentEl, null, null);
 
     renderAdjustments(it);
+    try {
+      if (ratingEl) ratingEl.textContent = ratingLabel(it);
+    } catch(_){ }
 
     initialSnapshot = {
       state: String(it.state || 'worked'),
@@ -661,6 +674,7 @@
           + '<div class="salary-shifts-chips">'
             + (pickHoursForChip(it) ? ('<span class="salary-shifts-chip hours">' + escapeHtml(pickHoursForChip(it)) + '</span>') : '')
             + '<span class="salary-shifts-chip money">' + escapeHtml(fmtRub(it.total_amount)) + '</span>'
+            + ((it && it.rating !== null && it.rating !== undefined) ? ('<span class="salary-shifts-chip">⭐' + escapeHtml(String(it.rating)) + '</span>') : '')
           + '</div>'
         + '</div>'
       ) : '';

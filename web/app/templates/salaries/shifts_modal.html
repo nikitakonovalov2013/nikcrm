@@ -375,6 +375,8 @@
     const reqHas = !!(it && it.requested_amount);
     const reqNeed = !!(it && it.approval_required);
     const finalAmt = fmtRub((it && it.final_amount) ? it.final_amount : (it && it.total_amount));
+    const ratingVal = (it && it.rating !== null && it.rating !== undefined) ? Number(it.rating) : null;
+    const ratingText = (ratingVal !== null && Number.isFinite(ratingVal) && ratingVal >= 1 && ratingVal <= 5) ? ('⭐' + String(ratingVal)) : '—';
 
     let badge = '';
     if(reqNeed){
@@ -396,6 +398,10 @@
       '<div class="sm-adj-item" style="margin-bottom:8px;">' +
         '<div>Подтверждено</div>' +
         '<b>' + (reqHas ? yesNo(isAppr) : '—') + '</b>' +
+      '</div>' +
+      '<div class="sm-adj-item" style="margin-bottom:8px;">' +
+        '<div>Оценка смены</div>' +
+        '<b>' + ratingText + '</b>' +
       '</div>' +
       '<div class="sm-adj-item">' +
         '<div>Начисление к учёту' + badge + '</div>' +
@@ -426,6 +432,7 @@
       }
       body.innerHTML = items.map((it)=>{
         const day = String(it.day || '');
+        const dayRating = (it && it.rating !== null && it.rating !== undefined) ? (' ⭐' + String(it.rating)) : '';
         const state = String(it.state || '');
         const planned = it.planned_hours ? String(it.planned_hours) : '—';
         const actual = it.actual_hours ? String(it.actual_hours) : '—';
@@ -435,7 +442,7 @@
         const key = shiftKey(it);
         return (
           '<tr data-salary-shift-row="' + String(key) + '">' +
-            '<td>' + day + (review ? ' <span title="Требует подтверждения">⚠️</span>' : '') + '</td>' +
+            '<td>' + day + dayRating + (review ? ' <span title="Требует подтверждения">⚠️</span>' : '') + '</td>' +
             '<td>' + statusBadge(state, it) + '</td>' +
             '<td>' + planned + ' / ' + actual + '</td>' +
             '<td><b>' + total + '</b></td>' +

@@ -104,6 +104,7 @@ from shared.services.salaries_service import calc_user_period_totals
 from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
 from shared.services.salaries_service import calc_user_shifts, update_salary_shift_state, create_salary_adjustment
 from shared.services.salaries_service import get_balance_cutoff_date
+from shared.services.shifts_rating import schedule_shift_rating_request_after_commit
 from shared.services.salaries_calc import q2, calc_shift_salary
 
 from shared.models import SalaryPayout
@@ -1579,6 +1580,8 @@ async def salaries_api_shift_amount_update(
 
     session.add(shift)
     await session.flush()
+    if not bool(getattr(shift, "approval_required", False)):
+        schedule_shift_rating_request_after_commit(session=session, shift_id=int(getattr(shift, "id", 0) or 0))
 
     # month param is accepted for frontend compatibility, no extra behavior here
     _ = month
@@ -1613,6 +1616,7 @@ async def salaries_api_shift_amount_approve(
     shift.approved_at = utc_now()
     session.add(shift)
     await session.flush()
+    schedule_shift_rating_request_after_commit(session=session, shift_id=int(getattr(shift, "id", 0) or 0))
 
     return {"ok": True}
 
@@ -3366,6 +3370,8 @@ async def salaries_api_grid(
                 started_at=started_at,
                 ended_at=ended_at,
                 state=st_effective,
+                rating=None,
+                rated_at=None,
                 manual_hours=manual_hours,
                 manual_amount_override=manual_amount_override,
                 requested_amount=req_amt,
@@ -3828,6 +3834,8 @@ async def salaries_api_dashboard(
                 started_at=started_at,
                 ended_at=ended_at,
                 state=st_effective,
+                rating=None,
+                rated_at=None,
                 manual_hours=manual_hours,
                 manual_amount_override=manual_amount_override,
                 requested_amount=req_amt,
@@ -4739,6 +4747,8 @@ async def salaries_api_shifts_list(
                 "adjustments_amount": f"{getattr(s, 'adjustments_amount', Decimal('0')):.2f}",
                 "total_amount": f"{getattr(s, 'total_amount', Decimal('0')):.2f}",
                 "final_amount": f"{getattr(s, 'total_amount', Decimal('0')):.2f}",
+                "rating": (int(getattr(s, "rating", 0) or 0) if getattr(s, "rating", None) is not None else None),
+                "rated_at": (str(getattr(s, "rated_at", "") or "") or None),
                 "is_paid": bool(paid_map.get(int(sid), False)),
                 "comment": comment_map.get(int(sid)),
                 "adjustments_count": int(len(adjs)),
@@ -6149,6 +6159,7 @@ async def schedule_api_month(
                 "is_emergency": bool(getattr(wsd, "is_emergency", False)),
                 "shift_status": str(getattr(fact, "status", "") or "") if fact is not None else "",
                 "shift_approval_required": bool(getattr(fact, "approval_required", False)) if fact is not None else False,
+                "shift_rating": (int(getattr(fact, "rating", 0) or 0) if fact is not None and getattr(fact, "rating", None) is not None else None),
             }
         )
 
@@ -6235,6 +6246,7 @@ async def schedule_api_month(
                         else getattr(fact, "amount_default", None)
                     )
                 )
+            rating_val = int(getattr(fact, "rating", 0) or 0) if fact is not None and getattr(fact, "rating", None) is not None else None
 
             day_staff = staff_by_day.get(day_key, [])
             st, et = _normalize_shift_times(
@@ -6252,6 +6264,7 @@ async def schedule_api_month(
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
+                "shift_rating": rating_val,
                 "staff_total": len(day_staff),
                 "staff_preview": day_staff[:3],
                 "all_mode": False,
@@ -6275,6 +6288,7 @@ async def schedule_api_month(
                         else getattr(fact, "amount_default", None)
                     )
                 )
+            rating_val = int(getattr(fact, "rating", 0) or 0) if fact is not None and getattr(fact, "rating", None) is not None else None
             out[day_key] = {
                 "kind": "",
                 "hours": None,
@@ -6284,6 +6298,7 @@ async def schedule_api_month(
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
+                "shift_rating": rating_val,
                 "staff_total": len(day_staff),
                 "staff_preview": day_staff[:3],
                 "all_mode": False,
@@ -6304,6 +6319,7 @@ async def schedule_api_month(
                     else getattr(fact, "amount_default", None)
                 )
             )
+            rating_val = int(getattr(fact, "rating", 0) or 0) if getattr(fact, "rating", None) is not None else None
             out[day_key] = {
                 "kind": "",
                 "hours": None,
@@ -6313,6 +6329,7 @@ async def schedule_api_month(
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
+                "shift_rating": rating_val,
                 "staff_total": 0,
                 "staff_preview": [],
                 "all_mode": False,

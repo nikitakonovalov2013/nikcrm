@@ -228,6 +228,8 @@
       const h = (kind === 'work') ? calcHoursInt(st, et) : null;
       const interval = (kind === 'work') ? (st + '–' + et + (h !== null ? (' (' + formatHours(h) + ')') : '')) : (kind === 'off' ? 'Выходной' : '');
       const stShort = shortShiftStatusText(info && info.shift_status ? info.shift_status : '', !!(info && info.shift_approval_required));
+      const rt = (info && info.shift_rating !== null && info.shift_rating !== undefined) ? Number(info.shift_rating) : null;
+      const rtShort = (rt && Number.isFinite(rt)) ? ('⭐' + String(rt)) : '';
       return '<div class="schedule-day-staff-names">'
         + '<div class="schedule-staff-name-row line">'
           + '<div class="schedule-staff-name-left">'
@@ -237,6 +239,7 @@
         + '</div>'
         + (interval ? ('<div class="schedule-day-label muted">' + escapeHtml(interval) + '</div>') : '')
         + (stShort ? ('<div class="schedule-day-label">' + escapeHtml(stShort) + '</div>') : '')
+        + (rtShort ? ('<div class="schedule-day-label">' + escapeHtml(rtShort) + '</div>') : '')
         + '</div>';
     }
 
@@ -716,8 +719,10 @@
     const et = normalizeTimeValue(info && info.end_time ? info.end_time : '', '18:00');
 
     const shiftStatus = info && info.shift_status ? String(info.shift_status) : '';
+    const shiftRating = (info && info.shift_rating !== null && info.shift_rating !== undefined) ? Number(info.shift_rating) : null;
     const shiftAmount = (info && (info.shift_amount !== null && info.shift_amount !== undefined)) ? Number(info.shift_amount) : null;
     const factStr = shiftStatus ? shiftStatusLabel(shiftStatus) : '';
+    const ratingStr = (shiftRating !== null && Number.isFinite(shiftRating)) ? ('⭐' + String(shiftRating)) : '';
     const hoursF = (kind === 'work') ? calcHoursInt(st, et) : null;
     const statusStr = kind === 'work'
       ? ('Рабочий день' + (isEmergency ? ' ⚡' : ''))
@@ -732,7 +737,7 @@
       '<div class="modal-body tasks-modal">' +
         '<div class="schedule-modal-head">' +
           '<div class="schedule-modal-date">' + escapeHtml(day) + '</div>' +
-          '<div class="schedule-modal-status muted">' + escapeHtml(headerStatus) + (!isAllMode && intervalStr ? (' · ' + escapeHtml(intervalStr)) : '') + (!isAllMode && factStr ? (' · ' + escapeHtml(factStr) + (shiftAmount !== null ? (' · ' + escapeHtml(String(shiftAmount)) + ' ₽') : '')) : '') + '</div>' +
+          '<div class="schedule-modal-status muted">' + escapeHtml(headerStatus) + (!isAllMode && intervalStr ? (' · ' + escapeHtml(intervalStr)) : '') + (!isAllMode && factStr ? (' · ' + escapeHtml(factStr) + (shiftAmount !== null ? (' · ' + escapeHtml(String(shiftAmount)) + ' ₽') : '')) : '') + (!isAllMode && ratingStr ? (' · ' + escapeHtml(ratingStr)) : '') + '</div>' +
         '</div>' +
         ((kind === 'work' && canManage && !isAllMode) ? (
           '<div class="task-field" style="margin-top:10px">' +
