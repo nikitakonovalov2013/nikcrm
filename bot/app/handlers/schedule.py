@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import html
 from datetime import datetime
 from datetime import time as dtime
 
@@ -29,6 +30,8 @@ from shared.models import WorkShiftDay, User, ShiftInstance
 from shared.enums import ShiftInstanceStatus
 from shared.utils import MOSCOW_TZ
 from shared.utils import utc_now
+from shared.services.shifts_service import get_shifts_for_date
+from bot.app.utils.access import is_admin_or_manager
 
 from shared.services.shifts_domain import (
     calc_int_hours_from_times,
@@ -274,9 +277,16 @@ async def schedule_entry(message: Message, state: FSMContext):
 
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
+    is_admin_mgr = is_admin_or_manager(r=r)
 
     async with get_async_session() as session:
-        text, kb = await _render_schedule_menu(session=session, user=user, is_admin=is_admin, is_manager=is_manager)
+        text, kb = await _render_schedule_menu(
+            session=session,
+            user=user,
+            is_admin=is_admin,
+            is_manager=is_manager,
+            show_team_summary=is_admin_mgr,
+        )
     await send_new_and_delete_active(message=message, state=state, text=text, reply_markup=kb)
 
 
@@ -306,8 +316,17 @@ async def schedule_menu_open(cb: CallbackQuery, state: FSMContext):
         await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
         return
 
+    is_admin = bool(r.is_admin)
+    is_manager = bool(r.is_manager)
+    is_admin_mgr = is_admin_or_manager(r=r)
     async with get_async_session() as session:
-        text, kb = await _render_schedule_menu(session=session, user=user, is_admin=bool(r.is_admin), is_manager=bool(r.is_manager))
+        text, kb = await _render_schedule_menu(
+            session=session,
+            user=user,
+            is_admin=is_admin,
+            is_manager=is_manager,
+            show_team_summary=is_admin_mgr,
+        )
     if cb.message:
         await send_new_and_delete_active(message=cb.message, state=state, text=text, reply_markup=kb)
     else:
@@ -327,7 +346,50 @@ def _ru_shift_status(s: str | None) -> str:
     return m.get(str(s or ""), "—")
 
 
-async def _render_schedule_menu(*, session, user: User, is_admin: bool, is_manager: bool):
+async def _format_team_today_summary(*, session, today) -> str:
+    rows = await get_shifts_for_date(session=session, day=today)
+    head = f"📅 <b>График работ на сегодня ({today.strftime('%d.%m')})</b>"
+    if not rows:
+        return head + "\n\nНа сегодня смен нет."
+
+    opened_rows = [r for r in rows if bool(getattr(r, "opened", False))]
+    not_opened_rows = [r for r in rows if not bool(getattr(r, "opened", False))]
+
+    def _slot_text(row) -> str:
+        st = getattr(row, "start_time", None)
+        et = getattr(row, "end_time", None)
+        if st is not None and et is not None:
+            return f"{st.strftime('%H:%M')}–{et.strftime('%H:%M')}"
+        hrs = getattr(row, "planned_hours", None)
+        if hrs is not None:
+            return f"{int(hrs)} ч"
+        return "—"
+
+    parts: list[str] = [head, ""]
+    parts.append("✅ <b>Открыл(и) смену:</b>")
+    if opened_rows:
+        for r in opened_rows:
+            nm = html.escape(str(getattr(r, "full_name", "—") or "—"))
+            slot = _slot_text(r)
+            fin = "✅ завершил" if bool(getattr(r, "finished", False)) else "не завершил"
+            parts.append(f"🟢 {nm} — {slot} ({fin})")
+    else:
+        parts.append("—")
+
+    parts.append("")
+    parts.append("⏳ <b>Не открыли смену:</b>")
+    if not_opened_rows:
+        for r in not_opened_rows:
+            nm = html.escape(str(getattr(r, "full_name", "—") or "—"))
+            slot = _slot_text(r)
+            parts.append(f"🔴 {nm} — {slot}")
+    else:
+        parts.append("—")
+
+    return "\n".join(parts)
+
+
+async def _render_schedule_menu(*, session, user: User, is_admin: bool, is_manager: bool, show_team_summary: bool = False):
     try:
         today = datetime.now(MOSCOW_TZ).date()
         now_msk = datetime.now(MOSCOW_TZ)
@@ -409,6 +471,10 @@ async def _render_schedule_menu(*, session, user: User, is_admin: bool, is_manag
             f"Сумма: <b>{amount_txt}</b>\n\n"
             f"Открыть календарь:\n{url}\n"
         )
+
+        if show_team_summary:
+            summary_txt = await _format_team_today_summary(session=session, today=today)
+            text = f"{summary_txt}\n\n{text}"
 
         # Buttons (minimal, contextual)
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
