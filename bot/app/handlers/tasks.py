@@ -613,7 +613,7 @@ async def _show_list_scope_status(
         await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
 
 
-@router.message(F.text.in_({"✅ Задачи", "Задачи"}))
+@router.message(F.text.in_({"💼 Мои задачи", "✅ Задачи", "Задачи"}))
 @router.message(Command("tasks"))
 async def tasks_entry(message: Message, state: FSMContext):
     actor = await _ensure_user(message)
@@ -1178,7 +1178,7 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
             await ensure_registered_or_reply(cb)
             return
         if not task:
-            await edit_html(cb, "⚠️ Задача не найдена.")
+            await edit_html(cb, "⛔ Недоступно.")
             return
 
         r = role_flags(

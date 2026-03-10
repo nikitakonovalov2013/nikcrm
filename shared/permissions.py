@@ -48,12 +48,8 @@ def can_access_tasks(*, r: UserRoleFlags) -> bool:
 
 
 def can_use_tasks_archive(*, r: UserRoleFlags) -> bool:
-    # Admin/manager override any designer restrictions.
-    if getattr(r, "is_admin", False) or getattr(r, "is_manager", False):
-        return True
-    # Designer (non-admin/manager): forbidden.
-    if getattr(r, "is_designer", False):
-        return False
+    # Archive access is allowed for all task users.
+    # Personal visibility limits are enforced in archive queries.
     return True
 
 
@@ -63,13 +59,7 @@ def can_view_task(*, actor: User, t: Task, r: UserRoleFlags) -> bool:
 
     assignees = list(getattr(t, "assignees", None) or [])
     is_assignee = any(int(getattr(u, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) for u in assignees)
-
-    # Designers must only see tasks where they are explicitly assigned.
-    if getattr(r, "is_designer", False):
-        return bool(is_assignee)
-
-    # For non-designer staff, viewing tasks is allowed (actions are still restricted by task_permissions).
-    return True
+    return bool(is_assignee)
 
 
 def can_use_purchases(*, r: UserRoleFlags, status: UserStatus | None = None) -> bool:

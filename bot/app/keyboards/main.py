@@ -27,7 +27,7 @@ def main_menu_kb(status: Optional[UserStatus], tg_id: int, position: Optional[Po
 
         # Tasks are allowed for everyone who can reach the main menu (approved).
         if is_admin_or_manager or status == UserStatus.APPROVED:
-            buttons.append(KeyboardButton(text="✅ Задачи"))
+            buttons.append(KeyboardButton(text="💼 Мои задачи"))
 
         if (is_admin_or_manager or status == UserStatus.APPROVED) and can_use_purchases(r=r, status=status):
             buttons.append(KeyboardButton(text="🛒 Закупки"))

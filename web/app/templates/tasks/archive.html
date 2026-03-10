@@ -16,10 +16,6 @@
     Поиск
     <input type="text" name="q" value="{{ q or '' }}" placeholder="Заголовок или описание" />
   </label>
-  <label class="checkbox-row" style="margin-top: 20px;">
-    <input type="checkbox" name="mine" value="1" {% if mine %}checked{% endif %} />
-    <span>Мои задачи</span>
-  </label>
   <label>
     Приоритет
     <select name="priority">
@@ -36,17 +32,6 @@
       <option value="overdue" {% if due == 'overdue' %}selected{% endif %}>Просроченные</option>
     </select>
   </label>
-  {% if is_admin or is_manager %}
-  <label>
-    Сотрудник
-    <select name="assignee_id">
-      <option value="" {% if not assignee_id %}selected{% endif %}>Все</option>
-      {% for u in users %}
-        <option value="{{ u.id }}" {% if assignee_id and (assignee_id == u.id) %}selected{% endif %}>{{ (u.first_name or '') ~ ' ' ~ (u.last_name or '') }}</option>
-      {% endfor %}
-    </select>
-  </label>
-  {% endif %}
   <label>
     Статус
     <select name="status">
@@ -55,8 +40,7 @@
     </select>
   </label>
   <div class="tasks-filters-actions">
-    <button class="btn-outline" type="submit">Применить</button>
-    <a class="btn-outline" href="{{ request.url_for('tasks_archive') }}">Сбросить</a>
+    <a class="btn-outline" href="{{ archive_url }}">Сбросить</a>
   </div>
 </form>
 
@@ -103,6 +87,25 @@
 
 <script>
 (function(){
+  const filtersForm = document.querySelector('.tasks-filters');
+  const qInput = filtersForm ? filtersForm.querySelector('input[name="q"]') : null;
+  let qTimer = null;
+  const submitFilters = function(){
+    if (!filtersForm) return;
+    try { filtersForm.requestSubmit(); } catch (_){ filtersForm.submit(); }
+  };
+  if (filtersForm) {
+    filtersForm.querySelectorAll('select').forEach(function(el){
+      el.addEventListener('change', submitFilters);
+    });
+  }
+  if (qInput) {
+    qInput.addEventListener('input', function(){
+      if (qTimer) clearTimeout(qTimer);
+      qTimer = setTimeout(submitFilters, 300);
+    });
+  }
+
   const modalBody = () => document.getElementById('modal-body');
   function openModal(html){
     const b = modalBody();

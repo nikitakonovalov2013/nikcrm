@@ -68,6 +68,8 @@ class TaskRepository:
 
         if kind == "available":
             q = q.where(Task.status == TaskStatus.NEW).where(~has_any_acl)
+            if not is_admin_or_manager:
+                q = q.where(has_me)
         elif kind == "my":
             q = q.where(has_me).where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
         elif kind in {"in_progress", "review", "done", "archived"}:
@@ -79,17 +81,16 @@ class TaskRepository:
             }[kind]
             q = q.where(Task.status == status)
             if not is_admin_or_manager:
-                # For regular staff: only tasks assigned to me OR common started by me
-                q = q.where(or_(has_me, and_(~has_any_acl, Task.started_by_user_id == int(actor_user_id))))
+                q = q.where(has_me)
         elif kind == "all":
             q = q.where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE, TaskStatus.ARCHIVED]))
             if not is_admin_or_manager:
-                q = q.where(or_(has_me, and_(~has_any_acl, Task.started_by_user_id == int(actor_user_id))))
+                q = q.where(has_me)
         else:
             # default: all visible
             q = q.where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
             if not is_admin_or_manager:
-                q = q.where(or_(has_me, and_(~has_any_acl, Task.started_by_user_id == int(actor_user_id))))
+                q = q.where(has_me)
 
         # Fetch limit+1 for pagination
         res = await self.session.execute(q.offset(offset).limit(limit + 1))
@@ -137,12 +138,9 @@ class TaskRepository:
 
         if scope == "all":
             if not is_admin_or_manager:
-                q = q.where(or_(has_me, and_(~has_any_acl, Task.started_by_user_id == int(actor_user_id))))
-        else:
-            if st == TaskStatus.NEW:
                 q = q.where(has_me)
-            else:
-                q = q.where(or_(has_me, and_(~has_any_acl, Task.started_by_user_id == int(actor_user_id))))
+        else:
+            q = q.where(has_me)
 
         res = await self.session.execute(q.offset(offset).limit(limit + 1))
         items = list(res.scalars().unique().all())
@@ -242,13 +240,16 @@ class TaskRepository:
 
         users: list[User] = []
         if assignee_user_ids:
+            requested_ids = [int(x) for x in assignee_user_ids if int(x) > 0]
             res = await self.session.execute(
                 select(User)
-                .where(User.id.in_([int(x) for x in assignee_user_ids]))
+                .where(User.id.in_(requested_ids))
                 .where(User.is_deleted == False)
                 .where(User.status == UserStatus.APPROVED)
             )
             users = list(res.scalars().all())
+            if len(users) != len(set(requested_ids)):
+                raise ValueError("assignees_not_found")
 
         t = Task(
             title=str(title).strip(),

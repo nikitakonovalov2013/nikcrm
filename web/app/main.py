@@ -7051,13 +7051,11 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     can_use_archive = can_use_tasks_archive(r=r)
 
     q = (request.query_params.get("q") or "").strip()
-    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    mine = False
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
     status_q = (request.query_params.get("status") or "").strip()
 
-    if is_designer:
-        mine = True
     assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
     assignee_id: int | None = None
     if assignee_id_raw:
@@ -7105,12 +7103,6 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
         )
         query = query.where(has_selected)
-    if mine or is_designer:
-        has_actor = exists(
-            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
-        )
-        query = query.where(has_actor)
-
     res = await session.execute(query)
     tasks = list(res.scalars().unique().all())
 
@@ -7164,7 +7156,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
             "board_url": request.url_for("tasks_board"),
             "columns": columns,
             "q": q,
-            "mine": mine,
+            "mine": False,
             "priority": priority,
             "due": due,
             "status": status_q,
@@ -7192,17 +7184,13 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     is_designer = bool(getattr(r, "is_designer", False))
     can_use_archive = can_use_tasks_archive(r=r)
 
-    mine_param_present = "mine" in dict(request.query_params)
-    if not mine_param_present and not (is_admin or is_manager) and not is_designer:
-        # Hard default: for non-admin/manager always open board with mine=1 unless explicitly set.
-        return RedirectResponse(url=str(request.url.include_query_params(mine="1")), status_code=302)
-
     q = (request.query_params.get("q") or "").strip()
-    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    mine = False
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
+    status_q = (request.query_params.get("status") or "").strip()
+    is_admin_or_manager = bool(is_admin or is_manager)
 
-    # Public board: show all tasks (same as admin board), but without sidebar
     from shared.models import task_assignees
     from sqlalchemy import or_ as _or, exists, and_
 
@@ -7228,7 +7216,7 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     elif due == "overdue":
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
-    if mine or is_designer:
+    if not is_admin_or_manager:
         has_actor = exists(
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
         )
@@ -7287,7 +7275,7 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
             "board_url": request.url_for("tasks_board_public"),
             "columns": columns,
             "q": q,
-            "mine": mine,
+            "mine": False,
             "priority": priority,
             "due": due,
             "status": status_q,
@@ -7320,13 +7308,11 @@ async def tasks_api_public_list(
     is_designer = bool(getattr(r, "is_designer", False))
 
     q = (request.query_params.get("q") or "").strip()
-    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    mine = False
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
     status_q = (request.query_params.get("status") or "").strip()
-
-    if is_designer:
-        mine = True
+    is_admin_or_manager = bool(is_admin or is_manager)
 
     from shared.models import task_assignees
     from sqlalchemy import or_ as _or, exists, and_
@@ -7351,7 +7337,7 @@ async def tasks_api_public_list(
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
     if status_q and status_q in {s.value for s in TaskStatus}:
         query = query.where(Task.status == TaskStatus(status_q))
-    if mine:
+    if not is_admin_or_manager:
         has_actor = exists(
             select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
         )
@@ -7371,7 +7357,7 @@ async def tasks_api_public_list(
             }
             for t in tasks
         ],
-        "mine": bool(mine),
+        "mine": False,
     }
 
 
@@ -7390,22 +7376,15 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
         return RedirectResponse(url="/crm/tasks", status_code=302)
 
     q = (request.query_params.get("q") or "").strip()
-    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    mine = False
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
     status_q = (request.query_params.get("status") or "").strip()
-    assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
     assignee_id: int | None = None
-    if assignee_id_raw:
-        try:
-            assignee_id = int(assignee_id_raw)
-        except Exception:
-            assignee_id = None
 
     from shared.models import task_assignees
     from sqlalchemy import exists, and_, or_
 
-    has_any_acl = exists(select(1).where(task_assignees.c.task_id == Task.id))
     has_actor = exists(
         select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
     )
@@ -7432,20 +7411,7 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
     elif due == "overdue":
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
-    if mine:
-        pass
-
-    if is_designer:
-        has_actor_only = exists(
-            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id)))
-        )
-        query = query.where(has_actor_only)
-
-    if assignee_id is not None:
-        has_selected = exists(
-            select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id)))
-        )
-        query = query.where(has_selected)
+    query = query.where(has_actor)
 
     if status_q:
         if status_q in {s.value for s in TaskStatus}:
@@ -7466,7 +7432,7 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
             "request": request,
             "items": items,
             "q": q,
-            "mine": mine,
+            "mine": False,
             "priority": priority,
             "due": due,
             "status": status_q,
@@ -7504,22 +7470,15 @@ async def tasks_archive_public(request: Request, admin_id: int = Depends(require
         return RedirectResponse(url="/crm/tasks", status_code=302)
 
     q = (request.query_params.get("q") or "").strip()
-    mine = (request.query_params.get("mine") or "").strip() in {"1", "true", "yes", "on"}
+    mine = False
     priority = (request.query_params.get("priority") or "").strip()
     due = (request.query_params.get("due") or "").strip()
     status_q = (request.query_params.get("status") or "").strip()
-    assignee_id_raw = (request.query_params.get("assignee_id") or "").strip()
     assignee_id: int | None = None
-    if assignee_id_raw:
-        try:
-            assignee_id = int(assignee_id_raw)
-        except Exception:
-            assignee_id = None
 
     from shared.models import task_assignees
     from sqlalchemy import exists, and_, or_
 
-    has_any_acl = exists(select(1).where(task_assignees.c.task_id == Task.id))
     has_actor = exists(select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(actor.id))))
 
     query = (
@@ -7544,12 +7503,7 @@ async def tasks_archive_public(request: Request, admin_id: int = Depends(require
     elif due == "overdue":
         query = query.where(Task.due_at.is_not(None)).where(Task.due_at < utc_now())
 
-    if mine:
-        pass
-
-    if assignee_id is not None:
-        has_selected = exists(select(1).where(and_(task_assignees.c.task_id == Task.id, task_assignees.c.user_id == int(assignee_id))))
-        query = query.where(has_selected)
+    query = query.where(has_actor)
 
     if status_q:
         if status_q in {s.value for s in TaskStatus}:
@@ -7570,7 +7524,7 @@ async def tasks_archive_public(request: Request, admin_id: int = Depends(require
             "request": request,
             "items": items,
             "q": q,
-            "mine": mine,
+            "mine": False,
             "priority": priority,
             "due": due,
             "status": status_q,
@@ -7633,22 +7587,6 @@ async def tasks_api_create(
         )
         if len(users) != len(set(assignee_ids_clean)):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Исполнители не найдены")
-
-        r_actor = role_flags(
-            tg_id=int(getattr(actor, "tg_id", 0) or 0),
-            admin_ids=settings.admin_ids,
-            status=actor.status,
-            position=actor.position,
-        )
-        if not (bool(r_actor.is_admin) or bool(r_actor.is_manager)):
-            forbidden = [
-                u
-                for u in users
-                if (int(getattr(u, "tg_id", 0) or 0) in settings.admin_ids)
-                or (u.status == UserStatus.APPROVED and u.position == Position.MANAGER)
-            ]
-            if forbidden:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нельзя назначать задачи руководителям/админам")
 
     t = Task(
         title=title.strip(),

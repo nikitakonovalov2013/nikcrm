@@ -73,6 +73,13 @@ def _elapsed_hm(created_at) -> str:
         return "—"
 
 
+def _is_task_visible_for_actor(*, task, actor, is_admin: bool, is_manager: bool) -> bool:
+    if bool(is_admin or is_manager):
+        return True
+    assignees = list(getattr(task, "assignees", None) or [])
+    return any(int(getattr(u, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) for u in assignees)
+
+
 class TasksService:
     def __init__(self, repo: TaskRepository):
         self.repo = repo
@@ -139,6 +146,8 @@ class TasksService:
             status=actor.status,
             position=actor.position,
         )
+        if not _is_task_visible_for_actor(task=task, actor=actor, is_admin=bool(r.is_admin), is_manager=bool(r.is_manager)):
+            return actor, None, None
         perms = _task_permissions(task=task, actor=actor, is_admin=r.is_admin, is_manager=r.is_manager)
         return actor, task, perms
 
@@ -155,6 +164,14 @@ class TasksService:
             return False
         task = await self.repo.get_task_full(task_id)
         if not task:
+            return False
+        r = role_flags(
+            tg_id=tg_id,
+            admin_ids=settings.admin_ids,
+            status=actor.status,
+            position=actor.position,
+        )
+        if not _is_task_visible_for_actor(task=task, actor=actor, is_admin=bool(r.is_admin), is_manager=bool(r.is_manager)):
             return False
         actor_name = _user_name(actor)
         try:
@@ -205,6 +222,8 @@ class TasksService:
             status=actor.status,
             position=actor.position,
         )
+        if not _is_task_visible_for_actor(task=task, actor=actor, is_admin=bool(r.is_admin), is_manager=bool(r.is_manager)):
+            return False, "forbidden"
         perms = _task_permissions(task=task, actor=actor, is_admin=r.is_admin, is_manager=r.is_manager)
 
         old_status = task.status.value if hasattr(task.status, "value") else str(task.status)

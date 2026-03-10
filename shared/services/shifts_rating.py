@@ -3,6 +3,8 @@ from __future__ import annotations
 import html
 import json
 import logging
+import calendar
+from datetime import date
 
 import httpx
 from sqlalchemy import select
@@ -12,6 +14,7 @@ from shared.config import settings
 from shared.db import add_after_commit_callback, get_async_session
 from shared.enums import ShiftInstanceStatus
 from shared.models import ShiftInstance, User
+from shared.services.salaries_service import calc_user_period_totals
 from shared.utils import utc_now
 
 
@@ -53,13 +56,39 @@ def _shift_day_human(shift: ShiftInstance) -> str:
         return str(d)
 
 
-def shift_rating_request_text(*, shift: ShiftInstance) -> str:
-    day_s = _shift_day_human(shift)
-    day_line = f"\nДата: <b>{html.escape(day_s)}</b>" if day_s else ""
+def _month_period_for_day(d: date) -> tuple[date, date]:
+    first = date(int(d.year), int(d.month), 1)
+    last_day = int(calendar.monthrange(int(d.year), int(d.month))[1])
+    last = date(int(d.year), int(d.month), int(last_day))
+    return first, last
+
+
+def _fmt_rub(v) -> str:
+    try:
+        n = float(v)
+    except Exception:
+        n = 0.0
+    if abs(n - int(n)) < 1e-9:
+        return f"{int(n)} ₽"
+    return f"{n:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
+
+
+def _shift_day_ddmm(shift: ShiftInstance) -> str:
+    d = getattr(shift, "day", None)
+    if d is None:
+        return "—"
+    try:
+        return d.strftime("%d.%m")
+    except Exception:
+        return str(d)
+
+
+def shift_rating_request_text(*, shift: ShiftInstance, balance_rub: str) -> str:
+    day_dm = _shift_day_ddmm(shift)
     return (
-        "Смена завершена ✅\n"
-        f"{day_line}\n"
-        "Пожалуйста, оцените смену: ⭐ 1–5"
+        f"Смена за {day_dm} завершена, спасибо за работу! ❤️\n\n"
+        f"💰Ваш баланс: {balance_rub}\n\n"
+        "Пожалуйста, оцените как прошла ваша смена: ⭐ 1–5"
     ).strip()
 
 
@@ -135,7 +164,20 @@ async def _send_shift_rating_request_now(*, shift_id: int) -> None:
         if not token:
             return
 
-        text = shift_rating_request_text(shift=shift)
+        balance_rub = _fmt_rub(0)
+        try:
+            ps, pe = _month_period_for_day(date.today())
+            totals = await calc_user_period_totals(
+                session=session,
+                user_id=int(getattr(user, "id", 0) or 0),
+                period_start=ps,
+                period_end=pe,
+            )
+            balance_rub = _fmt_rub(getattr(totals, "balance", 0) or 0)
+        except Exception:
+            pass
+
+        text = shift_rating_request_text(shift=shift, balance_rub=balance_rub)
         kb = shift_rating_keyboard_payload(shift_id=int(getattr(shift, "id", 0) or 0))
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"

@@ -34,35 +34,38 @@ def _month_period_for_day(d: date) -> tuple[date, date]:
     return first, last
 
 
-async def _build_profile_text_and_kb(*, session, user: User) -> tuple[str, InlineKeyboardMarkup | None]:
-    bd = format_date(user.birth_date)
-    rate = f"{user.rate_k} ₽" if user.rate_k is not None else ''
-    status_map = {
-        UserStatus.PENDING: 'На рассмотрении',
-        UserStatus.APPROVED: 'Одобрен',
-        UserStatus.REJECTED: 'Отклонён',
-        UserStatus.BLACKLISTED: 'В чёрном списке',
-    }
-    status_ru = status_map.get(user.status, '')
+def _fmt_rub(v) -> str:
+    try:
+        n = float(v)
+    except Exception:
+        n = 0.0
+    if abs(n - int(n)) < 1e-9:
+        return f"{int(n)} ₽"
+    return f"{n:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
 
-    salary_line = ''
+
+async def _build_profile_text_and_kb(*, session, user: User) -> tuple[str, InlineKeyboardMarkup | None]:
+    USER = "\U0001F464"
+    MONEY = "\U0001F4B0"
+    BRIEFCASE = "\U0001F4BC"
+
+    full_name = (f"{str(user.first_name or '').strip()} {str(user.last_name or '').strip()}").strip() or "Сотрудник"
+    schedule = str(getattr(user, "schedule", "") or "—")
+    position_ru = str(getattr(user, "position", "") or "—")
+    shift_rate_rub = _fmt_rub(getattr(user, "rate_k", 0) or 0)
+
+    balance_rub = _fmt_rub(0)
     try:
         ps, pe = _month_period_for_day(date.today())
         totals = await calc_user_period_totals(session=session, user_id=int(user.id), period_start=ps, period_end=pe)
-        salary_line = f"\n💼 Зарплата (месяц): {totals.balance:.2f} ₽"
+        balance_rub = _fmt_rub(getattr(totals, "balance", 0) or 0)
     except Exception:
-        salary_line = ''
+        pass
 
     text = (
-        "🧾 Ваш профиль\n\n"
-        f"👤 Имя: {user.first_name}\n"
-        f"👤 Фамилия: {user.last_name}\n"
-        f"📅 Дата рождения: {bd}\n"
-        f"💰 Ставка: {rate}\n"
-        f"🗓️ График: {user.schedule}\n"
-        f"👔 Должность: {user.position}\n"
-        f"🟢 Статус: {status_ru}"
-        f"{salary_line}"
+        f"{USER} {full_name}\n"
+        f"{MONEY} Баланс: {balance_rub}\n\n"
+        f"{BRIEFCASE} Условия работы: {position_ru}, {schedule}, ставка в смену {shift_rate_rub}"
     )
 
     kb = None
@@ -72,7 +75,6 @@ async def _build_profile_text_and_kb(*, session, user: User) -> tuple[str, Inlin
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Миссия и цель", url=str(url))],
-                [InlineKeyboardButton(text="История выплат", callback_data="salary_payouts:0")],
             ]
         )
     except Exception:
