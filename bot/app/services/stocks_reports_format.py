@@ -28,6 +28,8 @@ def format_report_html(title: str, data: ReportData) -> str:
     k_int = int(kg_out)
     rub = k_int * RUB_PER_KG
     lines.append(f"💰 В сумме: {rub} руб")
+    warehouse_price_s = format_number(getattr(data, "warehouse_price_rub", 0), max_decimals=0)
+    lines.append(f"💵 Цена склада: {warehouse_price_s} руб")
     lines.append(f"+ Приход: {format_number(kg_in)} кг")
 
     lines.append("")

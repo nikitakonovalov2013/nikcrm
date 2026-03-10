@@ -20,6 +20,8 @@ class TestStocksReportFormat(unittest.TestCase):
             silicone_out=silicone_out,
             silicone_out_by_user=[],
             outgoing_by_user=[],
+            total_remains_kg=Decimal("0"),
+            warehouse_price_rub=0,
         )
 
     def test_money_uses_int_kg(self):
@@ -34,6 +36,15 @@ class TestStocksReportFormat(unittest.TestCase):
         data.total_in = Decimal("0.5")
         text = format_report_html("ignored", data)
         self.assertIn("+ Приход: 0,5 кг", text)
+
+    def test_warehouse_price_line_between_sum_and_incoming(self):
+        data = self._base_data(silicone_out=Decimal("0"), silicone_in=Decimal("0"))
+        data.total_out = Decimal("93.98")
+        data.total_in = Decimal("0")
+        data.warehouse_price_rub = 20_000_000
+        text = format_report_html("ignored", data)
+        self.assertIn("💵 Цена склада: 20 000 000 руб", text)
+        self.assertTrue(text.index("💰 В сумме:") < text.index("💵 Цена склада:") < text.index("+ Приход:"))
 
     def test_per_user_block(self):
         data = self._base_data(silicone_out=Decimal("0"), silicone_in=Decimal("0"))

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, date, time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+import logging
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import Material, MaterialSupply, MaterialConsumption, User
+
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,6 +54,8 @@ class ReportData:
     silicone_out: Decimal
     silicone_out_by_user: list[UserOutgoingAgg]
     outgoing_by_user: list[UserOutgoingAgg]
+    total_remains_kg: Decimal
+    warehouse_price_rub: int
 
 
 def _fio(u: User | None) -> str:
@@ -154,6 +160,15 @@ async def build_report(session: AsyncSession, *, start: datetime, end: datetime,
     total_in = sum((m.incoming for m in materials), Decimal(0))
     total_out = sum((m.outgoing for m in materials), Decimal(0))
 
+    stock_rows = (
+        await session.execute(
+            select(Material.current_stock)
+            .where(Material.is_active == True)
+        )
+    ).all()
+    total_remains_kg = sum((Decimal(row[0] or 0) for row in stock_rows), Decimal(0))
+    warehouse_price_rub = int((total_remains_kg * Decimal("530")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
     top_out = None
     if materials:
         top_out = max(materials, key=lambda x: x.outgoing)
@@ -164,6 +179,17 @@ async def build_report(session: AsyncSession, *, start: datetime, end: datetime,
 
     silicone_users_sorted = sorted(silicone_out_by_user.values(), key=lambda x: x.outgoing, reverse=True)
     outgoing_users_sorted = sorted(outgoing_by_user.values(), key=lambda x: x.outgoing, reverse=True)
+
+    try:
+        _logger.info(
+            "stocks report warehouse valuation",
+            extra={
+                "total_remains_kg": str(total_remains_kg),
+                "warehouse_price_rub": int(warehouse_price_rub),
+            },
+        )
+    except Exception:
+        pass
 
     return ReportData(
         start=start,
@@ -177,4 +203,6 @@ async def build_report(session: AsyncSession, *, start: datetime, end: datetime,
         silicone_out=silicone_out,
         silicone_out_by_user=silicone_users_sorted,
         outgoing_by_user=outgoing_users_sorted,
+        total_remains_kg=total_remains_kg,
+        warehouse_price_rub=warehouse_price_rub,
     )
