@@ -11,7 +11,7 @@ from aiogram.types import FSInputFile
 
 from shared.config import settings
 from shared.db import get_async_session
-from shared.enums import TaskPriority, TaskStatus
+from shared.enums import TaskStatus
 from shared.utils import format_moscow, utc_now
 from shared.permissions import role_flags
 
@@ -20,10 +20,37 @@ from bot.app.repository.tasks import TaskRepository
 from bot.app.services.tasks import TasksService
 from bot.app.keyboards.tasks import task_detail_kb
 from bot.app.utils.html import esc, format_plain_url
+from bot.app.utils.task_message import render_task_message
 from bot.app.utils.urls import build_tasks_board_magic_link
 
 
 _logger = logging.getLogger(__name__)
+
+
+def _notification_event_type(*, n_type: str, payload: dict) -> str | None:
+    if n_type == "created":
+        return "task_new_notification"
+    if n_type == "taken_in_work":
+        return "task_in_progress_notification"
+    if n_type == "sent_to_review":
+        return "task_review_notification"
+    if n_type != "status_changed":
+        return None
+
+    action = str(payload.get("action") or "")
+    fr = str(payload.get("from") or "")
+    to = str(payload.get("to") or "")
+    comment = str(payload.get("comment") or "").strip()
+
+    if action == "return_to_rework" or (fr == TaskStatus.REVIEW.value and to == TaskStatus.IN_PROGRESS.value and comment):
+        return "task_rework_notification"
+    if to == TaskStatus.DONE.value:
+        return "task_done_notification"
+    if to == TaskStatus.REVIEW.value:
+        return "task_review_notification"
+    if to == TaskStatus.IN_PROGRESS.value:
+        return "task_in_progress_notification"
+    return None
 
 
 def _photo_input_from_path(path_or_url: str):
@@ -78,6 +105,57 @@ def _created_notification_photos(*, task, payload: dict) -> list:
         if p is not None:
             out.append(p)
     return out
+
+
+async def _send_task_notification(
+    *,
+    bot,
+    chat_id: int,
+    typ: str,
+    text: str,
+    reply_markup,
+    task,
+    payload: dict,
+) :
+    """Send exactly one notification message.
+
+    For created notifications prefer one photo+caption when available.
+    """
+
+    if str(typ) == "created":
+        created_photos = []
+        created_photo_links: list[str] = []
+        try:
+            created_photos = _created_notification_photos(task=task, payload=payload)
+        except Exception:
+            created_photos = []
+        try:
+            created_photo_links = _created_notification_photo_links(task=task, payload=payload)
+        except Exception:
+            created_photo_links = []
+
+        if created_photos:
+            try:
+                return await bot.send_photo(
+                    chat_id=int(chat_id),
+                    photo=created_photos[0],
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+            except Exception as e:
+                emsg = str(e or "")
+                if ("too big for a photo" in emsg.lower()) and created_photo_links:
+                    links_block = "\n".join([format_plain_url("📎 Фото:", str(u)) for u in created_photo_links])
+                    text = f"{text}\n\n<b>Фото (ссылка):</b>\n{links_block}"
+
+    return await bot.send_message(
+        chat_id=int(chat_id),
+        text=text,
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+        disable_web_page_preview=True,
+    )
 
 
 def _public_base_url() -> str:
@@ -416,14 +494,29 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                             tasks_svc = TasksService(tasks_repo)
                             actor, task2, perms = await tasks_svc.get_detail(tg_id=chat_id, task_id=int(task_id))
                             if not actor or not task2 or not perms:
-                                # Fallback to legacy text-only, but without "Открыть задачу" button.
-                                text = render_notification_html(n=n)
-                                sent = await bot.send_message(
-                                    chat_id=chat_id,
-                                    text=text,
-                                    parse_mode="HTML",
+                                payload = dict(getattr(n, "payload", None) or {})
+                                n_type = str(getattr(n, "type", ""))
+                                event_type = _notification_event_type(n_type=n_type, payload=payload)
+                                task_fallback = getattr(n, "task", None)
+                                if task_fallback is not None and event_type is not None:
+                                    text, _kb0 = render_task_message(
+                                        task=task_fallback,
+                                        context=str(event_type),
+                                        viewer_user=None,
+                                        actor_user=None,
+                                        board_url=None,
+                                        can_take=False,
+                                    )
+                                else:
+                                    text = render_notification_html(n=n)
+                                sent = await _send_task_notification(
+                                    bot=bot,
+                                    chat_id=int(chat_id),
+                                    typ=str(n_type),
+                                    text=str(text),
                                     reply_markup=None,
-                                    disable_web_page_preview=True,
+                                    task=task_fallback,
+                                    payload=payload,
                                 )
                                 await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
                                 await repo.mark_sent(n=n, now=now)
@@ -471,7 +564,32 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
 
                             payload = dict(getattr(n, "payload", None) or {})
                             n_type = str(getattr(n, "type", ""))
-                            if n_type == "status_changed":
+                            event_type = _notification_event_type(n_type=n_type, payload=payload)
+                            if event_type is not None:
+                                actor_uid = int(payload.get("actor_user_id") or 0)
+                                actor_user = None
+                                if actor_uid > 0:
+                                    if int(getattr(task2, "created_by_user_id", 0) or 0) == actor_uid:
+                                        actor_user = getattr(task2, "created_by_user", None)
+                                    elif int(getattr(task2, "started_by_user_id", 0) or 0) == actor_uid:
+                                        actor_user = getattr(task2, "started_by_user", None)
+                                    elif int(getattr(task2, "completed_by_user_id", 0) or 0) == actor_uid:
+                                        actor_user = getattr(task2, "completed_by_user", None)
+                                    else:
+                                        for u in list(getattr(task2, "assignees", None) or []):
+                                            if int(getattr(u, "id", 0) or 0) == actor_uid:
+                                                actor_user = u
+                                                break
+
+                                text, kb = render_task_message(
+                                    task=task2,
+                                    context=str(event_type),
+                                    viewer_user=actor,
+                                    actor_user=actor_user,
+                                    board_url=str(board_url),
+                                    can_take=bool(perms.take_in_progress),
+                                )
+                            elif n_type == "status_changed":
                                 # Special-case 'return to rework' to guarantee comment is visible.
                                 action = str(payload.get("action") or "")
                                 fr = str(payload.get("from") or "")
@@ -530,66 +648,15 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                             edited = False
 
                             if not edited:
-                                sent = None
-                                fallback_text = text
-                                if typ == "created":
-                                    try:
-                                        created_photos = _created_notification_photos(task=task2, payload=payload)
-                                    except Exception:
-                                        created_photos = []
-                                    try:
-                                        created_photo_links = _created_notification_photo_links(task=task2, payload=payload)
-                                    except Exception:
-                                        created_photo_links = []
-                                    try:
-                                        _logger.info(
-                                            "TASK_NOTIFY_CREATED_PHOTOS task_id=%s notification_id=%s count=%s payload_photo_paths=%s task_photo_path=%s",
-                                            int(task_id),
-                                            int(getattr(n, "id", 0) or 0),
-                                            int(len(created_photos or [])),
-                                            int(len(list(payload.get("photo_paths") or []))),
-                                            str(getattr(task2, "photo_path", "") or ""),
-                                        )
-                                    except Exception:
-                                        pass
-                                    if created_photos:
-                                        try:
-                                            sent = await bot.send_photo(
-                                                chat_id=chat_id,
-                                                photo=created_photos[0],
-                                                caption=text,
-                                                parse_mode="HTML",
-                                                reply_markup=kb,
-                                            )
-                                            for extra_photo in created_photos[1:]:
-                                                try:
-                                                    await bot.send_photo(chat_id=chat_id, photo=extra_photo)
-                                                except Exception:
-                                                    pass
-                                        except Exception as e:
-                                            emsg = str(e or "")
-                                            if ("too big for a photo" in emsg.lower()) and created_photo_links:
-                                                links_block = "\n".join([format_plain_url("📎 Фото:", str(u)) for u in created_photo_links])
-                                                fallback_text = f"{text}\n\n<b>Фото (ссылка):</b>\n{links_block}"
-                                            try:
-                                                _logger.exception(
-                                                    "TASK_NOTIFY_CREATED_PHOTO_SEND_FAILED task_id=%s notification_id=%s chat_id=%s",
-                                                    int(task_id),
-                                                    int(getattr(n, "id", 0) or 0),
-                                                    int(chat_id),
-                                                )
-                                            except Exception:
-                                                pass
-                                            sent = None
-
-                                if sent is None:
-                                    sent = await bot.send_message(
-                                        chat_id=chat_id,
-                                        text=fallback_text,
-                                        parse_mode="HTML",
-                                        reply_markup=kb,
-                                        disable_web_page_preview=True,
-                                    )
+                                sent = await _send_task_notification(
+                                    bot=bot,
+                                    chat_id=int(chat_id),
+                                    typ=str(typ),
+                                    text=str(text),
+                                    reply_markup=kb,
+                                    task=task2,
+                                    payload=payload,
+                                )
                                 await repo.store_delivery_info(n=n, chat_id=int(chat_id), message_id=int(sent.message_id))
                                 try:
                                     _logger.info(

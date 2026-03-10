@@ -47,7 +47,8 @@ from bot.app.utils.html import esc, format_plain_url
 from bot.app.utils.tg_id import get_tg_user_id
 from bot.app.guards.user_guard import ensure_registered_or_reply
 from bot.app.utils.tasks_screen import render_tasks_screen, render_tasks_screen_on_message
-from bot.app.utils.urls import build_task_board_magic_link, build_tasks_board_magic_link
+from bot.app.utils.task_message import render_task_message
+from bot.app.utils.urls import build_tasks_board_magic_link
 from shared.services.task_notifications import TaskNotificationService
 from shared.services.task_edit import update_task_with_audit
 from fastapi import HTTPException
@@ -115,6 +116,30 @@ def _build_web_download_url(*, photo_url: str | None, photo_path: str | None) ->
         except Exception:
             pass
     return url
+
+
+async def _resolve_task_menu_photo(task) -> str | BufferedInputFile | None:
+    tg_fid = str(getattr(task, "tg_photo_file_id", None) or getattr(task, "photo_file_id", None) or "").strip()
+    if tg_fid:
+        return str(tg_fid)
+
+    photo_url = str(getattr(task, "photo_url", None) or "").strip()
+    if photo_url:
+        return str(photo_url)
+
+    photo_path = str(getattr(task, "photo_path", None) or "").strip()
+    download_url = _build_web_download_url(photo_url=(photo_url or None), photo_path=(photo_path or None))
+    if not download_url:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(str(download_url))
+            if r.status_code == 200 and r.content:
+                return BufferedInputFile(bytes(r.content), filename="task.jpg")
+    except Exception:
+        pass
+    return None
 
 
 async def _download_tg_file_bytes(*, bot, file_id: str) -> tuple[bytes | None, str | None]:
@@ -1162,20 +1187,11 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
             status=getattr(actor, "status", None),
             position=getattr(actor, "position", None),
         )
-        board_url = await build_task_board_magic_link(
-            session=session,
-            user=actor,
-            task_id=int(task.id),
-            is_admin=bool(r.is_admin),
-            is_manager=bool(r.is_manager),
-        )
-
         data = await state.get_data()
         llc = dict(data.get("tasks_last_list_context") or {})
         scope = str(llc.get("scope") or data.get("tasks_scope") or "mine")
         status = str(llc.get("status") or data.get("tasks_status") or TaskStatus.NEW.value)
         page = int(llc.get("page") or data.get("tasks_page") or 0)
-        html = svc.render_task_detail_html(task, perms=perms) + "\n\n" + format_plain_url("🌐 Открыть на доске:", board_url)
 
         can_edit = bool(r.is_admin or r.is_manager)
         is_archived = str(task.status.value if hasattr(task.status, "value") else str(task.status)) == TaskStatus.ARCHIVED.value
@@ -1190,6 +1206,13 @@ async def _show_task_detail(cb: CallbackQuery, state: FSMContext, *, task_id: in
             can_unarchive=bool(perms.unarchive),
             is_archived=bool(is_archived),
             back_cb=f"tasks:list:{scope}:{status}:{page}",
+        )
+        html, kb = render_task_message(
+            task=task,
+            context="task_menu_view",
+            viewer_user=actor,
+            actor_user=None,
+            menu_kb=kb,
         )
 
         tg_fid = getattr(task, "tg_photo_file_id", None) or getattr(task, "photo_file_id", None) or None
@@ -2057,7 +2080,7 @@ async def st_comment_photos_add_photo(message: Message, state: FSMContext):
     )
 
 
-async def _finalize_task_comment(*, tg_id: int, bot, chat_id: int, state: FSMContext) -> None:
+async def _finalize_task_comment(*, tg_id: int, bot, chat_id: int, state: FSMContext, message_id: int, has_media: bool) -> None:
     data = await state.get_data()
     task_id = int(data.get("task_id") or 0)
     comment_text = str(data.get("comment_text") or "").strip()
@@ -2106,14 +2129,13 @@ async def _finalize_task_comment(*, tg_id: int, bot, chat_id: int, state: FSMCon
     async with get_async_session() as session2:
         repo2 = TaskRepository(session2)
         svc2 = TasksService(repo2)
-        _, task2, perms2 = await svc2.get_detail(tg_id=int(tg_id), task_id=int(task_id))
-        if task2 and perms2:
+        actor2, task2, perms2 = await svc2.get_detail(tg_id=int(tg_id), task_id=int(task_id))
+        if actor2 and task2 and perms2:
             llc = dict(data.get("tasks_last_list_context") or {})
             scope = str(llc.get("scope") or data.get("tasks_scope") or "mine")
             status = str(llc.get("status") or data.get("tasks_status") or TaskStatus.NEW.value)
             page = int(llc.get("page") or data.get("tasks_page") or 0)
-            html = svc2.render_task_detail_html(task2, perms=perms2) + "\n\n✅ Комментарий добавлен."
-            photo = getattr(task2, "photo_file_id", None) or None
+            photo = await _resolve_task_menu_photo(task2)
             kb = task_detail_kb(
                 task_id=int(task2.id),
                 can_take=bool(perms2.take_in_progress),
@@ -2122,16 +2144,24 @@ async def _finalize_task_comment(*, tg_id: int, bot, chat_id: int, state: FSMCon
                 can_send_back=bool(perms2.send_back),
                 back_cb=f"tasks:list:{scope}:{status}:{page}",
             )
+            html, kb = render_task_message(
+                task=task2,
+                context="task_after_comment",
+                viewer_user=actor2,
+                actor_user=actor2,
+                menu_kb=kb,
+            )
             await _preserve_tasks_ui_and_clear_state(state)
-            await state.update_data(tasks_chat_id=int(chat_id))
-            await render_tasks_screen(
+            mid, new_has_media = await render_tasks_screen_on_message(
                 bot=bot,
                 chat_id=int(chat_id),
+                message_id=int(message_id),
+                has_media=bool(has_media),
                 text=html,
                 reply_markup=kb,
-                state=state,
                 photo=photo,
             )
+            await state.update_data(tasks_chat_id=int(chat_id), tasks_message_id=int(mid), tasks_has_media=bool(new_has_media))
             return
 
     await _preserve_tasks_ui_and_clear_state(state)
@@ -2152,7 +2182,16 @@ async def cb_tasks_comment_done(cb: CallbackQuery, state: FSMContext):
     if not chat_id:
         await _preserve_tasks_ui_and_clear_state(state)
         return
-    await _finalize_task_comment(tg_id=cb.from_user.id, bot=cb.bot, chat_id=int(chat_id), state=state)
+    message_id = int(cb.message.message_id) if cb.message else 0
+    has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None)) if cb.message else False
+    await _finalize_task_comment(
+        tg_id=cb.from_user.id,
+        bot=cb.bot,
+        chat_id=int(chat_id),
+        state=state,
+        message_id=int(message_id),
+        has_media=bool(has_media),
+    )
 
 
 @router.callback_query(TasksState.comment_photos, F.data == "tasks:comment_skip")
@@ -2162,7 +2201,16 @@ async def cb_tasks_comment_skip(cb: CallbackQuery, state: FSMContext):
     if not chat_id:
         await _preserve_tasks_ui_and_clear_state(state)
         return
-    await _finalize_task_comment(tg_id=cb.from_user.id, bot=cb.bot, chat_id=int(chat_id), state=state)
+    message_id = int(cb.message.message_id) if cb.message else 0
+    has_media = bool(getattr(cb.message, "photo", None)) or bool(getattr(cb.message, "document", None)) if cb.message else False
+    await _finalize_task_comment(
+        tg_id=cb.from_user.id,
+        bot=cb.bot,
+        chat_id=int(chat_id),
+        state=state,
+        message_id=int(message_id),
+        has_media=bool(has_media),
+    )
 
 
 @router.callback_query(TasksState.comment_photos, F.data == "tasks:comment_cancel")
@@ -2266,15 +2314,13 @@ async def st_rework_text(message: Message, state: FSMContext):
     async with get_async_session() as session2:
         repo2 = TaskRepository(session2)
         svc2 = TasksService(repo2)
-        _, task2, perms2 = await svc2.get_detail(tg_id=message.from_user.id, task_id=task_id)
-        if task2 and perms2:
+        actor2, task2, perms2 = await svc2.get_detail(tg_id=message.from_user.id, task_id=task_id)
+        if actor2 and task2 and perms2:
             llc = dict(data2.get("tasks_last_list_context") or {})
             scope = str(llc.get("scope") or data2.get("tasks_scope") or "mine")
             status = str(llc.get("status") or data2.get("tasks_status") or TaskStatus.NEW.value)
             page = int(llc.get("page") or data2.get("tasks_page") or 0)
-            html = svc2.render_task_detail_html(task2, perms=perms2) + "\n\n✅ Отправлено на доработку."
-
-            photo = getattr(task2, "photo_file_id", None) or None
+            photo = await _resolve_task_menu_photo(task2)
 
             kb = task_detail_kb(
                 task_id=int(task2.id),
@@ -2283,6 +2329,13 @@ async def st_rework_text(message: Message, state: FSMContext):
                 can_accept_done=bool(perms2.accept_done),
                 can_send_back=bool(perms2.send_back),
                 back_cb=f"tasks:list:{scope}:{status}:{page}",
+            )
+            html, kb = render_task_message(
+                task=task2,
+                context="task_after_comment",
+                viewer_user=actor2,
+                actor_user=actor2,
+                menu_kb=kb,
             )
             await _preserve_tasks_ui_and_clear_state(state)
             await state.update_data(tasks_chat_id=int(chat_id))
