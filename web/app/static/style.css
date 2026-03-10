@@ -397,10 +397,10 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 
 .task-card{border:1px solid #e5e7eb;border-radius:14px;padding:12px;background:#fff;box-shadow:0 6px 18px rgba(2,6,23,.05);cursor:pointer;transition:transform .06s ease, box-shadow .2s ease}
 .task-card:hover{box-shadow:0 10px 26px rgba(2,6,23,.08)}
-.task-card.urgent{border-color:#fecaca}
-.task-card.free-time{background:#f8fafc;border-color:#e5e7eb;box-shadow:none}
+.task-card.urgent{border-color:#fdba74;background:#fff7ed}
+.task-card.free-time{background:#f1f5f9;border-color:#cbd5e1;box-shadow:none}
 .task-card.free-time:hover{box-shadow:0 6px 18px rgba(2,6,23,.05)}
-.task-card.overdue{background:#fff7ed;border-color:#fdba74}
+.task-card.overdue{background:#fff1f2;border-color:#fda4af}
 .task-card{display:flex;gap:10px;min-width:0}
 .task-card-strip{width:6px;border-radius:999px;background:var(--assignee-color,#cbd5e1);flex:0 0 auto;box-shadow:0 0 0 1px rgba(2,6,23,.06) inset}
 .task-card-inner{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -497,8 +497,8 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 }
 
 .task-pill{display:inline-flex;align-items:center;border:1px solid #e5e7eb;background:#f8fafc;color:#0f172a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap}
-.task-pill.urgent{border-color:#fecaca;background:#fef2f2;color:#991b1b}
-.task-pill.free-time{border-color:#e5e7eb;background:#f1f5f9;color:#475569}
+.task-pill.urgent{border-color:#fdba74;background:#fff7ed;color:#9a3412}
+.task-pill.free-time{border-color:#cbd5e1;background:#e2e8f0;color:#334155}
 
 .task-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
 .task-detail-title{font-weight:800;font-size:18px;color:#0f172a}

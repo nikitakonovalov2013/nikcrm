@@ -7030,6 +7030,15 @@ async def broadcast(text: str = Form(...), user_ids: Optional[str] = Form(None),
 # ========== Tasks (CRM) ==========
 
 
+def _task_priority_sort_weight_expr():
+    return case(
+        (Task.priority == TaskPriority.URGENT, 0),
+        (Task.priority == TaskPriority.NORMAL, 1),
+        (Task.priority == TaskPriority.FREE_TIME, 2),
+        else_=99,
+    )
+
+
 @app.get("/tasks", response_class=HTMLResponse, name="tasks_board")
 async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
@@ -7063,14 +7072,13 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     from shared.models import task_assignees
     from sqlalchemy import exists, and_
 
-    urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
-    free_time_last = case((Task.priority == TaskPriority.FREE_TIME, 1), else_=0)
+    priority_sort_weight = _task_priority_sort_weight_expr()
 
     query = (
         select(Task)
         .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
         .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
-        .order_by(free_time_last.asc(), urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+        .order_by(priority_sort_weight.asc(), Task.created_at.desc(), Task.id.desc())
     )
     if q:
         from sqlalchemy import or_
@@ -7198,13 +7206,12 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     from shared.models import task_assignees
     from sqlalchemy import or_ as _or, exists, and_
 
-    urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
-    free_time_last = case((Task.priority == TaskPriority.FREE_TIME, 1), else_=0)
+    priority_sort_weight = _task_priority_sort_weight_expr()
     query = (
         select(Task)
         .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE]))
         .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
-        .order_by(free_time_last.asc(), urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+        .order_by(priority_sort_weight.asc(), Task.created_at.desc(), Task.id.desc())
     )
     if q:
         like = f"%{q}%"
@@ -7324,12 +7331,12 @@ async def tasks_api_public_list(
     from shared.models import task_assignees
     from sqlalchemy import or_ as _or, exists, and_
 
-    urgent_first = case((Task.priority == TaskPriority.URGENT, 0), else_=1)
+    priority_sort_weight = _task_priority_sort_weight_expr()
     query = (
         select(Task)
         .where(Task.status.in_([TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW, TaskStatus.DONE, TaskStatus.ARCHIVED]))
         .options(selectinload(Task.assignees), selectinload(Task.created_by_user))
-        .order_by(urgent_first.asc(), Task.due_at.asc().nullslast(), Task.created_at.desc(), Task.id.desc())
+        .order_by(priority_sort_weight.asc(), Task.created_at.desc(), Task.id.desc())
     )
     if q:
         like = f"%{q}%"

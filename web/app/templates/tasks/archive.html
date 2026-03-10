@@ -62,7 +62,7 @@
 
 <div class="tasks-archive-grid">
   {% for t in items %}
-    <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %}" data-task-id="{{ t.id }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
+    <div class="task-card {% if t.priority == 'urgent' %}urgent{% endif %}{% if t.priority == 'free_time' %} free-time{% endif %}" data-task-id="{{ t.id }}" onclick="window.tasksOpenDetail(this.dataset.taskId)">
       <div class="task-card-top">
         <div class="task-title">{{ t.title }}</div>
         {% if t.priority == 'urgent' %}
@@ -237,7 +237,9 @@
   }
   function renderDetailModal(task){
     const due = task.due_at_str ? ('<div>Дедлайн: <b>' + escapeHtml(task.due_at_str) + '</b></div>') : '<div class="muted">Дедлайн: —</div>';
-    const priority = task.priority === 'urgent' ? '<span class="task-pill urgent">Срочно</span>' : '<span class="task-pill">Обычно</span>';
+    const priority = (String(task.priority || 'normal') === 'free_time')
+      ? '<span class="task-pill free-time">В свободное время</span>'
+      : (task.priority === 'urgent' ? '<span class="task-pill urgent">Срочно</span>' : '<span class="task-pill">Обычно</span>');
     const statusMap = { new: 'Новые', in_progress: 'В работе', review: 'На проверке', done: 'Выполнено', archived: 'Архив' };
     const status = '<span class="task-pill">' + escapeHtml(statusMap[task.status] || task.status) + '</span>';
     const can = task.permissions || {};
