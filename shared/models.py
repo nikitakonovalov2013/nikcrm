@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, Integer, BigInteger, Date, ForeignKey, JSON, DateTime, Boolean, Index, Table, Column, Text, Time
 from sqlalchemy import Numeric
-from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM, JSONB
 from sqlalchemy import UniqueConstraint
 from decimal import Decimal
 from datetime import datetime, date, time
@@ -726,6 +726,7 @@ class Task(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checklist: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     photo_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(Text, nullable=True)

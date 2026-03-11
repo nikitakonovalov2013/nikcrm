@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -35,6 +37,7 @@ def _task_snapshot(t: Task) -> dict:
     return {
         "title": str(getattr(t, "title", "") or ""),
         "description": str(getattr(t, "description", "") or ""),
+        "checklist": deepcopy(list(getattr(t, "checklist", None) or [])),
         "priority": (getattr(getattr(t, "priority", None), "value", None) or str(getattr(t, "priority", "") or "")),
         "due_at": getattr(t, "due_at", None),
         "status": (getattr(getattr(t, "status", None), "value", None) or str(getattr(t, "status", "") or "")),
@@ -63,6 +66,49 @@ def _parse_due_at_iso_or_msk(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=MOSCOW_TZ)
     return dt.astimezone(timezone.utc)
+
+
+def _normalize_checklist_payload(value) -> list[dict] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail="Чек-лист должен быть массивом")
+
+    normalized: list[tuple[int, int, dict]] = []
+    now_iso = utc_now().isoformat()
+
+    for idx, raw_item in enumerate(value):
+        if not isinstance(raw_item, dict):
+            raise HTTPException(status_code=422, detail="Элемент чек-листа должен быть объектом")
+
+        text = str(raw_item.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="Текст пункта чек-листа не может быть пустым")
+
+        item_id = str(raw_item.get("id") or "").strip() or uuid4().hex
+        done = bool(raw_item.get("done"))
+
+        try:
+            pos = int(raw_item.get("pos"))
+        except Exception:
+            pos = idx + 1
+
+        updated_at = str(raw_item.get("updated_at") or "").strip() or now_iso
+        item = {
+            "id": item_id,
+            "text": text,
+            "done": done,
+            "pos": pos,
+            "updated_at": updated_at,
+        }
+        normalized.append((pos, idx, item))
+
+    normalized.sort(key=lambda x: (x[0], x[1]))
+    out: list[dict] = []
+    for i, (_, __, item) in enumerate(normalized, start=1):
+        item["pos"] = i
+        out.append(item)
+    return out
 
 
 async def _load_task_full(session: AsyncSession, task_id: int) -> Task:
@@ -111,6 +157,9 @@ async def update_task_with_audit(
         desc_raw = patch.get("description")
         desc = str(desc_raw).strip() if desc_raw is not None else ""
         t.description = desc or None
+
+    if "checklist" in patch:
+        t.checklist = _normalize_checklist_payload(patch.get("checklist"))
 
     if "priority" in patch and patch.get("priority") is not None:
         p = str(patch.get("priority") or "").strip()

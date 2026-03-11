@@ -405,7 +405,7 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .task-card-strip{width:6px;border-radius:999px;background:var(--assignee-color,#cbd5e1);flex:0 0 auto;box-shadow:0 0 0 1px rgba(2,6,23,.06) inset}
 .task-card-inner{flex:1;min-width:0;display:flex;flex-direction:column}
 .task-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.task-title{font-weight:800;color:#0f172a;line-height:1.25;font-size:20px;min-width:0;word-break:normal;overflow-wrap:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.task-title{font-weight:800;color:#0f172a;line-height:1.25;font-size:20px;min-width:0;white-space:normal;overflow-wrap:break-word;word-break:normal;overflow:visible;display:block}
 .task-card-top-icons{display:inline-flex;align-items:center;gap:8px;flex:0 0 auto}
 .task-attach{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:10px;background:#f1f5f9;border:1px solid #e5e7eb;color:#334155;text-decoration:none;flex:0 0 auto}
 .task-attach:hover{background:#e2e8f0}
@@ -504,6 +504,26 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .task-detail-title{font-weight:800;font-size:18px;color:#0f172a}
 .task-detail-badges{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .task-detail-desc{white-space:pre-wrap;overflow-wrap:break-word;word-break:normal}
+.task-detail-line{display:block;min-height:1.35em}
+.task-checklist-box{border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;background:#fff}
+.task-check-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.task-check-title{font-weight:800;color:#0f172a}
+.task-check-counter{font-size:12px;color:#64748b}
+.task-check-status-line{margin-bottom:8px;min-height:18px}
+.task-check-save-status{font-size:12px;color:#334155}
+.task-check-items{display:flex;flex-direction:column;gap:8px}
+.task-check-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center}
+.task-check-toggle{display:inline-flex;align-items:center;justify-content:center}
+.task-check-input{width:16px;height:16px;cursor:pointer}
+.task-check-main{min-width:0}
+.task-check-main.is-done .task-check-text-btn{color:#64748b;text-decoration:line-through}
+.task-check-text-btn{border:none;background:transparent;padding:0;text-align:left;color:#0f172a;width:100%;cursor:pointer;white-space:normal;overflow-wrap:break-word;word-break:normal}
+.task-check-edit-input{padding:8px 10px;min-height:auto}
+.task-check-actions{display:flex;gap:6px;align-items:center}
+.btn-xs{padding:4px 8px;min-height:28px;border-radius:8px;font-size:12px;line-height:1}
+.task-check-add-row{display:flex;gap:8px;margin-top:10px}
+.task-check-add-row .form-control{flex:1 1 auto;min-width:0}
+.task-check-add-row .btn{flex:0 0 auto}
 .task-main-photo{margin:10px 0 6px 0}
 .task-main-photo-img{max-width:100%;max-height:320px;object-fit:contain;border-radius:14px;border:1px solid #e5e7eb;background:#f8fafc}
 .task-detail-grid{display:grid;grid-template-columns:1fr;gap:8px;font-size:14px;color:#0f172a}

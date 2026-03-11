@@ -7553,6 +7553,7 @@ async def tasks_api_create(
     request: Request,
     title: str = Form(...),
     description: str | None = Form(None),
+    checklist_json: str | None = Form(None),
     priority: str = Form("normal"),
     due_at: str | None = Form(None),
     assignee_ids: list[int] = Form([]),
@@ -7571,6 +7572,38 @@ async def tasks_api_create(
     else:
         pr = TaskPriority.NORMAL
     due_dt = _parse_due_at_msk(due_at)
+
+    checklist_payload: list[dict] | None = None
+    raw_checklist = str(checklist_json or "").strip()
+    if raw_checklist:
+        try:
+            parsed = json.loads(raw_checklist)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Некорректный формат чек-листа")
+        if not isinstance(parsed, list):
+            raise HTTPException(status_code=422, detail="Чек-лист должен быть массивом")
+
+        normalized: list[dict] = []
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=422, detail="Элемент чек-листа должен быть объектом")
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            item_id = str(item.get("id") or "").strip() or f"create_{idx}_{int(datetime.now().timestamp())}"
+            done = bool(item.get("done"))
+            try:
+                pos = int(item.get("pos"))
+            except Exception:
+                pos = idx + 1
+            updated_at = str(item.get("updated_at") or "").strip() or utc_now().isoformat()
+            normalized.append({"id": item_id, "text": text, "done": done, "pos": pos, "updated_at": updated_at})
+
+        normalized.sort(key=lambda x: int(x.get("pos") or 0))
+        checklist_payload = []
+        for idx, item in enumerate(normalized, start=1):
+            item["pos"] = idx
+            checklist_payload.append(item)
 
     users: list[User] = []
     assignee_ids_clean = [int(x) for x in (assignee_ids or []) if int(x) > 0]
@@ -7591,6 +7624,7 @@ async def tasks_api_create(
     t = Task(
         title=title.strip(),
         description=(description or None),
+        checklist=checklist_payload,
         priority=pr,
         due_at=due_dt,
         status=TaskStatus.NEW,
@@ -7720,6 +7754,7 @@ async def tasks_api_detail(task_id: int, request: Request, admin_id: int = Depen
         "id": int(t.id),
         "title": t.title,
         "description": t.description,
+        "checklist": list(getattr(t, "checklist", None) or []),
         "photo_file_id": getattr(t, "photo_file_id", None),
         "tg_photo_file_id": getattr(t, "tg_photo_file_id", None) or getattr(t, "photo_file_id", None),
         "photo_path": getattr(t, "photo_path", None),

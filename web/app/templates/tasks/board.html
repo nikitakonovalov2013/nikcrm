@@ -579,6 +579,333 @@
       .replaceAll("'",'&#039;');
   }
 
+  const _checklistState = new Map();
+  const _checklistSaveTimers = new Map();
+
+  function _checklistCanEdit(){
+    return !!(IS_ADMIN || IS_MANAGER);
+  }
+
+  function _newChecklistId(){
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return String(window.crypto.randomUUID());
+      }
+    } catch (_){ }
+    return 'tmp_' + String(Date.now()) + '_' + String(Math.floor(Math.random() * 1000000));
+  }
+
+  function _cloneChecklist(items){
+    return (items || []).map((it, idx) => ({
+      id: String((it && it.id) || _newChecklistId()),
+      text: String((it && it.text) || '').trim(),
+      done: !!(it && it.done),
+      pos: Number((it && it.pos) || (idx + 1)),
+      updated_at: String((it && it.updated_at) || ''),
+    })).filter(it => !!it.text);
+  }
+
+  function _normalizeChecklistLocal(items){
+    const arr = _cloneChecklist(items);
+    arr.sort((a, b) => Number(a.pos || 0) - Number(b.pos || 0));
+    return arr.map((it, idx) => ({ ...it, pos: idx + 1 }));
+  }
+
+  function _ensureChecklistState(task){
+    const taskId = String(task && task.id ? task.id : '');
+    if (!taskId) return null;
+    let st = _checklistState.get(taskId);
+    if (!st) {
+      const base = _normalizeChecklistLocal(task && Array.isArray(task.checklist) ? task.checklist : []);
+      st = {
+        current: base,
+        saved: _cloneChecklist(base),
+        editingId: '',
+        isSaving: false,
+        queued: false,
+        status: '',
+      };
+      _checklistState.set(taskId, st);
+      return st;
+    }
+    if (task && Array.isArray(task.checklist)) {
+      const fromServer = _normalizeChecklistLocal(task.checklist);
+      st.current = fromServer;
+      st.saved = _cloneChecklist(fromServer);
+      st.editingId = '';
+      st.status = '';
+    }
+    return st;
+  }
+
+  function _renderChecklistRow(taskId, item, index, total, editable, editingId){
+    const id = String(item.id || '');
+    const isEditing = editable && editingId && editingId === id;
+    const checkedAttr = item.done ? ' checked' : '';
+    const disabledAttr = editable ? '' : ' disabled';
+    const first = index <= 0;
+    const last = index >= (total - 1);
+
+    const textHtml = isEditing
+      ? ('<input class="form-control task-check-edit-input" type="text" value="' + escapeHtml(item.text || '') + '" onkeydown="window.tasksChecklistEditKeydown(event, ' + String(taskId) + ', \'' + escapeHtml(id) + '\')" onblur="window.tasksChecklistCommitEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\', this.value)" />')
+      : ('<button type="button" class="task-check-text-btn" ' + (editable ? ('onclick="window.tasksChecklistStartEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\')"') : 'disabled') + '>' + escapeHtml(item.text || '') + '</button>');
+
+    return (
+      '<div class="task-check-row">' +
+        '<label class="task-check-toggle">' +
+          '<input type="checkbox" class="task-check-input" onchange="window.tasksChecklistToggle(event, ' + String(taskId) + ', \'' + escapeHtml(id) + '\')"' + checkedAttr + disabledAttr + ' />' +
+        '</label>' +
+        '<div class="task-check-main ' + (item.done ? 'is-done' : '') + '">' + textHtml + '</div>' +
+        '<div class="task-check-actions">' +
+          '<button type="button" class="btn-outline btn-xs" title="Редактировать" onclick="window.tasksChecklistStartEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\')" ' + (editable ? '' : 'disabled') + '>✏️</button>' +
+          '<button type="button" class="btn-outline btn-xs" title="Вверх" onclick="window.tasksChecklistMove(' + String(taskId) + ', \'' + escapeHtml(id) + '\', -1)" ' + ((editable && !first) ? '' : 'disabled') + '>↑</button>' +
+          '<button type="button" class="btn-outline btn-xs" title="Вниз" onclick="window.tasksChecklistMove(' + String(taskId) + ', \'' + escapeHtml(id) + '\', 1)" ' + ((editable && !last) ? '' : 'disabled') + '>↓</button>' +
+          '<button type="button" class="btn-outline btn-xs danger" title="Удалить" onclick="window.tasksChecklistRemove(' + String(taskId) + ', \'' + escapeHtml(id) + '\')" ' + (editable ? '' : 'disabled') + '>🗑</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function _renderChecklistBlock(task){
+    const st = _ensureChecklistState(task);
+    const taskId = String(task && task.id ? task.id : '');
+    const editable = _checklistCanEdit();
+    const items = st ? _normalizeChecklistLocal(st.current) : [];
+    const doneCount = items.filter(it => !!it.done).length;
+    const totalCount = items.length;
+    const rows = items.length
+      ? items.map((it, idx) => _renderChecklistRow(taskId, it, idx, items.length, editable, st ? st.editingId : '')).join('')
+      : '<div class="muted">Пока нет пунктов</div>';
+
+    const status = st && st.status ? ('<span class="task-check-save-status">' + escapeHtml(st.status) + '</span>') : '';
+
+    return (
+      '<div id="task-checklist-box-' + taskId + '" class="task-checklist-box">' +
+        '<div class="task-check-head">' +
+          '<div class="task-check-title">Чек-лист</div>' +
+          '<div class="task-check-counter">Выполнено: ' + String(doneCount) + '/' + String(totalCount) + '</div>' +
+        '</div>' +
+        (status ? ('<div class="task-check-status-line">' + status + '</div>') : '') +
+        '<div class="task-check-items">' + rows + '</div>' +
+        '<div class="task-check-add-row">' +
+          '<input id="task-checklist-add-' + taskId + '" class="form-control" type="text" placeholder="Добавить пункт..." onkeydown="window.tasksChecklistAddKeydown(event, ' + taskId + ')" ' + (editable ? '' : 'disabled') + ' />' +
+          '<button type="button" class="btn" onclick="window.tasksChecklistAdd(' + taskId + ')" ' + (editable ? '' : 'disabled') + '>Добавить</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function _rerenderChecklist(taskId){
+    const key = String(taskId || '');
+    const box = document.getElementById('task-checklist-box-' + key);
+    const st = _checklistState.get(key);
+    if (!box || !st) return;
+    const taskView = { id: key, checklist: st.current };
+    box.outerHTML = _renderChecklistBlock(taskView);
+  }
+
+  function _setChecklistStatus(taskId, text){
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return;
+    st.status = String(text || '');
+    _rerenderChecklist(key);
+  }
+
+  async function _saveChecklistNow(taskId){
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return;
+    if (st.isSaving) {
+      st.queued = true;
+      return;
+    }
+    st.isSaving = true;
+    st.queued = false;
+    _setChecklistStatus(key, 'Сохранение...');
+    try {
+      const payload = _normalizeChecklistLocal(st.current);
+      const task = await apiJson(apiUrl('/tasks/' + key), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checklist: payload })
+      });
+      const fromServer = _normalizeChecklistLocal(task && Array.isArray(task.checklist) ? task.checklist : payload);
+      st.current = fromServer;
+      st.saved = _cloneChecklist(fromServer);
+      st.editingId = '';
+      st.status = 'Сохранено';
+      _rerenderChecklist(key);
+      window.setTimeout(() => {
+        const s = _checklistState.get(key);
+        if (!s || s.status !== 'Сохранено') return;
+        s.status = '';
+        _rerenderChecklist(key);
+      }, 1200);
+    } catch (e) {
+      st.current = _cloneChecklist(st.saved);
+      st.editingId = '';
+      st.status = 'Не сохранено';
+      _rerenderChecklist(key);
+      await window.crmAlert((e && e.message) || 'Не удалось сохранить чек-лист');
+    } finally {
+      st.isSaving = false;
+      if (st.queued) {
+        st.queued = false;
+        await _saveChecklistNow(key);
+      }
+    }
+  }
+
+  function _scheduleChecklistSave(taskId, delayMs){
+    const key = String(taskId || '');
+    const ms = Number.isFinite(Number(delayMs)) ? Number(delayMs) : 300;
+    const old = _checklistSaveTimers.get(key);
+    if (old) {
+      try { clearTimeout(old); } catch (_){ }
+    }
+    const t = setTimeout(() => {
+      _checklistSaveTimers.delete(key);
+      _saveChecklistNow(key);
+    }, ms);
+    _checklistSaveTimers.set(key, t);
+  }
+
+  window.tasksChecklistToggle = function(ev, taskId, itemId){
+    try { if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation(); } catch (_){ }
+    if (!_checklistCanEdit()) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    const id = String(itemId || '');
+    st.current = st.current.map(it => (String(it.id) === id ? { ...it, done: !it.done, updated_at: new Date().toISOString() } : it));
+    _rerenderChecklist(key);
+    _scheduleChecklistSave(key, 260);
+    return false;
+  };
+
+  window.tasksChecklistAdd = function(taskId){
+    if (!_checklistCanEdit()) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    const inp = document.getElementById('task-checklist-add-' + key);
+    const text = String((inp && inp.value) || '').trim();
+    if (!text) return false;
+    const next = _normalizeChecklistLocal(st.current);
+    next.push({ id: _newChecklistId(), text: text, done: false, pos: next.length + 1, updated_at: new Date().toISOString() });
+    st.current = _normalizeChecklistLocal(next);
+    st.editingId = '';
+    _rerenderChecklist(key);
+    _scheduleChecklistSave(key, 260);
+    return false;
+  };
+
+  window.tasksChecklistAddKeydown = function(ev, taskId){
+    if (!ev || ev.key !== 'Enter') return true;
+    ev.preventDefault();
+    return window.tasksChecklistAdd(taskId);
+  };
+
+  window.tasksChecklistStartEdit = function(taskId, itemId){
+    if (!_checklistCanEdit()) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    st.editingId = String(itemId || '');
+    _rerenderChecklist(key);
+    return false;
+  };
+
+  window.tasksChecklistEditKeydown = function(ev, taskId, itemId){
+    if (!ev) return true;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      const st = _checklistState.get(String(taskId || ''));
+      if (st) {
+        st.editingId = '';
+        _rerenderChecklist(taskId);
+      }
+      return false;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      return window.tasksChecklistCommitEdit(taskId, itemId, ev.target ? ev.target.value : '');
+    }
+    return true;
+  };
+
+  window.tasksChecklistCommitEdit = function(taskId, itemId, value){
+    if (!_checklistCanEdit()) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    const id = String(itemId || '');
+    const text = String(value || '').trim();
+    if (!text) {
+      st.editingId = '';
+      _rerenderChecklist(key);
+      return false;
+    }
+    st.current = st.current.map(it => (String(it.id) === id ? { ...it, text: text, updated_at: new Date().toISOString() } : it));
+    st.editingId = '';
+    _rerenderChecklist(key);
+    _scheduleChecklistSave(key, 260);
+    return false;
+  };
+
+  window.tasksChecklistRemove = function(taskId, itemId){
+    if (!_checklistCanEdit()) return false;
+    if (!window.confirm('Удалить пункт чек-листа?')) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    const id = String(itemId || '');
+    st.current = _normalizeChecklistLocal(st.current.filter(it => String(it.id) !== id));
+    if (st.editingId === id) st.editingId = '';
+    _rerenderChecklist(key);
+    _scheduleChecklistSave(key, 260);
+    return false;
+  };
+
+  window.tasksChecklistMove = function(taskId, itemId, direction){
+    if (!_checklistCanEdit()) return false;
+    const key = String(taskId || '');
+    const st = _checklistState.get(key);
+    if (!st) return false;
+    const id = String(itemId || '');
+    const arr = _normalizeChecklistLocal(st.current);
+    const idx = arr.findIndex(it => String(it.id) === id);
+    if (idx < 0) return false;
+    const dir = Number(direction || 0);
+    const to = idx + (dir < 0 ? -1 : 1);
+    if (to < 0 || to >= arr.length) return false;
+    const tmp = arr[idx];
+    arr[idx] = arr[to];
+    arr[to] = tmp;
+    st.current = _normalizeChecklistLocal(arr);
+    _rerenderChecklist(key);
+    _scheduleChecklistSave(key, 260);
+    return false;
+  };
+
+  function renderTaskDescription(task){
+    const rawDescription = String((task && task.description) || '');
+    if (!rawDescription) {
+      return '<div class="muted">Описание: —</div>';
+    }
+    const lines = rawDescription.split('\n');
+    const renderedLines = lines.map((line) => {
+      if (String(line || '') === '') return '<div class="task-detail-line">&nbsp;</div>';
+      return '<div class="task-detail-line">' + escapeHtml(line) + '</div>';
+    });
+    return (
+      '<div class="task-detail-desc">' +
+        renderedLines.join('') +
+      '</div>'
+    );
+  }
+
   // Init collapse state
   applyCollapsedFromStorage();
   bindCollapseHandlers();
@@ -711,7 +1038,9 @@
           '<div class="task-meta-item"><span class="task-card-meta-label">Прошло:</span> <span data-role="task-elapsed" data-created-at-ts="' + escapeHtml(createdAtTs) + '">' + escapeHtml(elapsed) + '</span></div>' +
         '</div>' +
         taskPhoto +
-        (task.description ? ('<div class="task-detail-desc">' + escapeHtml(task.description) + '</div>') : '<div class="muted">Описание: —</div>') +
+        renderTaskDescription(task) +
+        '<div class="divider"></div>' +
+        _renderChecklistBlock(task) +
         '<div class="divider"></div>' +
         '<div class="task-detail-meta">' +
           '<div class="task-meta-item">' + due + '</div>' +
@@ -832,6 +1161,146 @@
     window.CRM.reloadTasksBoard = reloadTasksBoardKanban;
   } catch (_){ }
 
+  function _tasksCreateChecklistGet(){
+    const items = window.__tasksCreateChecklist;
+    if (!Array.isArray(items)) {
+      window.__tasksCreateChecklist = [];
+      return window.__tasksCreateChecklist;
+    }
+    return items;
+  }
+
+  function _tasksCreateChecklistSet(items){
+    window.__tasksCreateChecklist = _normalizeChecklistLocal(items || []);
+    window.__tasksCreateChecklistEditId = '';
+    window.tasksCreateChecklistRender();
+  }
+
+  window.tasksCreateChecklistRender = function(){
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet());
+    window.__tasksCreateChecklist = items;
+    const list = document.getElementById('task-create-checklist-items');
+    const hidden = document.getElementById('task-create-checklist-json');
+    const counter = document.getElementById('task-create-checklist-counter');
+    if (hidden) {
+      try { hidden.value = JSON.stringify(items); } catch (_) { hidden.value = '[]'; }
+    }
+    if (counter) {
+      const done = items.filter(it => !!it.done).length;
+      counter.textContent = 'Выполнено: ' + String(done) + '/' + String(items.length);
+    }
+    if (!list) return;
+    const editingId = String(window.__tasksCreateChecklistEditId || '');
+    if (!items.length) {
+      list.innerHTML = '<div class="muted">Пока нет пунктов</div>';
+      return;
+    }
+    list.innerHTML = items.map((it, idx) => {
+      const id = String(it.id || '');
+      const isEditing = editingId && editingId === id;
+      const textHtml = isEditing
+        ? ('<input class="form-control task-check-edit-input" type="text" value="' + escapeHtml(it.text || '') + '" onkeydown="window.tasksCreateChecklistEditKeydown(event, \'' + escapeHtml(id) + '\')" onblur="window.tasksCreateChecklistCommitEdit(\'' + escapeHtml(id) + '\', this.value)" />')
+        : ('<button type="button" class="task-check-text-btn" onclick="window.tasksCreateChecklistStartEdit(\'' + escapeHtml(id) + '\')">' + escapeHtml(it.text || '') + '</button>');
+      return (
+        '<div class="task-check-row">' +
+          '<label class="task-check-toggle">' +
+            '<input type="checkbox" class="task-check-input" ' + (it.done ? 'checked ' : '') + 'onchange="window.tasksCreateChecklistToggle(\'' + escapeHtml(id) + '\')" />' +
+          '</label>' +
+          '<div class="task-check-main ' + (it.done ? 'is-done' : '') + '">' + textHtml + '</div>' +
+          '<div class="task-check-actions">' +
+            '<button type="button" class="btn-outline btn-xs" onclick="window.tasksCreateChecklistStartEdit(\'' + escapeHtml(id) + '\')">✏️</button>' +
+            '<button type="button" class="btn-outline btn-xs" ' + (idx === 0 ? 'disabled ' : '') + 'onclick="window.tasksCreateChecklistMove(\'' + escapeHtml(id) + '\', -1)">↑</button>' +
+            '<button type="button" class="btn-outline btn-xs" ' + (idx === (items.length - 1) ? 'disabled ' : '') + 'onclick="window.tasksCreateChecklistMove(\'' + escapeHtml(id) + '\', 1)">↓</button>' +
+            '<button type="button" class="btn-outline btn-xs danger" onclick="window.tasksCreateChecklistRemove(\'' + escapeHtml(id) + '\')">🗑</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+  };
+
+  window.tasksCreateChecklistAdd = function(){
+    const input = document.getElementById('task-create-checklist-add');
+    const text = String((input && input.value) || '').trim();
+    if (!text) return false;
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet());
+    items.push({ id: _newChecklistId(), text: text, done: false, pos: items.length + 1, updated_at: new Date().toISOString() });
+    _tasksCreateChecklistSet(items);
+    try { if (input) input.value = ''; } catch (_){ }
+    return false;
+  };
+
+  window.tasksCreateChecklistAddKeydown = function(ev){
+    if (!ev || ev.key !== 'Enter') return true;
+    ev.preventDefault();
+    return window.tasksCreateChecklistAdd();
+  };
+
+  window.tasksCreateChecklistToggle = function(itemId){
+    const id = String(itemId || '');
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet()).map(it => (
+      String(it.id) === id ? { ...it, done: !it.done, updated_at: new Date().toISOString() } : it
+    ));
+    _tasksCreateChecklistSet(items);
+    return false;
+  };
+
+  window.tasksCreateChecklistStartEdit = function(itemId){
+    window.__tasksCreateChecklistEditId = String(itemId || '');
+    window.tasksCreateChecklistRender();
+    return false;
+  };
+
+  window.tasksCreateChecklistEditKeydown = function(ev, itemId){
+    if (!ev) return true;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      window.__tasksCreateChecklistEditId = '';
+      window.tasksCreateChecklistRender();
+      return false;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      return window.tasksCreateChecklistCommitEdit(itemId, ev.target ? ev.target.value : '');
+    }
+    return true;
+  };
+
+  window.tasksCreateChecklistCommitEdit = function(itemId, value){
+    const id = String(itemId || '');
+    const text = String(value || '').trim();
+    window.__tasksCreateChecklistEditId = '';
+    if (!text) {
+      window.tasksCreateChecklistRender();
+      return false;
+    }
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet()).map(it => (
+      String(it.id) === id ? { ...it, text: text, updated_at: new Date().toISOString() } : it
+    ));
+    _tasksCreateChecklistSet(items);
+    return false;
+  };
+
+  window.tasksCreateChecklistRemove = function(itemId){
+    const id = String(itemId || '');
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet()).filter(it => String(it.id) !== id);
+    _tasksCreateChecklistSet(items);
+    return false;
+  };
+
+  window.tasksCreateChecklistMove = function(itemId, direction){
+    const id = String(itemId || '');
+    const items = _normalizeChecklistLocal(_tasksCreateChecklistGet());
+    const idx = items.findIndex(it => String(it.id) === id);
+    if (idx < 0) return false;
+    const to = idx + (Number(direction || 0) < 0 ? -1 : 1);
+    if (to < 0 || to >= items.length) return false;
+    const tmp = items[idx];
+    items[idx] = items[to];
+    items[to] = tmp;
+    _tasksCreateChecklistSet(items);
+    return false;
+  };
+
   window.tasksOpenCreate = function(){
     const users = JSON.parse((document.getElementById('tasks-users-json') || {}).textContent || '[]');
     const visibleUsers = (users || []).filter(u => {
@@ -849,6 +1318,20 @@
           '<div class="task-form-row">' +
             '<div class="form-label">Описание</div>' +
             '<textarea class="form-control" name="description" rows="5"></textarea>' +
+          '</div>' +
+          '<input type="hidden" id="task-create-checklist-json" name="checklist_json" value="[]" />' +
+          '<div class="task-form-row">' +
+            '<div class="task-checklist-box">' +
+              '<div class="task-check-head">' +
+                '<div class="task-check-title">Чек-лист</div>' +
+                '<div id="task-create-checklist-counter" class="task-check-counter">Выполнено: 0/0</div>' +
+              '</div>' +
+              '<div id="task-create-checklist-items" class="task-check-items"><div class="muted">Пока нет пунктов</div></div>' +
+              '<div class="task-check-add-row">' +
+                '<input id="task-create-checklist-add" class="form-control" type="text" placeholder="Добавить пункт..." onkeydown="window.tasksCreateChecklistAddKeydown(event)" />' +
+                '<button type="button" class="btn" onclick="window.tasksCreateChecklistAdd()">Добавить</button>' +
+              '</div>' +
+            '</div>' +
           '</div>' +
           '<div class="task-form-grid">' +
             '<div class="task-form-row">' +
@@ -890,6 +1373,12 @@
     openModal(html);
 
     try {
+      window.__tasksCreateChecklist = [];
+      window.__tasksCreateChecklistEditId = '';
+      window.tasksCreateChecklistRender();
+    } catch (_){ }
+
+    try {
       const form = document.getElementById('task-create-form');
       const inp = form ? form.querySelector('input[type=file][name=photos]') : null;
       const prev = document.getElementById('task-create-photos-preview');
@@ -922,6 +1411,12 @@
     ev.preventDefault();
     const form = ev.target;
     const fd = new FormData(form);
+    try {
+      const checklist = _normalizeChecklistLocal(_tasksCreateChecklistGet());
+      fd.set('checklist_json', JSON.stringify(checklist));
+    } catch (_){
+      fd.set('checklist_json', '[]');
+    }
     try {
       await apiJson(apiUrl('/tasks'), { method: 'POST', body: fd });
       try { window.dispatchEvent(new CustomEvent('close-modal')); } catch (_){ }
