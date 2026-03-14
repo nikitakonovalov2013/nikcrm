@@ -102,6 +102,7 @@ from shared.services.salaries_pin import verify_salary_pin
 from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
 from shared.services.salaries_service import calc_user_period_totals
 from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
+from shared.services.salaries_service import suggest_salary_payout_for_period
 from shared.services.salaries_service import calc_user_shifts, update_salary_shift_state, create_salary_adjustment
 from shared.services.salaries_service import get_balance_cutoff_date, is_shift_accruable_for_balance
 from shared.services.shifts_rating import schedule_shift_rating_request_after_commit
@@ -4979,6 +4980,52 @@ async def salaries_api_shifts_adjustments_create(
     return {"ok": True, "id": int(getattr(adj, "id", 0) or 0)}
 
 
+@app.get("/api/salaries/payouts/suggest")
+@app.get("/crm/api/salaries/payouts/suggest")
+async def salaries_api_payouts_suggest(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    try:
+        user_id = int(request.query_params.get("user_id") or 0)
+    except Exception:
+        user_id = 0
+    if user_id <= 0:
+        raise HTTPException(status_code=400)
+
+    ps_raw = str(request.query_params.get("period_start") or "").strip()
+    pe_raw = str(request.query_params.get("period_end") or "").strip()
+    if not ps_raw or not pe_raw:
+        raise HTTPException(status_code=400)
+    try:
+        period_start = date.fromisoformat(ps_raw)
+        period_end = date.fromisoformat(pe_raw)
+    except Exception:
+        raise HTTPException(status_code=400)
+    if period_start > period_end:
+        raise HTTPException(status_code=400)
+
+    suggest = await suggest_salary_payout_for_period(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    return {
+        "ok": True,
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+        "shifts_count": int(suggest.get("shifts_count") or 0),
+        "suggested_amount": f"{q2(Decimal(suggest.get('suggested_amount') or 0)):.2f}",
+    }
+
+
 @app.get("/api/salaries/payouts/list")
 @app.get("/crm/api/salaries/payouts/list")
 async def salaries_api_payouts_list(
@@ -5229,6 +5276,17 @@ async def salaries_api_payouts_create(
     except ValueError as e:
         code = str(e)
         if code == "no_shifts_to_pay":
+            try:
+                logger.info(
+                    "salaries_api_payouts_create_no_shifts",
+                    extra={
+                        "user_id": int(user_id),
+                        "period_start": str(period_start),
+                        "period_end": str(period_end),
+                    },
+                )
+            except Exception:
+                pass
             return JSONResponse(
                 {"ok": False, "error": "no_shifts_to_pay", "error_message": "Нет смен для выплаты за выбранный период"},
                 status_code=400,

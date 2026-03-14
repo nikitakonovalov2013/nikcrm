@@ -1611,6 +1611,9 @@
         lastSuggest = { shifts_count: Number.isFinite(n) ? n : 0, suggested_amount: sAmt };
         if(shiftsCountEl) shiftsCountEl.textContent = String(Number.isFinite(n) ? n : 0);
         if(suggestedAmountEl) suggestedAmountEl.textContent = fmtRubPretty(sAmt);
+        if(Number.isFinite(n) && n > 0){
+          setErr(null);
+        }
 
         // Auto-fill amount (editable). If user already typed manually, do not override.
         if(amountEl && !amountTouched){

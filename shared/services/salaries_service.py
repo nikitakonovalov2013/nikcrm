@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import select, func, exists
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -251,6 +251,14 @@ async def _list_paid_shift_ids(
                 .where(ShiftInstance.day <= period_end)
                 .where(ShiftInstance.day >= SalaryPayout.period_start)
                 .where(ShiftInstance.day <= SalaryPayout.period_end)
+                # Legacy fallback only: when payout has no explicit linked shifts.
+                .where(
+                    ~exists(
+                        select(1)
+                        .select_from(SalaryPayoutShift)
+                        .where(SalaryPayoutShift.payout_id == SalaryPayout.id)
+                    )
+                )
             )
         )
         .scalars()
@@ -260,6 +268,39 @@ async def _list_paid_shift_ids(
     out = {int(x) for x in rows_linked if int(x or 0) > 0}
     out |= {int(x) for x in rows_by_period if int(x or 0) > 0}
     return out
+
+
+async def get_shifts_to_pay_for_period(
+    *,
+    session: AsyncSession,
+    user_id: int,
+    period_start: date,
+    period_end: date,
+) -> tuple[list, set[int]]:
+    # Use the same accrual criteria as period balance: only_accruable + include_opened.
+    # Paid shifts are excluded by explicit links and legacy payout period coverage.
+    items = await calc_user_shifts(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+        include_plans=False,
+        only_accruable=True,
+        include_opened=True,
+    )
+    paid_shift_ids = await _list_paid_shift_ids(
+        session=session,
+        user_id=int(user_id),
+        period_start=period_start,
+        period_end=period_end,
+    )
+    eligible = [
+        it
+        for it in items
+        if int(getattr(it, "shift_id", 0) or 0) > 0
+        and int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids
+    ]
+    return eligible, paid_shift_ids
 
 
 async def calc_user_balance(
@@ -315,21 +356,12 @@ async def suggest_salary_payout_for_period(
     period_start: date,
     period_end: date,
 ) -> dict:
-    items = await calc_user_shifts(
-        session=session,
-        user_id=int(user_id),
-        period_start=period_start,
-        period_end=period_end,
-        include_plans=False,
-        only_accruable=True,
-    )
-    paid_shift_ids = await _list_paid_shift_ids(
+    eligible, _paid_shift_ids = await get_shifts_to_pay_for_period(
         session=session,
         user_id=int(user_id),
         period_start=period_start,
         period_end=period_end,
     )
-    eligible = [it for it in items if int(getattr(it, "shift_id", 0) or 0) > 0 and int(getattr(it, "shift_id", 0) or 0) not in paid_shift_ids]
     suggested_amount = q2(sum((it.total_amount for it in eligible), DEC_0))
     shift_ids = [int(getattr(it, "shift_id", 0) or 0) for it in eligible]
     return {
