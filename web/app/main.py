@@ -100,6 +100,7 @@ from shared.services.shifts_domain import (
 
 from shared.services.salaries_pin import verify_salary_pin
 from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
+from shared.services.pin_guard import record_pin_fail, clear_pin_fail, should_alert
 from shared.services.finance_pin import (
     verify_finance_pin, set_finance_pin, reset_finance_pin,
     get_finance_settings as get_finance_settings_row,
@@ -203,6 +204,50 @@ def _salary_pin_set_cookie(resp: Response) -> None:
         secure=False,
         samesite="lax",
     )
+
+
+def _get_salary_user_key(request: Request) -> tuple[str, str]:
+    """Returns (cache_key, display_name) for the requesting user."""
+    from jose import jwt as _jwt_lib
+    token = request.cookies.get("admin_token")
+    if token:
+        try:
+            data = _jwt_lib.decode(token, settings.WEB_JWT_SECRET, algorithms=["HS256"])
+            uid = str(data.get("sub") or "")
+            if uid:
+                return f"sal:uid:{uid}", f"user_id={uid}"
+        except Exception:
+            pass
+    ip = str(request.client.host) if request.client else "unknown"
+    return f"sal:ip:{ip}", f"ip={ip}"
+
+
+async def _send_salary_pin_alert(user_display: str, attempts: int) -> None:
+    from web.app.services.messenger import Messenger
+    from datetime import datetime as _dt
+    token = str(getattr(settings, "BOT_TOKEN", "") or "").strip()
+    if not token:
+        return
+    admin_ids = list(getattr(settings, "admin_ids", None) or [])
+    if not admin_ids:
+        return
+    now_str = _dt.now().strftime("%d.%m.%Y %H:%M:%S")
+    text = (
+        f"🔐 <b>Зарплаты: подозрительный ввод PIN</b>\n"
+        f"👤 Кто: <code>{user_display}</code>\n"
+        f"❌ Неверных попыток: {attempts}\n"
+        f"🕐 Время: {now_str}\n"
+        f"🔒 Раздел: Зарплаты"
+    )
+    messenger = Messenger(token)
+    n_sent = 0
+    for uid in admin_ids:
+        try:
+            await messenger.send_message(chat_id=int(uid), text=text, parse_mode="HTML")
+            n_sent += 1
+        except Exception:
+            pass
+    logger.info("SALARY_PIN_ALERT_SENT admins=%d", n_sent)
 
 
 def _finance_pin_signer() -> TimestampSigner:
@@ -2923,18 +2968,7 @@ async def salaries_page(request: Request, admin_id: int = Depends(require_admin_
     is_admin = bool(r.is_admin)
     is_manager = bool(r.is_manager)
 
-    if not _salary_pin_cookie_is_valid(request):
-        return templates.TemplateResponse(
-            "salaries/pin.html",
-            {
-                "request": request,
-                "actor": actor,
-                "base_template": "base.html",
-                "is_admin": is_admin,
-                "is_manager": is_manager,
-            },
-        )
-
+    pin_ok = _salary_pin_cookie_is_valid(request)
     return templates.TemplateResponse(
         "salaries/index.html",
         {
@@ -2943,6 +2977,7 @@ async def salaries_page(request: Request, admin_id: int = Depends(require_admin_
             "base_template": "base.html",
             "is_admin": is_admin,
             "is_manager": is_manager,
+            "pin_ok": pin_ok,
         },
     )
 
@@ -3081,13 +3116,44 @@ async def salaries_api_pin_verify(
         raise HTTPException(status_code=400)
     pin = str(body.get("pin") or "").strip()
 
+    user_key, user_display = _get_salary_user_key(request)
     ok = await verify_salary_pin(session=session, pin=pin)
     if not ok:
-        return {"ok": False}
+        count = record_pin_fail(user_key)
+        logger.info("SALARY_PIN_FAIL attempt=%d/%d user=%s", count, 3, user_display)
+        if should_alert(count):
+            asyncio.create_task(_send_salary_pin_alert(user_display, count))
+        return JSONResponse({"ok": False, "error": "wrong_pin", "error_message": "Неверный PIN-код."}, status_code=403)
 
+    clear_pin_fail(user_key)
+    logger.info("SALARY_PIN_VERIFY ok=True user=%s", user_display)
     resp = JSONResponse({"ok": True})
     _salary_pin_set_cookie(resp)
     return resp
+
+
+@app.post("/api/salaries/pin/set")
+@app.post("/crm/api/salaries/pin/set")
+async def salaries_api_pin_set(
+    request: Request,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400)
+    pin = str(body.get("pin") or "").strip()
+    try:
+        await set_salary_pin(session=session, new_pin=pin, updated_by_user_id=int(getattr(actor, "id", 0) or 0) or None)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid_pin", "error_message": "PIN должен состоять из 6 цифр."}, status_code=400)
+    return {"ok": True}
 
 
 @app.post("/api/salaries/password/update")

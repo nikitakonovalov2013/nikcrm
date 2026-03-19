@@ -283,6 +283,7 @@ class FinanceDashboard:
     expense: Decimal
     profit: Decimal
     avg_expense_per_day: Decimal
+    avg_income_per_day: Decimal
     days_in_period: int
     days_with_data: int
     by_day: list[dict]
@@ -344,6 +345,7 @@ async def get_dashboard(
     from datetime import timedelta
     days_in_period = max(1, (date_to.date() - date_from.date()).days + 1)
     avg_expense = _Q2(expense / days_in_period)
+    avg_income = _Q2(income / days_in_period)
 
     cat_rows = (await session.execute(
         select(
@@ -387,6 +389,7 @@ async def get_dashboard(
         expense=expense,
         profit=profit,
         avg_expense_per_day=avg_expense,
+        avg_income_per_day=avg_income,
         days_in_period=days_in_period,
         days_with_data=len(by_day),
         by_day=by_day,

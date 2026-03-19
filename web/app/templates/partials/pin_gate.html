@@ -1,0 +1,36 @@
+{#
+  Parameters (set in parent template with {% set %}):
+    pfx            : string — element ID prefix, e.g. 'fin' or 'sal'
+    pin_wall_title : string — subtitle shown on the PIN wall
+    pin_ok         : bool   — already authenticated this session
+    is_admin       : bool   — whether to render the change-PIN modal
+#}
+
+<div id="{{pfx}}-pin-wall" class="fin-pin-wall"{% if pin_ok %} style="display:none"{% endif %}>
+  <div class="fin-pin-title">{{pin_wall_title}}</div>
+  <div class="fin-pin-sub">Доступ защищён 6-значным PIN-кодом</div>
+  <div class="fin-pin-inputs" id="{{pfx}}-pin-inputs">
+    {% for i in range(6) %}<input type="password" maxlength="1" inputmode="numeric" autocomplete="off" id="{{pfx}}-p{{i}}" />{% endfor %}
+  </div>
+  <div class="fin-pin-error" id="{{pfx}}-pin-err"></div>
+  <button class="btn" type="button" id="{{pfx}}-pin-submit">Войти</button>
+</div>
+
+{% if is_admin %}
+<div class="fin-modal-overlay" id="{{pfx}}-pin-modal">
+  <div class="fin-modal" style="max-width:380px">
+    <button class="fin-modal-close" id="{{pfx}}-pin-modal-close">&#x2715;</button>
+    <div class="fin-modal-title">Сменить PIN</div>
+    <div class="fin-form-row">
+      <label class="fin-label">Новый 6-значный PIN *</label>
+      <input type="password" class="fin-input" id="{{pfx}}-pin-new" maxlength="6" inputmode="numeric" autocomplete="off" style="width:100%" />
+    </div>
+    <div class="fin-form-error" id="{{pfx}}-pin-modal-err"></div>
+    <div style="display:flex;gap:10px;margin-top:16px;align-items:center">
+      <button class="btn" id="{{pfx}}-pin-save">Сохранить</button>
+      <button class="btn-outline" id="{{pfx}}-pin-cancel">Отмена</button>
+      <span id="{{pfx}}-pin-loading" style="display:none;margin-left:auto"><span class="fin-spinner"></span></span>
+    </div>
+  </div>
+</div>
+{% endif %}

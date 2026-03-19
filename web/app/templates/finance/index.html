@@ -1,6 +1,7 @@
 {% extends base_template %}
 {% block title %}Финансы{% endblock %}
 {% block head_extra %}
+<script src="{{ url_for('static', path='pin_gate.js') }}"></script>
 <style>
 .fin-page{padding:0 0 40px}
 .fin-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
@@ -27,7 +28,13 @@
 .fin-kpi-v.red{color:#d92d20}
 .fin-kpi-v.blue{color:#2563eb}
 .fin-kpi-hint{font-size:11px;color:#98a2b3;margin-top:2px}
-.fin-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;margin-bottom:20px}
+.fin-kpi-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.fin-delta{font-size:11px;font-weight:500;white-space:nowrap}
+.delta-up{color:#16a34a}.delta-down{color:#d92d20}.delta-neutral{color:#98a2b3}
+.fin-chart-leg-btn{cursor:pointer;user-select:none;transition:opacity .15s;padding:2px 4px;border-radius:4px}
+.fin-chart-leg-btn:hover{background:#f2f4f7}
+.fin-chart-leg-btn.muted{opacity:.35}
+.fin-charts{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;margin-bottom:20px}
 .fin-chart-card{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px}
 .fin-chart-title{font-size:13px;font-weight:600;color:#344054;margin-bottom:12px}
 .fin-bar-wrap{display:flex;flex-direction:column;gap:6px}
@@ -37,11 +44,11 @@
 .fin-bar-fill{height:100%;border-radius:4px;background:#2563eb;transition:width .3s}
 .fin-bar-fill.red{background:#f04438}
 .fin-bar-val{width:80px;text-align:right;color:#667085}
-.fin-day-chart-wrap{overflow-x:auto;padding-bottom:4px}
-.fin-day-chart-svg{display:block;min-width:300px;max-width:none;width:auto}
+.fin-day-chart-wrap{width:100%;padding-bottom:4px}
+.fin-day-chart-svg{display:block;width:100%;max-width:none}
 .fin-day-axis-hint{font-size:11px;color:#667085;margin-top:6px}
 .fin-donut-wrap{display:flex;gap:14px;align-items:center;min-width:0;max-width:100%;overflow:visible}
-.fin-donut{width:clamp(180px,32vw,260px);height:clamp(180px,32vw,260px);max-width:260px;max-height:260px;border-radius:50%;position:relative;flex:0 0 auto;margin:0 auto;background:conic-gradient(#e4e7ec 0 100%)}
+.fin-donut{width:280px;height:280px;max-width:280px;max-height:280px;border-radius:50%;position:relative;flex:0 0 280px;background:conic-gradient(#e4e7ec 0 100%)}
 .fin-donut::before{content:'';position:absolute;inset:24px;background:#fff;border-radius:50%;box-shadow:inset 0 0 0 1px #f2f4f7}
 .fin-donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1;text-align:center;padding:0 16px}
 .fin-donut-total{font-size:14px;font-weight:700;color:#101828;line-height:1.25}
@@ -84,7 +91,9 @@
 @keyframes fin-spin{to{transform:rotate(360deg)}}
 .fin-empty{text-align:center;color:#98a2b3;padding:40px 0;font-size:14px}
 .fin-cats-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-@media(max-width:540px){.fin-donut-wrap{flex-direction:column;align-items:center}.fin-donut{width:clamp(140px,60vw,220px);height:clamp(140px,60vw,220px)}}
+.fin-donut-card{grid-column:span 6;min-width:0}
+@media(max-width:960px){.fin-donut-card{grid-column:span 12}}
+@media(max-width:540px){.fin-donut-wrap{flex-direction:column;align-items:center}.fin-donut{width:200px;height:200px;max-width:200px;max-height:200px;flex:0 0 200px}}
 @media(max-width:640px){.fin-kpi-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.fin-cats-grid{grid-template-columns:1fr}.fin-form-grid{grid-template-columns:1fr}.fin-form-grid .full{grid-column:1}}
 .fin-cat-group{background:#f9fafb;border-radius:10px;padding:14px}
@@ -118,16 +127,9 @@
     </div>
   </div>
 
-  <!-- PIN WALL -->
-  <div id="fin-pin-wall" class="fin-pin-wall"{% if pin_ok %} style="display:none"{% endif %}>
-    <div class="fin-pin-title">Введите пин-код финансового модуля</div>
-    <div class="fin-pin-sub">Доступ защищён 6-значным PIN-кодом</div>
-    <div class="fin-pin-inputs">
-      {% for i in range(6) %}<input type="password" maxlength="1" inputmode="numeric" autocomplete="off" id="fin-p{{i}}" />{% endfor %}
-    </div>
-    <div class="fin-pin-error" id="fin-pin-err"></div>
-    <button class="btn" type="button" id="fin-pin-submit">Войти</button>
-  </div>
+  <!-- PIN WALL + MODAL -->
+  {% set pfx='fin' %}{% set pin_wall_title='Введите пин-код финансового модуля' %}
+  {% include 'partials/pin_gate.html' %}
 
   <!-- MAIN -->
   <div id="fin-main"{% if not pin_ok %} style="display:none"{% endif %}>
@@ -152,27 +154,27 @@
       <div id="fin-dash-empty" class="fin-empty" style="display:none">Нет данных за выбранный период</div>
       <div id="fin-dash-content" style="display:none">
         <div class="fin-kpi-grid">
-          <div class="fin-kpi"><div class="fin-kpi-k">Доходы</div><div class="fin-kpi-v green" id="kpi-inc">—</div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Расходы</div><div class="fin-kpi-v red" id="kpi-exp">—</div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Баланс</div><div class="fin-kpi-v" id="kpi-profit">—</div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Ср. расходы / день</div><div class="fin-kpi-v blue" id="kpi-avg">—</div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Финансовая подушка</div><div class="fin-kpi-v" id="kpi-cushion">—</div><div class="fin-kpi-hint" id="kpi-cushion-h"></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Доходы</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-inc">—</div><span class="fin-delta delta-neutral" id="kpi-inc-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Расходы</div><div class="fin-kpi-row"><div class="fin-kpi-v red" id="kpi-exp">—</div><span class="fin-delta delta-neutral" id="kpi-exp-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Баланс</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-profit">—</div><span class="fin-delta delta-neutral" id="kpi-profit-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Ср. расходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v blue" id="kpi-avg">—</div><span class="fin-delta delta-neutral" id="kpi-avg-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Ср. доходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-avg-inc">—</div><span class="fin-delta delta-neutral" id="kpi-avg-inc-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Финансовая подушка</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-cushion">—</div><span class="fin-delta delta-neutral" id="kpi-cushion-d"></span></div><div class="fin-kpi-hint" id="kpi-cushion-h"></div></div>
         </div>
         <div class="fin-charts">
           <div class="fin-chart-card" style="grid-column:1/-1">
             <div class="fin-chart-title">Доходы / Расходы по дням</div>
             <div class="fin-day-chart-wrap"><svg id="fin-day-chart" class="fin-day-chart-svg"></svg></div>
-            <div class="fin-day-axis-hint">Ось X: дата (ДД.ММ) · ось Y: сумма в ₽</div>
             <div style="display:flex;gap:16px;margin-top:6px;font-size:11px">
-              <span><span style="display:inline-block;width:10px;height:10px;background:#16a34a;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Доходы</span>
-              <span><span style="display:inline-block;width:10px;height:10px;background:#f04438;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Расходы</span>
+              <span id="fin-leg-inc" class="fin-chart-leg-btn"><span style="display:inline-block;width:10px;height:10px;background:#16a34a;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Доходы</span>
+              <span id="fin-leg-exp" class="fin-chart-leg-btn"><span style="display:inline-block;width:10px;height:10px;background:#f04438;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Расходы</span>
             </div>
           </div>
-          <div class="fin-chart-card">
+          <div class="fin-chart-card fin-donut-card">
             <div class="fin-chart-title">Расходы по категориям</div>
             <div id="fin-exp-donut"></div>
           </div>
-          <div class="fin-chart-card">
+          <div class="fin-chart-card fin-donut-card">
             <div class="fin-chart-title">Доходы по категориям</div>
             <div id="fin-inc-donut"></div>
           </div>
@@ -335,23 +337,6 @@
   </div>
 </div>
 
-<!-- PIN MODAL -->
-<div class="fin-modal-overlay" id="pin-modal">
-  <div class="fin-modal" style="max-width:380px">
-    <button class="fin-modal-close" id="pin-modal-close">&#x2715;</button>
-    <div class="fin-modal-title">Сменить PIN</div>
-    <div class="fin-form-row">
-      <label class="fin-label">Новый 6-значный PIN *</label>
-      <input type="password" class="fin-input" id="pin-new" maxlength="6" inputmode="numeric" autocomplete="off" style="width:100%" />
-    </div>
-    <div class="fin-form-error" id="pin-err"></div>
-    <div style="display:flex;gap:10px;margin-top:16px;align-items:center">
-      <button class="btn" id="pin-save">Сохранить</button>
-      <button class="btn-outline" id="pin-cancel">Отмена</button>
-      <span id="pin-loading" style="display:none;margin-left:auto"><span class="fin-spinner"></span></span>
-    </div>
-  </div>
-</div>
 
 <script>
 (function(){
@@ -431,60 +416,7 @@ async function apiFetch(method,path,body){
   return j;
 }
 
-// PIN
-if(!pinOk){
-  const pins=document.querySelectorAll('.fin-pin-inputs input');
-  pins.forEach((p,i)=>{
-    p.addEventListener('input',()=>{
-      if(p.value.length===1&&i<5)pins[i+1].focus();
-      if(p.value.length===1&&i===5)doPin();
-    });
-    p.addEventListener('keydown',e=>{if(e.key==='Backspace'&&!p.value&&i>0)pins[i-1].focus();});
-  });
-  on('fin-pin-submit','click',doPin);
-}
-async function doPin(){
-  const pins=document.querySelectorAll('.fin-pin-inputs input');
-  const pin=[...pins].map(p=>p.value).join('');
-  el('fin-pin-err').textContent='';
-  if(pin.length!==6){el('fin-pin-err').textContent='Введите 6-значный пин-код';return;}
-  try{
-    await apiFetch('POST','/pin/verify',{pin});
-    hide('fin-pin-wall');show('fin-main');show('fin-header-actions');
-    initAfterPin();
-  }catch(e){
-    el('fin-pin-err').textContent=humanErr(e.data&&e.data.error);
-    [...pins].forEach(p=>p.value='');pins[0].focus();
-  }
-}
-
-if(pinOk){show('fin-header-actions');initAfterPin();}
-
-if(isAdmin&&el('fin-btn-pin')){
-  on('fin-btn-pin','click',()=>{
-    el('pin-new').value='';
-    el('pin-err').textContent='';
-    el('pin-modal').classList.add('open');
-    el('pin-new').focus();
-  });
-}
-on('pin-modal-close','click',()=>el('pin-modal').classList.remove('open'));
-on('pin-cancel','click',()=>el('pin-modal').classList.remove('open'));
-on('pin-save','click',async()=>{
-  const p=(el('pin-new').value||'').trim();
-  el('pin-err').textContent='';
-  if(!/^\d{6}$/.test(p)){el('pin-err').textContent='PIN должен состоять из 6 цифр';return;}
-  show('pin-loading');
-  try{
-    await apiFetch('POST','/pin/set',{pin:p});
-    hide('pin-loading');
-    el('pin-modal').classList.remove('open');
-    if(window.crmAlert)window.crmAlert('PIN обновлён');else alert('PIN обновлён');
-  }catch(e){
-    hide('pin-loading');
-    el('pin-err').textContent=e.sessionExpired?sessionExpired():humanErr(e.data&&e.data.error);
-  }
-});
+initPinGate({pfx:'fin',apiVerify:B+'/pin/verify',apiSetPin:B+'/pin/set',mainId:'fin-main',headerActionsId:'fin-header-actions',pinBtnId:'fin-btn-pin',pinOk:pinOk,isAdmin:isAdmin,onSuccess:initAfterPin});
 
 // TABS
 const TABS=['dash','ops','cats','report'];
@@ -528,23 +460,44 @@ async function loadDash(){
     el('fin-dash-empty').textContent=e.sessionExpired?sessionExpired():'Не удалось загрузить дашборд';
   }
 }
+function fmtDelta(v){
+  if(v===null||v===undefined)return{text:'—',cls:'delta-neutral'};
+  const n=Number(v);
+  if(!Number.isFinite(n))return{text:'—',cls:'delta-neutral'};
+  if(Math.abs(n)<0.05)return{text:'0,0%',cls:'delta-neutral'};
+  const abs=Math.abs(n);
+  const s=(abs%1===0?abs.toFixed(0)+',0':abs.toFixed(1)).replace('.',',');
+  if(n>0)return{text:'↑ '+s+'%',cls:'delta-up'};
+  return{text:'↓ '+s+'%',cls:'delta-down'};
+}
+function setDelta(id,v){
+  const e=el(id);if(!e)return;
+  const{text,cls}=fmtDelta(v);
+  e.textContent=text;
+  e.className='fin-delta '+cls;
+}
 function renderDash(d){
+  const delta=d.delta||{};
   const inc=parseFloat(d.income||0),exp=parseFloat(d.expense||0),prof=parseFloat(d.profit||0);
-  el('kpi-inc').textContent=fmt(inc);
-  el('kpi-exp').textContent=fmt(exp);
+  el('kpi-inc').textContent=fmt(inc);setDelta('kpi-inc-d',delta.income);
+  el('kpi-exp').textContent=fmt(exp);setDelta('kpi-exp-d',delta.expense);
   el('kpi-profit').textContent=fmt(prof);
   el('kpi-profit').className='fin-kpi-v '+(prof>=0?'green':'red');
-  el('kpi-avg').textContent=fmt(d.avg_expense_per_day||0);
+  setDelta('kpi-profit-d',delta.profit);
+  el('kpi-avg').textContent=fmt(d.avg_expense_per_day||0);setDelta('kpi-avg-d',delta.avg_expense_per_day);
+  el('kpi-avg-inc').textContent=fmt(d.avg_income_per_day||0);setDelta('kpi-avg-inc-d',delta.avg_income_per_day);
   if(d.cushion_days!=null){
     el('kpi-cushion').textContent=d.cushion_days+' дн.';
     el('kpi-cushion').className='fin-kpi-v '+(d.cushion_days>=30?'green':d.cushion_days>=7?'blue':'red');
     el('kpi-cushion-h').textContent='при текущих расходах';
-  }else{el('kpi-cushion').textContent='—';el('kpi-cushion-h').textContent='';}
+    setDelta('kpi-cushion-d',delta.cushion_days);
+  }else{el('kpi-cushion').textContent='—';el('kpi-cushion-h').textContent='';setDelta('kpi-cushion-d',null);}
   const byDay=normalizeByDay(d.by_day||[],el('fin-dash-from').value,el('fin-dash-to').value);
+  _lastBarData=byDay;
+  show('fin-dash-content');
   renderDayChart(byDay);
   renderDonut('fin-exp-donut',d.expense_by_category||[],exp,'Расходы','expense');
   renderDonut('fin-inc-donut',d.income_by_category||[],inc,'Доходы','income');
-  show('fin-dash-content');
 }
 function parseIsoDate(raw){
   const s=String(raw||'').slice(0,10);
@@ -581,18 +534,34 @@ function normalizeByDay(rows,fromRaw,toRaw){
   }
   return out;
 }
+let _barFilter=null;
+let _lastBarData=[];
+function _updateLegendState(){
+  const li=el('fin-leg-inc'),le=el('fin-leg-exp');
+  if(li)li.classList.toggle('muted',_barFilter==='expense');
+  if(le)le.classList.toggle('muted',_barFilter==='income');
+}
 function renderDayChart(data){
   const svg=el('fin-day-chart');
   if(!svg)return;
+  const showInc=!_barFilter||_barFilter==='income';
+  const showExp=!_barFilter||_barFilter==='expense';
   if(!data.length){svg.innerHTML='';svg.setAttribute('height','0');return;}
-  const dayW=44,barW=12,gap=4,padL=56,padR=12,padT=12,padB=52,h=280;
+  const padL=56,padR=12,padT=12,padB=52,h=280;
   const chartH=h-padT-padB;
+  const wrap=svg.parentElement;
+  const containerW=Math.max((wrap?wrap.offsetWidth:0)||0,300);
+  const avail=containerW-padL-padR;
+  const dayW=Math.max(avail/data.length,10);
+  const barW=Math.max(Math.floor(dayW*0.30),4);
+  const gap=Math.max(Math.floor(dayW*0.08),2);
+  const singleMode=showInc!==showExp;
+  const w=containerW;
   const step=data.length>21?3:data.length>14?2:1;
-  const w=Math.max(padL+padR+data.length*dayW,300);
   svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
-  svg.setAttribute('width',String(w));
+  svg.setAttribute('width','100%');
   svg.setAttribute('height',String(h));
-  const mx=Math.max(...data.map(x=>Math.max(Number(x.income)||0,Number(x.expense)||0)),1);
+  const mx=Math.max(...data.map(x=>Math.max(showInc?(Number(x.income)||0):0,showExp?(Number(x.expense)||0):0)),1);
   let g='';
   for(let i=0;i<=4;i++){
     const y=padT+Math.round((chartH/4)*i);
@@ -605,12 +574,18 @@ function renderDayChart(data){
     const inc=Number(x.income)||0;
     const exp=Number(x.expense)||0;
     const x0=padL+idx*dayW+8;
-    const ih=Math.round((inc/mx)*(chartH-4));
-    const eh=Math.round((exp/mx)*(chartH-4));
-    const yi=padT+chartH-ih;
-    const ye=padT+chartH-eh;
-    g+=`<rect x="${x0}" y="${yi}" width="${barW}" height="${Math.max(1,ih)}" fill="${INCOME_PRIMARY}" rx="2"><title>${esc(fDate(x.day))} | Доходы: ${esc(fmt(inc))} | Расходы: ${esc(fmt(exp))}</title></rect>`;
-    g+=`<rect x="${x0+barW+gap}" y="${ye}" width="${barW}" height="${Math.max(1,eh)}" fill="${EXPENSE_PRIMARY}" rx="2"><title>${esc(fDate(x.day))} | Доходы: ${esc(fmt(inc))} | Расходы: ${esc(fmt(exp))}</title></rect>`;
+    const xInc=singleMode?x0+(showExp?barW+gap:0):x0;
+    const xExp=singleMode?x0:x0+barW+gap;
+    if(showInc){
+      const ih=Math.round((inc/mx)*(chartH-4));
+      const yi=padT+chartH-ih;
+      g+=`<rect x="${xInc}" y="${yi}" width="${barW}" height="${Math.max(1,ih)}" fill="${INCOME_PRIMARY}" rx="2"><title>${esc(fDate(x.day))} | Доходы: ${esc(fmt(inc))}</title></rect>`;
+    }
+    if(showExp){
+      const eh=Math.round((exp/mx)*(chartH-4));
+      const ye=padT+chartH-eh;
+      g+=`<rect x="${xExp}" y="${ye}" width="${barW}" height="${Math.max(1,eh)}" fill="${EXPENSE_PRIMARY}" rx="2"><title>${esc(fDate(x.day))} | Расходы: ${esc(fmt(exp))}</title></rect>`;
+    }
     if(idx%step===0){
       const cx=x0+barW,cy=padT+chartH+10;
       g+=`<text x="${cx}" y="${cy}" text-anchor="end" fill="#667085" font-size="10" transform="rotate(-45,${cx},${cy})">${esc(fDate(x.day).slice(0,5))}</text>`;
@@ -625,6 +600,7 @@ function renderDonut(targetId,cats,total,caption,kind){
   const rows=(Array.isArray(cats)?cats:[]).map(x=>({
     name:String(x.category_name||'Без категории'),
     total:Math.max(0,parseFloat(x.total||0)||0),
+    delta_pct:(x.delta_pct!==null&&x.delta_pct!==undefined)?x.delta_pct:undefined,
   })).filter(x=>x.total>0).sort((a,b)=>b.total-a.total);
   if(!rows.length||!(total>0)){
     root.innerHTML=`<div class="fin-donut-wrap"><div class="fin-donut"><div class="fin-donut-center"><div class="fin-donut-total">0 ₽</div><div class="fin-donut-caption">${esc(caption)}</div></div></div><div class="fin-empty" style="padding:0">Нет данных</div></div>`;
@@ -632,7 +608,7 @@ function renderDonut(targetId,cats,total,caption,kind){
   }
   const top=rows.slice(0,6);
   const otherTotal=rows.slice(6).reduce((s,x)=>s+x.total,0);
-  if(otherTotal>0.0001)top.push({name:'Прочие',total:otherTotal});
+  if(otherTotal>0.0001)top.push({name:'Прочие',total:otherTotal,delta_pct:undefined});
   const allTotal=top.reduce((s,x)=>s+x.total,0)||1;
   let cur=0;
   const segs=[];
@@ -640,13 +616,31 @@ function renderDonut(targetId,cats,total,caption,kind){
     const pct=(x.total/allTotal)*100;
     const color=palette[i%palette.length];
     const next=cur+pct;
-    segs.push({color,name:x.name,total:x.total,start:cur,end:next});
+    segs.push({color,name:x.name,total:x.total,start:cur,end:next,delta_pct:x.delta_pct});
     cur=next;
   });
   const grad=segs.map(s=>`${s.color} ${s.start.toFixed(2)}% ${s.end.toFixed(2)}%`).join(', ');
-  const legend=segs.map(s=>`<div class="fin-donut-row" title="${esc(s.name)}"><div class="fin-donut-name"><span class="fin-dot" style="background:${s.color}"></span><span class="fin-donut-label" title="${esc(s.name)}">${esc(s.name)}</span></div><div class="fin-donut-val">${esc(fmt(s.total))}</div></div>`).join('');
+  const legend=segs.map(s=>{
+    const dv=s.delta_pct!==undefined?s.delta_pct:null;
+    const{text,cls}=fmtDelta(dv);
+    const dspan=(text&&text!=='—')?`<span class="fin-delta ${cls}" style="margin-left:4px">${esc(text)}</span>`:'';
+    return `<div class="fin-donut-row" title="${esc(s.name)}"><div class="fin-donut-name"><span class="fin-dot" style="background:${s.color}"></span><span class="fin-donut-label" title="${esc(s.name)}">${esc(s.name)}</span></div><div class="fin-donut-val">${esc(fmt(s.total))}${dspan}</div></div>`;
+  }).join('');
   root.innerHTML=`<div class="fin-donut-wrap"><div class="fin-donut" style="background:conic-gradient(${grad})"><div class="fin-donut-center"><div class="fin-donut-total">${esc(fmt(total))}</div><div class="fin-donut-caption">${esc(caption)}</div></div></div><div class="fin-donut-legend">${legend}</div></div>`;
 }
+
+// Bar chart legend toggle
+try{
+  const li=el('fin-leg-inc'),le=el('fin-leg-exp');
+  if(li)li.addEventListener('click',()=>{
+    _barFilter=(_barFilter==='income')?null:'income';
+    _updateLegendState();renderDayChart(_lastBarData);
+  });
+  if(le)le.addEventListener('click',()=>{
+    _barFilter=(_barFilter==='expense')?null:'expense';
+    _updateLegendState();renderDayChart(_lastBarData);
+  });
+}catch(_){}
 
 // ALL CATS (for selects)
 let _allCats=[];

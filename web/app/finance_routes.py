@@ -5,8 +5,7 @@ import asyncio
 import csv
 import io
 import logging
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import AsyncGenerator
 
@@ -20,6 +19,7 @@ from shared.config import settings
 from shared.db import get_async_session
 
 logger = logging.getLogger(__name__)
+from shared.services.pin_guard import record_pin_fail, clear_pin_fail, should_alert as _should_alert
 from shared.services.finance_pin import (
     get_finance_settings as _get_finance_settings_row,
     verify_finance_pin,
@@ -45,10 +45,17 @@ from shared.utils import utc_now
 
 router = APIRouter()
 
-# ── PIN fail counter (in-memory, per-session) ─────────────────────────────────
-_pin_fail_cache: dict[str, tuple[int, float]] = {}  # key -> (count, last_ts)
-_PIN_FAIL_WINDOW = 15 * 60  # seconds
-_PIN_FAIL_MAX = 3
+def _delta_pct(current, prev) -> float | None:
+    """Return % change (current vs prev), or None when prev==0 and current!=0."""
+    try:
+        c = float(current)
+        p = float(prev)
+        if abs(p) < 0.001:
+            return None if abs(c) > 0.001 else 0.0
+        return round((c - p) / abs(p) * 100, 1)
+    except Exception:
+        return None
+
 
 # ── PIN helpers ───────────────────────────────────────────────────────────────
 
@@ -156,21 +163,16 @@ async def fin_pin_verify(request: Request, session: AsyncSession = Depends(get_d
     except Exception:
         body = {}
     ok = await verify_finance_pin(session=session, pin=str(body.get("pin") or "").strip())
-    now = time.time()
-    count, last_ts = _pin_fail_cache.get(user_key, (0, now))
-    if now - last_ts > _PIN_FAIL_WINDOW:
-        count = 0
     if ok:
         logger.info("FINANCE_PIN_VERIFY ok=True user=%s", user_display)
-        _pin_fail_cache.pop(user_key, None)
+        clear_pin_fail(user_key)
         resp = JSONResponse({"ok": True})
         _set_pin_cookie(resp)
         logger.info("FINANCE_PIN_SESSION_SET user=%s", user_display)
         return resp
-    count += 1
-    _pin_fail_cache[user_key] = (count, now)
-    logger.info("FINANCE_PIN_FAIL attempt=%d/%d user=%s", count, _PIN_FAIL_MAX, user_display)
-    if count >= _PIN_FAIL_MAX:
+    count = record_pin_fail(user_key)
+    logger.info("FINANCE_PIN_FAIL attempt=%d/%d user=%s", count, 3, user_display)
+    if _should_alert(count):
         asyncio.create_task(_send_pin_alert(user_display, count))
     return JSONResponse({"ok": False, "error": "wrong_pin", "error_message": _human_error("wrong_pin")}, status_code=403)
 
@@ -216,21 +218,64 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
         date_to = datetime.fromisoformat(date_to_s) if date_to_s else now
     except Exception:
         date_to = now
+    duration = max(1, (date_to.date() - date_from.date()).days + 1)
+    prev_from = date_from.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=duration)
+    prev_to = date_to.replace(hour=23, minute=59, second=59, microsecond=0) - timedelta(days=duration)
+
     dash = await _get_dash(session=session, date_from=date_from, date_to=date_to)
+    prev = await _get_dash(session=session, date_from=prev_from, date_to=prev_to)
+
     try:
         cushion_days = int(dash.profit / dash.avg_expense_per_day) if dash.avg_expense_per_day > 0 and dash.profit > 0 else None
     except Exception:
         cushion_days = None
+    try:
+        prev_cushion_days = int(prev.profit / prev.avg_expense_per_day) if prev.avg_expense_per_day > 0 and prev.profit > 0 else None
+    except Exception:
+        prev_cushion_days = None
+
+    prev_exp_map = {r["category_id"]: float(r["total"]) for r in prev.expense_by_category}
+    prev_inc_map = {r["category_id"]: float(r["total"]) for r in prev.income_by_category}
+    exp_cats = [
+        {**r, "prev_total": f"{prev_exp_map.get(r['category_id'], 0):.2f}",
+         "delta_pct": _delta_pct(float(r["total"]), prev_exp_map.get(r["category_id"], 0))}
+        for r in dash.expense_by_category
+    ]
+    inc_cats = [
+        {**r, "prev_total": f"{prev_inc_map.get(r['category_id'], 0):.2f}",
+         "delta_pct": _delta_pct(float(r["total"]), prev_inc_map.get(r["category_id"], 0))}
+        for r in dash.income_by_category
+    ]
+
     return {
         "ok": True,
+        "period": {"from": date_from.date().isoformat(), "to": date_to.date().isoformat()},
+        "prev_period": {"from": prev_from.date().isoformat(), "to": prev_to.date().isoformat()},
         "income": f"{dash.income:.2f}",
         "expense": f"{dash.expense:.2f}",
         "profit": f"{dash.profit:.2f}",
         "avg_expense_per_day": f"{dash.avg_expense_per_day:.2f}",
+        "avg_income_per_day": f"{dash.avg_income_per_day:.2f}",
         "cushion_days": cushion_days,
+        "prev": {
+            "income": f"{prev.income:.2f}",
+            "expense": f"{prev.expense:.2f}",
+            "profit": f"{prev.profit:.2f}",
+            "avg_expense_per_day": f"{prev.avg_expense_per_day:.2f}",
+            "avg_income_per_day": f"{prev.avg_income_per_day:.2f}",
+            "cushion_days": prev_cushion_days,
+        },
+        "delta": {
+            "income": _delta_pct(dash.income, prev.income),
+            "expense": _delta_pct(dash.expense, prev.expense),
+            "profit": _delta_pct(dash.profit, prev.profit),
+            "avg_expense_per_day": _delta_pct(dash.avg_expense_per_day, prev.avg_expense_per_day),
+            "avg_income_per_day": _delta_pct(dash.avg_income_per_day, prev.avg_income_per_day),
+            "cushion_days": _delta_pct(cushion_days, prev_cushion_days) if cushion_days is not None and prev_cushion_days is not None else None,
+        },
         "by_day": dash.by_day,
-        "expense_by_category": dash.expense_by_category,
-        "income_by_category": dash.income_by_category,
+        "expense_by_category": exp_cats,
+        "income_by_category": inc_cats,
         "top_expense_categories": dash.top_expense_categories,
         "top_income_categories": dash.top_income_categories,
     }

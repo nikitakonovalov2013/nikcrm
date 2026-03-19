@@ -3,6 +3,7 @@
 {% block title %}Зарплаты{% endblock %}
 
 {% block head_extra %}
+<script src="{{ url_for('static', path='pin_gate.js') }}"></script>
 <link rel="stylesheet" href="{{ url_for('static', path='salaries.css') }}" />
 {% if is_admin %}
 <meta name="sal-is-admin" content="1" />
@@ -16,14 +17,15 @@
 <div class="salaries-page">
   <div class="sal-header">
     <h2 class="sal-title">Зарплаты</h2>
-
-    {% if is_admin %}
-    <div class="sal-header-actions">
-      <button id="sal-pin-admin" class="btn-outline" type="button">Сбросить пин-код</button>
+    <div class="sal-header-actions" id="sal-header-actions" style="display:none">
+      {% if is_admin %}<button class="btn-outline" type="button" id="sal-btn-pin">Сменить PIN</button>{% endif %}
     </div>
-    {% endif %}
   </div>
 
+  {% set pfx='sal' %}{% set pin_wall_title='Введите пин-код модуля зарплат' %}
+  {% include 'partials/pin_gate.html' %}
+
+  <div id="sal-main"{% if not pin_ok %} style="display:none"{% endif %}>
   <div class="sal-tabs" role="tablist" aria-label="Зарплаты">
     <button id="sal-tab-dash" class="sal-tab is-active" type="button" role="tab" aria-selected="true">Дашборды</button>
     <button id="sal-tab-employees" class="sal-tab" type="button" role="tab" aria-selected="false">Сотрудники</button>
@@ -286,10 +288,13 @@
       </div>
     </div>
   </div>
+  </div>
 </div>
 
 <script>
 (function(){
+  var _pinOk={{('true' if pin_ok else 'false')}};
+  var _isAdmin={{('true' if is_admin else 'false')}};
   const monthEl = document.getElementById('salary-month');
   const applyBtn = document.getElementById('salary-apply');
   const resetBtn = document.getElementById('salary-reset');
@@ -2236,11 +2241,15 @@
     });
   } catch(_) {}
 
-  setActiveTab(initialTab);
-  // default current month is applied in all tabs
-  try { applyDash(); } catch(_){ }
-  try { applyEmployees(); } catch(_){ }
-  try { if(initialTab === 'payouts') applyPayouts(); } catch(_){ }
+  function _initMain(){
+    setActiveTab(initialTab);
+    try { applyDash(); } catch(_){ }
+    try { applyEmployees(); } catch(_){ }
+    try { if(initialTab === 'payouts') applyPayouts(); } catch(_){ }
+  }
+  try {
+    initPinGate({pfx:'sal',apiVerify:apiBase()+'/salaries/pin/verify',apiSetPin:apiBase()+'/salaries/pin/set',mainId:'sal-main',headerActionsId:'sal-header-actions',pinBtnId:'sal-btn-pin',pinOk:_pinOk,isAdmin:_isAdmin,onSuccess:_initMain});
+  } catch(_){ }
 })();
 </script>
 {% endblock %}
