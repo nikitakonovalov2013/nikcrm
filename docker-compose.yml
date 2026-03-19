@@ -63,6 +63,26 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  finance_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: finance_bot
+    env_file: .env
+    environment:
+      <<: *tz-env
+    volumes:
+      - logs_bot:/var/log/app/bot
+      - ./data/uploads:/app/web/app/static/uploads
+      - *tz-localtime
+      - *tz-timezone
+    depends_on:
+      db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   web:
     build:
       context: .

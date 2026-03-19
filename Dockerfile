@@ -45,6 +45,17 @@ RUN chmod +x /entrypoint.sh
 CMD ["/entrypoint.sh"]
 
 
+FROM base AS finance_bot
+
+COPY bot ./bot
+COPY finance_bot ./finance_bot
+COPY web ./web
+COPY bot/entrypoint.sh /entrypoint_finance_bot.sh
+RUN chmod +x /entrypoint_finance_bot.sh
+
+CMD ["python", "-m", "finance_bot.app.main"]
+
+
 FROM base AS migrator
 
 CMD ["alembic", "upgrade", "head"]

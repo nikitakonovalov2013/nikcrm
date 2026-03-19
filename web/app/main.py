@@ -100,6 +100,23 @@ from shared.services.shifts_domain import (
 
 from shared.services.salaries_pin import verify_salary_pin
 from shared.services.salaries_pin import set_salary_pin, reset_salary_pin
+from shared.services.finance_pin import (
+    verify_finance_pin, set_finance_pin, reset_finance_pin,
+    get_finance_settings as get_finance_settings_row,
+)
+from shared.services.finance_service import (
+    list_categories as finance_list_categories,
+    create_category as finance_create_category,
+    update_category as finance_update_category,
+    list_operations as finance_list_operations,
+    get_operation as finance_get_operation,
+    create_operation as finance_create_operation,
+    update_operation as finance_update_operation,
+    delete_operation as finance_delete_operation,
+    get_dashboard as finance_get_dashboard,
+    export_operations as finance_export_operations,
+)
+from shared.models import FinanceOperation, FinanceCategory, FinanceSettings as FinanceSettingsModel
 from shared.services.salaries_service import calc_user_period_totals
 from shared.services.salaries_service import create_salary_payout, list_salary_payouts_for_user
 from shared.services.salaries_service import suggest_salary_payout_for_period
@@ -126,6 +143,9 @@ MAX_TG_TEXT = 4096
 
 SALARY_PIN_COOKIE = "salary_pin_ok"
 SALARY_PIN_TTL_SECONDS = 72 * 60 * 60
+
+FINANCE_PIN_COOKIE = "finance_pin_ok"
+FINANCE_PIN_TTL_SECONDS = 72 * 60 * 60
 
 _TASK_REMIND_LAST_TS: dict[int, float] = {}
 
@@ -179,6 +199,35 @@ def _salary_pin_set_cookie(resp: Response) -> None:
         SALARY_PIN_COOKIE,
         token,
         max_age=int(SALARY_PIN_TTL_SECONDS),
+        httponly=True,
+        secure=False,
+        samesite="lax",
+    )
+
+
+def _finance_pin_signer() -> TimestampSigner:
+    return TimestampSigner(str(getattr(settings, "WEB_JWT_SECRET", "") or "") + "_finance")
+
+
+def _finance_pin_cookie_is_valid(request: Request) -> bool:
+    token = str(request.cookies.get(FINANCE_PIN_COOKIE) or "").strip()
+    if not token:
+        return False
+    try:
+        val = _finance_pin_signer().unsign(token, max_age=int(FINANCE_PIN_TTL_SECONDS))
+        return str(val.decode("utf-8")).strip() == "1"
+    except (BadSignature, SignatureExpired):
+        return False
+    except Exception:
+        return False
+
+
+def _finance_pin_set_cookie(resp: Response) -> None:
+    token = _finance_pin_signer().sign("1").decode("utf-8")
+    resp.set_cookie(
+        FINANCE_PIN_COOKIE,
+        token,
+        max_age=int(FINANCE_PIN_TTL_SECONDS),
         httponly=True,
         secure=False,
         samesite="lax",
@@ -312,6 +361,9 @@ app = FastAPI(title="Admin Panel", root_path="/crm")
 
 # Make app aware of reverse proxy (X-Forwarded-Proto/Host) so url_for builds https URLs behind nginx
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+from web.app.finance_routes import router as _finance_router  # noqa: E402
+app.include_router(_finance_router)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -581,6 +633,22 @@ def _to_public_url(path: str | None) -> str | None:
 async def get_db() -> AsyncSession:
     async with get_async_session() as session:
         yield session
+
+
+@app.get("/finance", name="finance_page")
+async def finance_page(
+    request: Request,
+    admin_id: int = Depends(require_admin_or_manager),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    await load_staff_user(session, admin_id)
+    is_admin = int(admin_id) in (list(getattr(settings, "admin_ids", None) or []))
+    pin_ok = _finance_pin_cookie_is_valid(request)
+    return templates.TemplateResponse(
+        "finance/index.html",
+        {"request": request, "pin_ok": pin_ok, "is_admin": is_admin, "base_template": "base.html"},
+    )
 
 
 def _broadcast_rating_kb(*, broadcast_id: int) -> dict:
@@ -5390,6 +5458,36 @@ async def salaries_api_payout_update(
     return {"ok": True, "before": res.get("before"), "after": res.get("after")}
 
 
+@app.post("/api/salaries/payouts/{payout_id:int}/delete")
+@app.post("/crm/api/salaries/payouts/{payout_id:int}/delete")
+async def salaries_api_payout_delete(
+    payout_id: int,
+    request: Request,
+    admin_id: int = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_manager_allowed(request, admin_id, session)
+    actor = await load_staff_user(session, admin_id)
+    if not _salary_pin_cookie_is_valid(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    from shared.services.salaries_service import delete_salary_payout
+
+    try:
+        res = await delete_salary_payout(
+            session=session,
+            payout_id=int(payout_id),
+            deleted_by_user_id=int(getattr(actor, "id", 0) or 0) or None,
+        )
+    except ValueError as e:
+        code = str(e)
+        if code == "payout_not_found":
+            raise HTTPException(status_code=404, detail="Выплата не найдена")
+        raise HTTPException(status_code=400, detail="Ошибка удаления")
+
+    return {"ok": True, "before": res.get("before"), "after": res.get("after")}
+
+
 @app.get("/purchases/archive", response_class=HTMLResponse, name="purchases_archive")
 async def purchases_archive(request: Request, admin_id: int = Depends(require_admin_or_manager), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
@@ -9378,57 +9476,3 @@ async def supplies_update(
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
     )
- 
-    res = await session.execute(
-        select(MaterialSupply)
-        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
-        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
-    )
-    items = res.scalars().all()
-    return templates.TemplateResponse(
-        "materials/partials/supplies_table.html",
-        {"request": request, "items": items, "is_oob": True},
-        headers={"HX-Trigger": "close-modal"},
-    )
-
-
-@app.post("/materials/supplies/{item_id}/update")
-async def supplies_update(
-    item_id: int,
-    request: Request,
-    material_id: int = Form(...),
-    employee_id: int | None = Form(None),
-    amount: Decimal = Form(...),
-    date: str = Form(...),
-    admin_id: int = Depends(require_staff),
-    session: AsyncSession = Depends(get_db),
-):
-    await ensure_manager_allowed(request, admin_id, session)
-    from datetime import datetime as dt
-    d = dt.strptime(date, "%Y-%m-%d").date()
-    res = await session.execute(select(MaterialSupply).where(MaterialSupply.id == item_id))
-    rec = res.scalar_one_or_none()
-    if not rec:
-        raise HTTPException(404)
-    try:
-        if Decimal(amount) <= 0:
-            raise HTTPException(400, detail="amount must be > 0")
-    except Exception:
-        raise HTTPException(400, detail="invalid amount")
-    rec.material_id = material_id
-    rec.employee_id = employee_id or None
-    rec.amount = amount
-    rec.date = d
-    await session.flush()
-    res2 = await session.execute(
-        select(MaterialSupply)
-        .options(selectinload(MaterialSupply.material), selectinload(MaterialSupply.employee))
-        .order_by(MaterialSupply.date.desc(), MaterialSupply.id.desc())
-    )
-    items = res2.scalars().all()
-    return templates.TemplateResponse(
-        "materials/partials/supplies_table.html",
-        {"request": request, "items": items, "is_oob": True},
-        headers={"HX-Trigger": "close-modal"},
-    )
- 

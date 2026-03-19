@@ -381,6 +381,47 @@
     }
   }
 
+  async function deletePayout(payoutId){
+    if(!isAdmin()) return;
+    const pid = Number(payoutId || 0);
+    if(!pid) return;
+    try {
+      const ok = (window.crmConfirm)
+        ? await window.crmConfirm('Удалить выплату #' + String(pid) + '? Действие нельзя отменить.', { title: 'Подтвердите удаление', okText: 'Удалить' })
+        : window.confirm('Удалить выплату #' + String(pid) + '?');
+      if(!ok) return;
+    } catch(_){ }
+
+    try {
+      const r = await apiFetch(apiBase() + '/salaries/payouts/' + encodeURIComponent(String(pid)) + '/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if(r.status === 403){ window.location.href = pageBase() + '/salaries'; return; }
+      if(r.status === 404){
+        try { window.crmAlert && window.crmAlert('Выплата не найдена'); } catch(_){ }
+        return;
+      }
+      const d = await r.json().catch(()=> ({}));
+      if(!d || !d.ok){
+        try { window.crmAlert && window.crmAlert('Не удалось удалить выплату'); } catch(_){ }
+        return;
+      }
+      try { closeModal(); } catch(_){ }
+      try {
+        const v0 = String((dashMonthEl && dashMonthEl.value) || '').trim();
+        const month = v0 ? (v0 + '-01').slice(0,7) : '';
+        if(month) loadDashboard(month);
+      } catch(_){ }
+      try { await load(); } catch(_){ }
+      try { await applyPayouts(); } catch(_){ }
+      try { window.crmAlert && window.crmAlert('Выплата удалена', { title: 'Готово' }); } catch(_){ }
+    } catch(_e){
+      try { window.crmAlert && window.crmAlert('Ошибка удаления выплаты'); } catch(_){ }
+    }
+  }
+
   function isAdmin(){
     try {
       const m = document.querySelector('meta[name="sal-is-admin"]');
@@ -494,6 +535,7 @@
             '</div>' +
             (canEdit ? (
               '<div class="spd-actions" style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">' +
+                '<button class="btn-outline" type="button" id="spd-delete" data-payout-id="' + String(p.id || pid) + '">Удалить</button>' +
                 '<button class="btn-outline" type="button" id="spd-edit" data-payout-id="' + String(p.id || pid) + '">Редактировать</button>' +
               '</div>'
             ) : '') +
@@ -501,6 +543,10 @@
         '</div>'
       );
 
+      try {
+        const delBtn = document.getElementById('spd-delete');
+        if(delBtn) delBtn.addEventListener('click', ()=>{ deletePayout(pid); });
+      } catch(_){ }
       try {
         const editBtn = document.getElementById('spd-edit');
         if(editBtn) editBtn.addEventListener('click', ()=>{ openPayoutEditModal(p); });

@@ -46,6 +46,7 @@
           <a class="menu-link {{ 'active' if path.startswith('/crm/tasks') else '' }}" href="{{ request.url_for('tasks_board') }}">Задачи</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/purchases') else '' }}" href="{{ request.url_for('purchases_board') }}">Закупки</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/salaries') else '' }}" href="{{ request.url_for('salaries_page') }}">Зарплаты</a>
+          <a class="menu-link {{ 'active' if path.startswith('/crm/finance') else '' }}" href="{{ request.url_for('finance_page') }}">Финансы</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/schedule') else '' }}" href="{{ request.url_for('schedule_page') }}">График работы</a>
           <a class="menu-link {{ 'active' if path.startswith('/crm/about') else '' }}" href="{{ request.url_for('about_page') }}">Миссия и цель</a>
           <div class="menu-section">Остатки</div>

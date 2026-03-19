@@ -27,6 +27,7 @@ from shared.models import (
 )
 from shared.services.salaries_calc import calc_shift_salary, q2, DEC_0
 from shared.services.salaries_pin import get_salary_settings
+from shared.services.finance_sync import sync_salary_payout_operation, remove_salary_payout_operation
 from shared.utils import utc_now
 
 
@@ -833,6 +834,16 @@ async def create_salary_payout(
     session.add(p)
     await session.flush()
 
+    await sync_salary_payout_operation(
+        session=session,
+        payout_id=int(getattr(p, "id", 0) or 0),
+        user_id=int(user_id),
+        amount=amt,
+        occurred_at=(getattr(p, "created_at", None) or utc_now()),
+        comment=(str(comment).strip() or None) if comment is not None else None,
+        created_by_user_id=int(created_by_user_id) if created_by_user_id is not None else None,
+    )
+
     # Link payout to eligible shifts (do not allow double-pay).
     stmt = (
         insert(SalaryPayoutShift)
@@ -976,6 +987,16 @@ async def update_salary_payout(
     session.add(p)
     await session.flush()
 
+    await sync_salary_payout_operation(
+        session=session,
+        payout_id=int(getattr(p, "id", 0) or 0),
+        user_id=int(getattr(p, "user_id", 0) or 0),
+        amount=new_amount,
+        occurred_at=new_created_at,
+        comment=new_comment,
+        created_by_user_id=int(updated_by_user_id) if updated_by_user_id is not None else (int(getattr(p, "created_by_user_id", 0) or 0) or None),
+    )
+
     # Re-evaluate "paid" flags for shifts in affected periods (old + new)
     periods = {(old_ps, old_pe), (new_ps, new_pe)}
     for ps, pe in periods:
@@ -1051,6 +1072,98 @@ async def update_salary_payout(
                         "created_at": bool((before.get("created_at") or None) != (after.get("created_at") or None)),
                     }
                 },
+            )
+        )
+        await session.flush()
+    except Exception:
+        pass
+
+    return {"before": before, "after": after}
+
+
+async def delete_salary_payout(
+    *,
+    session: AsyncSession,
+    payout_id: int,
+    deleted_by_user_id: int | None,
+) -> dict:
+    p = (
+        await session.execute(
+            select(SalaryPayout).where(SalaryPayout.id == int(payout_id))
+        )
+    ).scalars().first()
+    if p is None:
+        raise ValueError("payout_not_found")
+
+    user_id = int(getattr(p, "user_id", 0) or 0)
+    ps = getattr(p, "period_start", None)
+    pe = getattr(p, "period_end", None)
+    if ps is None or pe is None:
+        raise ValueError("bad_period")
+
+    before_totals = await calc_user_period_totals(
+        session=session,
+        user_id=user_id,
+        period_start=ps,
+        period_end=pe,
+    )
+
+    before = {
+        "amount": str(getattr(p, "amount", "") or ""),
+        "comment": (str(getattr(p, "comment", "") or "") or None),
+        "period_start": str(ps),
+        "period_end": str(pe),
+        "created_at": str(getattr(p, "created_at", "") or ""),
+        "paid": str(before_totals.paid),
+        "balance": str(before_totals.balance),
+    }
+
+    await session.delete(p)
+    await session.flush()
+
+    await remove_salary_payout_operation(session=session, payout_id=int(payout_id))
+
+    after_totals = await calc_user_period_totals(
+        session=session,
+        user_id=user_id,
+        period_start=ps,
+        period_end=pe,
+    )
+
+    is_paid_now = bool(after_totals.paid >= after_totals.accrued)
+    shifts = list(
+        (
+            await session.execute(
+                select(ShiftInstance)
+                .where(ShiftInstance.user_id == int(user_id))
+                .where(ShiftInstance.day >= ps)
+                .where(ShiftInstance.day <= pe)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for s in shifts:
+        st_row = await _ensure_salary_shift_state(session=session, shift=s)
+        st_row.is_paid = is_paid_now
+        st_row.updated_by_user_id = int(deleted_by_user_id) if deleted_by_user_id is not None else None
+        session.add(st_row)
+
+    after = {
+        "paid": str(after_totals.paid),
+        "balance": str(after_totals.balance),
+    }
+
+    try:
+        session.add(
+            SalaryPayoutAudit(
+                payout_id=int(payout_id),
+                user_id=user_id,
+                actor_user_id=int(deleted_by_user_id) if deleted_by_user_id is not None else None,
+                event_type="payout_delete",
+                before=before,
+                after=after,
+                meta={"deleted": True},
             )
         )
         await session.flush()

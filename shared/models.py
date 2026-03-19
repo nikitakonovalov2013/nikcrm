@@ -908,3 +908,81 @@ class ReminderSettings(Base):
     daily_report_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     daily_report_time: Mapped[time] = mapped_column(default=time(18, 0))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class FinanceSettings(Base):
+    __tablename__ = "finance_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pin_hash: Mapped[str] = mapped_column(String(256))
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    updated_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[updated_by_user_id])
+
+
+class FinanceCategory(Base):
+    __tablename__ = "finance_categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(200))
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("type", "name", name="uq_finance_categories_type_name"),
+        Index("ix_finance_categories_type", "type"),
+        Index("ix_finance_categories_is_archived", "is_archived"),
+    )
+
+
+class FinanceOperation(Base):
+    __tablename__ = "finance_operations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    type: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("finance_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    subcategory: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    project: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    counterparty: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    category: Mapped[Optional["FinanceCategory"]] = relationship(lazy="selectin")
+    created_by_user: Mapped[Optional["User"]] = relationship(lazy="selectin", foreign_keys=[created_by_user_id])
+    files: Mapped[list["FinanceOperationFile"]] = relationship(
+        back_populates="operation",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        Index("ix_finance_operations_type", "type"),
+        Index("ix_finance_operations_occurred_at", "occurred_at"),
+        Index("ix_finance_operations_project", "project"),
+        Index("ix_finance_operations_source_type", "source_type"),
+        Index("ix_finance_operations_source_id", "source_id"),
+        UniqueConstraint("source_type", "source_id", name="uq_finance_operations_source_type_source_id"),
+        Index("ix_finance_operations_created_at", "created_at"),
+    )
+
+
+class FinanceOperationFile(Base):
+    __tablename__ = "finance_operation_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation_id: Mapped[int] = mapped_column(ForeignKey("finance_operations.id", ondelete="CASCADE"), index=True)
+    file_path: Mapped[str] = mapped_column(Text)
+    file_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tg_file_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    operation: Mapped["FinanceOperation"] = relationship(back_populates="files")
