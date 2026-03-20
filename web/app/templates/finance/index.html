@@ -20,7 +20,7 @@
 .fin-pin-inputs input{width:44px;height:52px;border:2px solid #d0d5dd;border-radius:8px;text-align:center;font-size:20px;font-weight:600;color:#101828;outline:none}
 .fin-pin-inputs input:focus{border-color:#2563eb}
 .fin-pin-error{color:#d92d20;font-size:13px;min-height:18px}
-.fin-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px}
+.fin-kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
 .fin-kpi{background:#f9fafb;border:1px solid #e4e7ec;border-radius:10px;padding:14px 16px}
 .fin-kpi-k{font-size:12px;color:#667085;margin-bottom:4px}
 .fin-kpi-v{font-size:clamp(14px,2vw,20px);font-weight:700;color:#101828;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -34,6 +34,9 @@
 .fin-chart-leg-btn{cursor:pointer;user-select:none;transition:opacity .15s;padding:2px 4px;border-radius:4px}
 .fin-chart-leg-btn:hover{background:#f2f4f7}
 .fin-chart-leg-btn.muted{opacity:.35}
+.fin-kpi-k-row{display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:4px}
+.fin-kpi-edit-btn{background:none;border:none;cursor:pointer;font-size:13px;color:#98a2b3;padding:0;line-height:1;flex:0 0 auto}
+.fin-kpi-edit-btn:hover{color:#344054}
 .fin-charts{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;margin-bottom:20px}
 .fin-chart-card{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px}
 .fin-chart-title{font-size:13px;font-weight:600;color:#344054;margin-bottom:12px}
@@ -94,6 +97,7 @@
 .fin-donut-card{grid-column:span 6;min-width:0}
 @media(max-width:960px){.fin-donut-card{grid-column:span 12}}
 @media(max-width:540px){.fin-donut-wrap{flex-direction:column;align-items:center}.fin-donut{width:200px;height:200px;max-width:200px;max-height:200px;flex:0 0 200px}}
+@media(max-width:900px){.fin-kpi-grid{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:640px){.fin-kpi-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.fin-cats-grid{grid-template-columns:1fr}.fin-form-grid{grid-template-columns:1fr}.fin-form-grid .full{grid-column:1}}
 .fin-cat-group{background:#f9fafb;border-radius:10px;padding:14px}
@@ -159,7 +163,9 @@
           <div class="fin-kpi"><div class="fin-kpi-k">Баланс</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-profit">—</div><span class="fin-delta delta-neutral" id="kpi-profit-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Ср. расходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v blue" id="kpi-avg">—</div><span class="fin-delta delta-neutral" id="kpi-avg-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Ср. доходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-avg-inc">—</div><span class="fin-delta delta-neutral" id="kpi-avg-inc-d"></span></div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Финансовая подушка</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-cushion">—</div><span class="fin-delta delta-neutral" id="kpi-cushion-d"></span></div><div class="fin-kpi-hint" id="kpi-cushion-h"></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k-row"><span class="fin-kpi-k">Баланс на счету</span><button class="fin-kpi-edit-btn" id="fin-cash-edit-btn" title="Редактировать">&#9998;</button></div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-cash">—</div></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Цена склада</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-warehouse">—</div></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Финансовая подушка</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-cushion">—</div></div><div class="fin-kpi-hint" id="kpi-cushion-h"></div></div>
         </div>
         <div class="fin-charts">
           <div class="fin-chart-card" style="grid-column:1/-1">
@@ -314,6 +320,23 @@
       <button class="btn" id="op-save">Сохранить</button>
       <button class="btn-outline" id="op-cancel">Отмена</button>
       <span id="op-loading" style="display:none;margin-left:auto"><span class="fin-spinner"></span></span>
+    </div>
+  </div>
+</div>
+
+<!-- CASH BALANCE MODAL -->
+<div class="fin-modal-overlay" id="cash-modal">
+  <div class="fin-modal" style="max-width:380px">
+    <button class="fin-modal-close" id="cash-modal-close">&#x2715;</button>
+    <div class="fin-modal-title">Редактировать баланс на счету</div>
+    <div class="fin-form-row">
+      <label class="fin-label">Сумма (руб.) *</label>
+      <input type="text" class="fin-input" id="cash-val" placeholder="0" style="width:100%" />
+    </div>
+    <div class="fin-form-error" id="cash-err"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn" id="cash-save">Сохранить</button>
+      <button class="btn-outline" id="cash-cancel">Отмена</button>
     </div>
   </div>
 </div>
@@ -476,6 +499,21 @@ function setDelta(id,v){
   e.textContent=text;
   e.className='fin-delta '+cls;
 }
+let _avgExp7=0,_cashBalance=0;
+function renderCushion(cash,avg7){
+  const c=parseFloat(cash)||0,a=parseFloat(avg7)||0;
+  if(a>0){
+    const days=c/a;
+    const dStr=days.toFixed(1).replace('.',',');
+    el('kpi-cushion').textContent=dStr+' дн.';
+    el('kpi-cushion').className='fin-kpi-v '+(days>=30?'green':days>=7?'blue':'red');
+    el('kpi-cushion-h').textContent='при расходах за посл. 7 дней';
+  }else{
+    el('kpi-cushion').textContent='—';
+    el('kpi-cushion').className='fin-kpi-v';
+    el('kpi-cushion-h').textContent='нет расходов за последние 7 дней';
+  }
+}
 function renderDash(d){
   const delta=d.delta||{};
   const inc=parseFloat(d.income||0),exp=parseFloat(d.expense||0),prof=parseFloat(d.profit||0);
@@ -486,12 +524,12 @@ function renderDash(d){
   setDelta('kpi-profit-d',delta.profit);
   el('kpi-avg').textContent=fmt(d.avg_expense_per_day||0);setDelta('kpi-avg-d',delta.avg_expense_per_day);
   el('kpi-avg-inc').textContent=fmt(d.avg_income_per_day||0);setDelta('kpi-avg-inc-d',delta.avg_income_per_day);
-  if(d.cushion_days!=null){
-    el('kpi-cushion').textContent=d.cushion_days+' дн.';
-    el('kpi-cushion').className='fin-kpi-v '+(d.cushion_days>=30?'green':d.cushion_days>=7?'blue':'red');
-    el('kpi-cushion-h').textContent='при текущих расходах';
-    setDelta('kpi-cushion-d',delta.cushion_days);
-  }else{el('kpi-cushion').textContent='—';el('kpi-cushion-h').textContent='';setDelta('kpi-cushion-d',null);}
+  _cashBalance=parseFloat(d.cash_balance||0);
+  _avgExp7=parseFloat(d.avg_expense_last_7_days||0);
+  el('kpi-cash').textContent=fmt(_cashBalance);
+  const wv=parseInt(d.warehouse_value_rub||0,10);
+  el('kpi-warehouse').textContent=isNaN(wv)?'—':wv.toLocaleString('ru-RU')+' ₽';
+  renderCushion(_cashBalance,_avgExp7);
   const byDay=normalizeByDay(d.by_day||[],el('fin-dash-from').value,el('fin-dash-to').value);
   _lastBarData=byDay;
   show('fin-dash-content');
@@ -628,6 +666,39 @@ function renderDonut(targetId,cats,total,caption,kind){
   }).join('');
   root.innerHTML=`<div class="fin-donut-wrap"><div class="fin-donut" style="background:conic-gradient(${grad})"><div class="fin-donut-center"><div class="fin-donut-total">${esc(fmt(total))}</div><div class="fin-donut-caption">${esc(caption)}</div></div></div><div class="fin-donut-legend">${legend}</div></div>`;
 }
+
+// Cash balance modal
+function openCashModal(){
+  el('cash-val').value=_cashBalance>0?String(_cashBalance).replace('.',','):'';
+  el('cash-err').textContent='';
+  el('cash-modal').classList.add('open');
+  setTimeout(()=>el('cash-val').focus(),50);
+}
+function closeCashModal(){el('cash-modal').classList.remove('open');}
+try{
+  on('fin-cash-edit-btn','click',openCashModal);
+  on('cash-modal-close','click',closeCashModal);
+  on('cash-cancel','click',closeCashModal);
+  on('cash-modal','click',function(e){if(e.target===this)closeCashModal();});
+  on('cash-save','click',async function(){
+    const raw=String(el('cash-val').value||'').trim().replace(/\s/g,'').replace(',','.');
+    const v=parseFloat(raw);
+    if(isNaN(v)||v<0){el('cash-err').textContent='Введите корректную сумму (≥ 0)';return;}
+    el('cash-err').textContent='';
+    el('cash-save').disabled=true;
+    try{
+      const r=await apiFetch('POST','/settings/cash_balance',{cash_balance:raw});
+      _cashBalance=parseFloat(r.cash_balance||0);
+      el('kpi-cash').textContent=fmt(_cashBalance);
+      renderCushion(_cashBalance,_avgExp7);
+      closeCashModal();
+    }catch(e){
+      el('cash-err').textContent=humanErr(e.data&&e.data.error?e.data.error:'');
+    }finally{
+      el('cash-save').disabled=false;
+    }
+  });
+}catch(_){}
 
 // Bar chart legend toggle
 try{

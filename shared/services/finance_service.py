@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -398,6 +399,21 @@ async def get_dashboard(
         top_expense_categories=top_expense_categories,
         top_income_categories=top_income_categories,
     )
+
+
+async def get_avg_expense_last_7_days(*, session: AsyncSession) -> Decimal:
+    """Average daily expense over the last 7 days (MSK), period-independent."""
+    tz = ZoneInfo("Europe/Moscow")
+    now = datetime.now(tz)
+    date_to = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    date_from = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+    total = (await session.execute(
+        select(func.coalesce(func.sum(FinanceOperation.amount), 0))
+        .where(FinanceOperation.type == "expense")
+        .where(FinanceOperation.occurred_at >= date_from)
+        .where(FinanceOperation.occurred_at <= date_to)
+    )).scalar_one()
+    return _Q2(Decimal(str(total)) / 7)
 
 
 # ── Export helper (returns list of dicts for csv/excel callers) ───────────────

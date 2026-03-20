@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import Material, MaterialSupply, MaterialConsumption, User
+from shared.services.warehouse import get_warehouse_value_rub as _get_warehouse_value_rub
 
 
 _logger = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ async def build_report(session: AsyncSession, *, start: datetime, end: datetime,
         )
     ).all()
     total_remains_kg = sum((Decimal(row[0] or 0) for row in stock_rows), Decimal(0))
-    warehouse_price_rub = int((total_remains_kg * Decimal("530")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    warehouse_price_rub = await _get_warehouse_value_rub(session=session)
 
     top_out = None
     if materials:

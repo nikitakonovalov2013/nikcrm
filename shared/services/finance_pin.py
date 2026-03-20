@@ -50,3 +50,28 @@ async def set_finance_pin(*, session: AsyncSession, new_pin: str, updated_by_use
 
 async def reset_finance_pin(*, session: AsyncSession, updated_by_user_id: int | None) -> FinanceSettings:
     return await set_finance_pin(session=session, new_pin="000000", updated_by_user_id=updated_by_user_id)
+
+
+async def get_cash_balance(*, session: AsyncSession) -> Decimal:
+    from decimal import Decimal
+    row = await get_finance_settings(session)
+    return Decimal(str(row.cash_balance or 0))
+
+
+async def set_cash_balance(
+    *,
+    session: AsyncSession,
+    value: Decimal,
+    updated_by_user_id: int | None = None,
+) -> FinanceSettings:
+    from decimal import Decimal
+    v = Decimal(str(value or 0))
+    if v < 0:
+        raise ValueError("invalid_amount")
+    row = await get_finance_settings(session)
+    row.cash_balance = v
+    if updated_by_user_id is not None:
+        row.updated_by_user_id = int(updated_by_user_id)
+    session.add(row)
+    await session.flush()
+    return row

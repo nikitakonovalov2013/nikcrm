@@ -915,6 +915,7 @@ class FinanceSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     pin_hash: Mapped[str] = mapped_column(String(256))
+    cash_balance: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

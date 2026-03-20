@@ -25,6 +25,8 @@ from shared.services.finance_pin import (
     verify_finance_pin,
     set_finance_pin,
     reset_finance_pin,
+    get_cash_balance as _get_cash_balance,
+    set_cash_balance as _set_cash_balance,
 )
 from shared.services.finance_service import (
     list_categories as _list_cats,
@@ -36,9 +38,11 @@ from shared.services.finance_service import (
     update_operation as _update_op,
     delete_operation as _delete_op,
     get_dashboard as _get_dash,
+    get_avg_expense_last_7_days as _get_avg_exp7,
     export_operations as _export_ops,
     _serialize_operation,
 )
+from shared.services.warehouse import get_warehouse_value_rub as _get_warehouse_value_rub
 from sqlalchemy import select, func as _func
 from shared.models import FinanceOperation as _FinOp, SalaryPayout as _SalaryPayout
 from shared.utils import utc_now
@@ -224,15 +228,14 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
 
     dash = await _get_dash(session=session, date_from=date_from, date_to=date_to)
     prev = await _get_dash(session=session, date_from=prev_from, date_to=prev_to)
+    avg_exp7 = await _get_avg_exp7(session=session)
+    cash_bal = await _get_cash_balance(session=session)
+    warehouse_val = await _get_warehouse_value_rub(session=session)
 
     try:
-        cushion_days = int(dash.profit / dash.avg_expense_per_day) if dash.avg_expense_per_day > 0 and dash.profit > 0 else None
+        cushion_days = round(float(cash_bal) / float(avg_exp7), 1) if avg_exp7 > 0 else None
     except Exception:
         cushion_days = None
-    try:
-        prev_cushion_days = int(prev.profit / prev.avg_expense_per_day) if prev.avg_expense_per_day > 0 and prev.profit > 0 else None
-    except Exception:
-        prev_cushion_days = None
 
     prev_exp_map = {r["category_id"]: float(r["total"]) for r in prev.expense_by_category}
     prev_inc_map = {r["category_id"]: float(r["total"]) for r in prev.income_by_category}
@@ -256,6 +259,9 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
         "profit": f"{dash.profit:.2f}",
         "avg_expense_per_day": f"{dash.avg_expense_per_day:.2f}",
         "avg_income_per_day": f"{dash.avg_income_per_day:.2f}",
+        "cash_balance": f"{cash_bal:.2f}",
+        "avg_expense_last_7_days": f"{avg_exp7:.2f}",
+        "warehouse_value_rub": warehouse_val,
         "cushion_days": cushion_days,
         "prev": {
             "income": f"{prev.income:.2f}",
@@ -263,7 +269,6 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
             "profit": f"{prev.profit:.2f}",
             "avg_expense_per_day": f"{prev.avg_expense_per_day:.2f}",
             "avg_income_per_day": f"{prev.avg_income_per_day:.2f}",
-            "cushion_days": prev_cushion_days,
         },
         "delta": {
             "income": _delta_pct(dash.income, prev.income),
@@ -271,7 +276,6 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
             "profit": _delta_pct(dash.profit, prev.profit),
             "avg_expense_per_day": _delta_pct(dash.avg_expense_per_day, prev.avg_expense_per_day),
             "avg_income_per_day": _delta_pct(dash.avg_income_per_day, prev.avg_income_per_day),
-            "cushion_days": _delta_pct(cushion_days, prev_cushion_days) if cushion_days is not None and prev_cushion_days is not None else None,
         },
         "by_day": dash.by_day,
         "expense_by_category": exp_cats,
@@ -279,6 +283,33 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
         "top_expense_categories": dash.top_expense_categories,
         "top_income_categories": dash.top_income_categories,
     }
+
+
+# ── Finance settings ──────────────────────────────────────────────────────────────
+
+@router.get("/api/finance/settings")
+async def fin_settings_get(request: Request, session: AsyncSession = Depends(get_db)):
+    if not pin_valid(request):
+        raise HTTPException(status_code=403)
+    bal = await _get_cash_balance(session=session)
+    return {"ok": True, "cash_balance": f"{bal:.2f}"}
+
+
+@router.post("/api/finance/settings/cash_balance")
+async def fin_settings_set_cash_balance(request: Request, session: AsyncSession = Depends(get_db)):
+    if not pin_valid(request):
+        raise HTTPException(status_code=403)
+    body = await request.json()
+    raw = str(body.get("cash_balance") or "0").replace(" ", "").replace(",", ".")
+    try:
+        value = Decimal(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail={"ok": False, "error": "invalid_amount"})
+    if value < 0:
+        raise HTTPException(status_code=400, detail={"ok": False, "error": "invalid_amount"})
+    await _set_cash_balance(session=session, value=value)
+    await session.commit()
+    return {"ok": True, "cash_balance": f"{value:.2f}"}
 
 
 # ── Categories ────────────────────────────────────────────────────────────────
