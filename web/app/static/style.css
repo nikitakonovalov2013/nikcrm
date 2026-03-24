@@ -518,12 +518,20 @@ body.no-tooltips .has-tooltip[data-tooltip]::before{display:none!important;conte
 .task-check-main{min-width:0}
 .task-check-main.is-done .task-check-text-btn{color:#64748b;text-decoration:line-through}
 .task-check-text-btn{border:none;background:transparent;padding:0;text-align:left;color:#0f172a;width:100%;cursor:pointer;white-space:normal;overflow-wrap:break-word;word-break:normal}
-.task-check-edit-input{padding:8px 10px;min-height:auto}
+.task-check-edit-input{width:100%;box-sizing:border-box;padding:8px 10px;min-height:36px;resize:none;overflow:hidden;line-height:1.4}
 .task-check-actions{display:flex;gap:6px;align-items:center}
 .btn-xs{padding:4px 8px;min-height:28px;border-radius:8px;font-size:12px;line-height:1}
 .task-check-add-row{display:flex;gap:8px;margin-top:10px}
 .task-check-add-row .form-control{flex:1 1 auto;min-width:0}
 .task-check-add-row .btn{flex:0 0 auto}
+@media (max-width:520px){
+  .task-check-row{grid-template-columns:auto 1fr;grid-template-areas:"chk main" "chk acts";align-items:start}
+  .task-check-toggle{grid-area:chk;padding-top:4px}
+  .task-check-main{grid-area:main}
+  .task-check-actions{grid-area:acts;justify-content:flex-start;flex-wrap:wrap}
+  .task-check-add-row{flex-direction:column}
+  .task-check-add-row .btn{width:100%}
+}
 .task-main-photo{margin:10px 0 6px 0}
 .task-main-photo-img{max-width:100%;max-height:320px;object-fit:contain;border-radius:14px;border:1px solid #e5e7eb;background:#f8fafc}
 .task-detail-grid{display:grid;grid-template-columns:1fr;gap:8px;font-size:14px;color:#0f172a}

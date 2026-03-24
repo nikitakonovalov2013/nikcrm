@@ -647,7 +647,7 @@
     const last = index >= (total - 1);
 
     const textHtml = isEditing
-      ? ('<input class="form-control task-check-edit-input" type="text" value="' + escapeHtml(item.text || '') + '" onkeydown="window.tasksChecklistEditKeydown(event, ' + String(taskId) + ', \'' + escapeHtml(id) + '\')" onblur="window.tasksChecklistCommitEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\', this.value)" />')
+      ? ('<textarea class="form-control task-check-edit-input" rows="1" onkeydown="window.tasksChecklistEditKeydown(event, ' + String(taskId) + ', \'' + escapeHtml(id) + '\')" oninput="this.style.height=\'auto\';this.style.height=this.scrollHeight+\'px\'" onblur="window.tasksChecklistCommitEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\', this.value)">' + escapeHtml(item.text || '') + '</textarea>')
       : ('<button type="button" class="task-check-text-btn" ' + (editable ? ('onclick="window.tasksChecklistStartEdit(' + String(taskId) + ', \'' + escapeHtml(id) + '\')"') : 'disabled') + '>' + escapeHtml(item.text || '') + '</button>');
 
     return (
@@ -700,8 +700,17 @@
     const box = document.getElementById('task-checklist-box-' + key);
     const st = _checklistState.get(key);
     if (!box || !st) return;
-    const taskView = { id: key, checklist: st.current };
-    box.outerHTML = _renderChecklistBlock(taskView);
+    const editingId = String(st.editingId || '');
+    box.outerHTML = _renderChecklistBlock({ id: key });
+    if (editingId) {
+      try {
+        const nb = document.getElementById('task-checklist-box-' + key);
+        if (nb) {
+          const ta = nb.querySelector('.task-check-edit-input');
+          if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+        }
+      } catch(_){}
+    }
   }
 
   function _setChecklistStatus(taskId, text){
@@ -828,7 +837,7 @@
       }
       return false;
     }
-    if (ev.key === 'Enter') {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
       return window.tasksChecklistCommitEdit(taskId, itemId, ev.target ? ev.target.value : '');
     }
@@ -856,7 +865,6 @@
 
   window.tasksChecklistRemove = function(taskId, itemId){
     if (!_checklistCanEdit()) return false;
-    if (!window.confirm('Удалить пункт чек-листа?')) return false;
     const key = String(taskId || '');
     const st = _checklistState.get(key);
     if (!st) return false;
@@ -883,7 +891,7 @@
     const tmp = arr[idx];
     arr[idx] = arr[to];
     arr[to] = tmp;
-    st.current = _normalizeChecklistLocal(arr);
+    st.current = arr.map((it, i) => ({ ...it, pos: i + 1 }));
     _rerenderChecklist(key);
     _scheduleChecklistSave(key, 260);
     return false;
@@ -1197,9 +1205,9 @@
     }
     list.innerHTML = items.map((it, idx) => {
       const id = String(it.id || '');
-      const isEditing = editingId && editingId === id;
+      const isEditing = String(editingId) && String(editingId) === id;
       const textHtml = isEditing
-        ? ('<input class="form-control task-check-edit-input" type="text" value="' + escapeHtml(it.text || '') + '" onkeydown="window.tasksCreateChecklistEditKeydown(event, \'' + escapeHtml(id) + '\')" onblur="window.tasksCreateChecklistCommitEdit(\'' + escapeHtml(id) + '\', this.value)" />')
+        ? ('<textarea class="form-control task-check-edit-input" rows="1" onkeydown="window.tasksCreateChecklistEditKeydown(event, \'' + escapeHtml(id) + '\')" oninput="this.style.height=\'auto\';this.style.height=this.scrollHeight+\'px\'" onblur="window.tasksCreateChecklistCommitEdit(\'' + escapeHtml(id) + '\', this.value)">' + escapeHtml(it.text || '') + '</textarea>')
         : ('<button type="button" class="task-check-text-btn" onclick="window.tasksCreateChecklistStartEdit(\'' + escapeHtml(id) + '\')">' + escapeHtml(it.text || '') + '</button>');
       return (
         '<div class="task-check-row">' +
@@ -1216,6 +1224,12 @@
         '</div>'
       );
     }).join('');
+    if (editingId) {
+      try {
+        const ta = list.querySelector('.task-check-edit-input');
+        if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+      } catch(_){}
+    }
   };
 
   window.tasksCreateChecklistAdd = function(){
@@ -1258,7 +1272,7 @@
       window.tasksCreateChecklistRender();
       return false;
     }
-    if (ev.key === 'Enter') {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
       return window.tasksCreateChecklistCommitEdit(itemId, ev.target ? ev.target.value : '');
     }
@@ -1297,7 +1311,9 @@
     const tmp = items[idx];
     items[idx] = items[to];
     items[to] = tmp;
-    _tasksCreateChecklistSet(items);
+    window.__tasksCreateChecklist = items.map((it, i) => ({ ...it, pos: i + 1 }));
+    window.__tasksCreateChecklistEditId = '';
+    window.tasksCreateChecklistRender();
     return false;
   };
 
@@ -1521,6 +1537,9 @@
                   '<span>Удалить фото</span>' +
                 '</label>'
               ) : '') +
+            '</div>' +
+            '<div class="task-form-row">' +
+              _renderChecklistBlock(task) +
             '</div>' +
             '<div class="task-modal-footer">' +
               '<button type="button" class="btn-outline" onclick="window.tasksOpenDetail(' + task.id + ')">Отмена</button>' +
