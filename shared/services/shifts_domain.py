@@ -43,6 +43,17 @@ def emergency_preset_times(*, hours: int) -> tuple[time, time]:
     raise ValueError("invalid hours")
 
 
+def calc_shift_default_amount(
+    *,
+    base_rate: int,
+    extra_hours: int,
+    extra_hour_rate: int,
+    overtime_hours: int,
+    overtime_hour_rate: int,
+) -> int:
+    return int(base_rate) + int(extra_hours) * int(extra_hour_rate) + int(overtime_hours) * int(overtime_hour_rate)
+
+
 def is_shift_final_status(status: object, *, ended_at: object | None = None) -> bool:
     if ended_at is not None:
         return True

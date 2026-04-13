@@ -14,10 +14,11 @@ from sqlalchemy import select, func
 
 from shared.config import settings
 from shared.db import get_async_session
-from shared.enums import Position, UserStatus
+from shared.enums import Position, ShiftInstanceStatus, UserStatus
 from shared.models import MaterialSupply, MaterialConsumption, User, WorkShiftDay, ShiftInstance
 from shared.services.magic_links import create_magic_token
-from shared.services.shifts_domain import format_hours_from_times_int, is_shift_active_status, is_shift_final_status
+from shared.services.shifts_domain import calc_shift_default_amount, format_hours_from_times_int, is_shift_active_status, is_shift_final_status
+from shared.utils import utc_now
 from bot.app.utils.urls import get_schedule_url
 from bot.app.repository.reminders_settings import ReminderSettingsRepository
 from bot.app.services.stocks_reports import build_report
@@ -201,6 +202,103 @@ async def shift_time_notifications_job() -> None:
                         )
                     except Exception:
                         _logger.exception("failed to send shift end followup notification", extra={"chat_id": chat_id})
+    finally:
+        await bot.session.close()
+
+
+async def shift_auto_close_job() -> None:
+    tz = _tz()
+    now = datetime.now(tz)
+    now_utc = utc_now()
+    today = now.date()
+
+    _logger.info("shift_auto_close_job tick", extra={"now": now.isoformat(), "day": str(today)})
+
+    bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    try:
+        async with get_async_session() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(WorkShiftDay, User)
+                        .join(User, User.id == WorkShiftDay.user_id)
+                        .where(WorkShiftDay.day == today)
+                        .where(WorkShiftDay.kind == "work")
+                        .where(User.is_deleted == False)
+                        .where(User.status == UserStatus.APPROVED)
+                    )
+                ).all()
+            )
+
+            for wsd, u in rows:
+                chat_id = int(getattr(u, "tg_id", 0) or 0)
+                if not chat_id:
+                    continue
+
+                shift = (
+                    await session.execute(
+                        select(ShiftInstance)
+                        .where(ShiftInstance.user_id == int(getattr(u, "id")))
+                        .where(ShiftInstance.day == today)
+                        .order_by(ShiftInstance.id.desc())
+                    )
+                ).scalars().first()
+
+                if shift is None:
+                    continue
+
+                # Idempotency: do nothing if already finished.
+                if is_shift_final_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                    continue
+                if not is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
+                    continue
+
+                st, et = _wsd_effective_times(wsd)
+                end_dt = _dt_msk_for_day_time(today, et, tz)
+                if now < end_dt:
+                    continue
+
+                # Respect user snooze (if they clicked "Ещё работаю")
+                snooze_until = getattr(wsd, "end_snooze_until", None)
+                if snooze_until is not None and now < snooze_until.astimezone(tz):
+                    continue
+
+                base_rate = int(getattr(shift, "base_rate", None) or int(getattr(u, "rate_k", 0) or 0))
+                extra_hours = int(getattr(shift, "extra_hours", 0) or 0)
+                overtime_hours = int(getattr(shift, "overtime_hours", 0) or 0)
+                extra_rate = int(getattr(shift, "extra_hour_rate", 300) or 300)
+                overtime_rate = int(getattr(shift, "overtime_hour_rate", 400) or 400)
+                amount_default = int(
+                    getattr(shift, "amount_default", 0)
+                    or calc_shift_default_amount(
+                        base_rate=base_rate,
+                        extra_hours=extra_hours,
+                        extra_hour_rate=extra_rate,
+                        overtime_hours=overtime_hours,
+                        overtime_hour_rate=overtime_rate,
+                    )
+                )
+
+                shift.base_rate = base_rate
+                shift.amount_default = amount_default
+                shift.amount_submitted = amount_default
+                shift.amount_approved = amount_default
+                shift.approval_required = False
+                shift.status = ShiftInstanceStatus.APPROVED
+                shift.ended_at = now_utc
+                await session.flush()
+
+                text = f"✅ Смена завершена, ваш баланс пополнен на <b>{int(amount_default)} ₽</b>."
+                kb = {
+                    "inline_keyboard": [
+                        [{"text": "✏️ Изменить сумму", "callback_data": f"shift:close_edit:{int(getattr(shift, 'id'))}"}],
+                    ]
+                }
+
+                try:
+                    await bot.send_message(chat_id=int(chat_id), text=text, reply_markup=kb)
+                except Exception:
+                    _logger.exception("failed to send auto shift close message", extra={"chat_id": int(chat_id)})
     finally:
         await bot.session.close()
 
@@ -448,6 +546,14 @@ def schedule_jobs() -> None:
         replace_existing=True,
     )
 
+    # Shift auto close by planned end time (polling)
+    sched.add_job(
+        shift_auto_close_job,
+        IntervalTrigger(minutes=1, timezone=tz),
+        id="shift_auto_close",
+        replace_existing=True,
+    )
+
     # Telegram outbox retry (best-effort) for network/DNS issues
     sched.add_job(
         telegram_outbox_job,
@@ -503,6 +609,13 @@ async def reschedule_from_db() -> None:
         shift_time_notifications_job,
         IntervalTrigger(minutes=1, timezone=tz),
         id="shift_time_notifications",
+        replace_existing=True,
+    )
+
+    sched.add_job(
+        shift_auto_close_job,
+        IntervalTrigger(minutes=1, timezone=tz),
+        id="shift_auto_close",
         replace_existing=True,
     )
 

@@ -21,7 +21,7 @@ from bot.app.services.tasks import TasksService
 from bot.app.keyboards.tasks import task_detail_kb
 from bot.app.utils.html import esc, format_plain_url
 from bot.app.utils.task_message import render_task_message
-from bot.app.utils.urls import build_tasks_board_magic_link
+from bot.app.utils.urls import build_task_board_magic_link, build_tasks_board_magic_link
 
 
 _logger = logging.getLogger(__name__)
@@ -375,7 +375,16 @@ def render_notification_html(*, n) -> str:
         if len(snippet) > 700:
             snippet = snippet[:700] + "…"
         extra = f"\n\n<b>Текст:</b>\n{esc(snippet)}" if snippet else ""
-        return f"💬 <b>Новый комментарий</b>\n\n{base}\n\n<b>Автор:</b> {esc(actor_name)}{extra}"
+        task_title = ""
+        if task is not None:
+            task_title = str(getattr(task, "title", "") or "").strip()
+        if not task_title:
+            task_title = str(payload.get("task_title") or "").strip()
+        if task_title:
+            head = f"💬 <b>Новый комментарий к задаче: {esc(task_title)}</b>"
+        else:
+            head = "💬 <b>Новый комментарий к задаче</b>"
+        return f"{head}\n\n{base}\n\n<b>Автор:</b> {esc(actor_name)}{extra}"
     if typ == "remind":
         return f"🔔 <b>Напоминание</b>\n\n{base}\n\n<b>Инициатор:</b> {esc(actor_name)}"
 
@@ -547,6 +556,19 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                 ttl_minutes=60,
                             )
 
+                            task_url = ""
+                            try:
+                                task_url = await build_task_board_magic_link(
+                                    session=session,
+                                    user=actor,
+                                    task_id=int(task_id),
+                                    is_admin=bool(r.is_admin),
+                                    is_manager=bool(r.is_manager),
+                                    ttl_minutes=60,
+                                )
+                            except Exception:
+                                task_url = ""
+
                             can_edit = bool(r.is_admin or r.is_manager)
                             is_archived = str(task2.status.value if hasattr(task2.status, "value") else str(task2.status)) == TaskStatus.ARCHIVED.value
                             kb = task_detail_kb(
@@ -605,6 +627,9 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                             else:
                                 # Keep existing formats for other notification types, but append board URL explicitly.
                                 text = render_notification_html(n=n) + "\n\n" + format_plain_url("🌐 Доска задач:", str(board_url))
+
+                            if str(n_type) == "comment" and str(task_url).strip():
+                                text = str(text) + "\n" + format_plain_url("🔗 Открыть задачу:", str(task_url))
 
                             # Prefer edit of last sent notification for this task+recipient.
                             # BUT: for some types we must send a new message to ensure the user gets a visible notification.
