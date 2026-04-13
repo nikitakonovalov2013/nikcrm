@@ -913,17 +913,34 @@ async def create_salary_payout(
     # TG notification to employee
     if notify_tg_id is not None and int(notify_tg_id) > 0:
         try:
-            period = f"{period_start.strftime('%d.%m.%Y')}–{period_end.strftime('%d.%m.%Y')}"
-            cmt = (str(comment).strip() if comment is not None else "")
+            month_names = {
+                1: "январь",
+                2: "февраль",
+                3: "март",
+                4: "апрель",
+                5: "май",
+                6: "июнь",
+                7: "июль",
+                8: "август",
+                9: "сентябрь",
+                10: "октябрь",
+                11: "ноябрь",
+                12: "декабрь",
+            }
+
+            month_name = month_names.get(int(getattr(period_start, "month", 0) or 0), "")
+            payout_amount_txt = f"{q2(amt):.2f} руб."
+            balance_txt = f"{q2(Decimal(totals_after.balance)):.2f} руб."
+            header = f"💸 Вам выплачена зарплата за {month_name}!" if month_name else "💸 Вам выплачена зарплата!"
+
             txt_lines = [
-                "💸 <b>Выплата</b>",
+                _esc(header),
                 "",
-                f"Период: <b>{_esc(period)}</b>",
-                f"Сумма: <b>{_esc(_money(amt))}</b>",
-                f"Баланс после: <b>{_esc(_money(totals_after.balance))}</b>",
+                f"Сумма выплаты: {_esc(payout_amount_txt)}",
+                f"Ваш баланс: {_esc(balance_txt)}",
+                "",
+                "Спасибо за работу! ❤️",
             ]
-            txt_lines.append("")
-            txt_lines.append(f"Комментарий: {_esc(cmt) if cmt else '—'}")
             await _tg_send_html(chat_id=int(notify_tg_id), text="\n".join(txt_lines))
         except Exception:
             pass
