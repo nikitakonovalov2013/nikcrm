@@ -588,6 +588,7 @@ async def notifications_worker(*, bot, poll_seconds: int = 20, batch_size: int =
                                     actor_user=actor_user,
                                     board_url=str(board_url),
                                     can_take=bool(perms.take_in_progress),
+                                    can_accept_done=bool(perms.accept_done),
                                 )
                             elif n_type == "status_changed":
                                 # Special-case 'return to rework' to guarantee comment is visible.

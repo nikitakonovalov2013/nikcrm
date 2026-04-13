@@ -48,6 +48,7 @@ def render_task_message(
     *,
     board_url: str | None = None,
     can_take: bool = False,
+    can_accept_done: bool = False,
     menu_kb: InlineKeyboardMarkup | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     del viewer_user
@@ -124,7 +125,10 @@ def render_task_message(
         task_id = int(getattr(task, "id", 0) or 0)
         rows: list[list[InlineKeyboardButton]] = []
         if ctx == "task_new_notification" and bool(can_take) and task_id > 0:
-            rows.append([InlineKeyboardButton(text="▶️ Взять в работу", callback_data=f"tasks:chg:{task_id}:in_progress")])
+            rows.append([InlineKeyboardButton(text="Взять в работу", callback_data=f"tasks:chg:{task_id}:in_progress")])
+
+        if ctx == "task_review_notification" and bool(can_accept_done) and task_id > 0:
+            rows.append([InlineKeyboardButton(text="Принять", callback_data=f"tasks:chg:{task_id}:done")])
 
         bottom: list[InlineKeyboardButton] = []
         if str(board_url or "").strip():

@@ -1979,6 +1979,28 @@ async def cb_tasks_change_status(cb: CallbackQuery, state: FSMContext):
                     )
                     await state.update_data(tasks_chat_id=int(cb_chat_id), tasks_message_id=int(mid), tasks_has_media=bool(has_media))
                 return
+            if code in {"unsupported"}:
+                # Idempotent UX for inline buttons: status was likely already changed.
+                try:
+                    await cb.answer("Статус задачи уже изменён", show_alert=False)
+                except Exception:
+                    pass
+                if cb.message:
+                    try:
+                        await cb.bot.edit_message_reply_markup(
+                            chat_id=int(cb.message.chat.id),
+                            message_id=int(cb.message.message_id),
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                return
+            if code in {"forbidden"}:
+                try:
+                    await cb.answer("У вас нет прав на это действие", show_alert=False)
+                except Exception:
+                    pass
+                return
             if cb.message:
                 cb_chat_id = int(cb.message.chat.id)
                 cb_message_id = int(cb.message.message_id)
