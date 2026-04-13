@@ -691,6 +691,7 @@ async def finance_page(
     is_admin = int(admin_id) in (list(getattr(settings, "admin_ids", None) or []))
     pin_ok = _finance_pin_cookie_is_valid(request)
     return templates.TemplateResponse(
+        request,
         "finance/index.html",
         {"request": request, "pin_ok": pin_ok, "is_admin": is_admin, "base_template": "base.html"},
     )
@@ -2879,6 +2880,7 @@ async def schedule_page(request: Request, admin_id: int = Depends(require_admin_
     except Exception:
         pass
     return templates.TemplateResponse(
+        request,
         "schedule/calendar.html",
         {
             "request": request,
@@ -2941,6 +2943,7 @@ async def purchases_board(request: Request, admin_id: int = Depends(require_admi
     ]
 
     return templates.TemplateResponse(
+        request,
         "purchases/board.html",
         {
             "request": request,
@@ -2970,6 +2973,7 @@ async def salaries_page(request: Request, admin_id: int = Depends(require_admin_
 
     pin_ok = _salary_pin_cookie_is_valid(request)
     return templates.TemplateResponse(
+        request,
         "salaries/index.html",
         {
             "request": request,
@@ -3025,6 +3029,7 @@ async def salaries_shifts_modal(
     )
 
     return templates.TemplateResponse(
+        request,
         "salaries/shifts_modal.html",
         {
             "request": request,
@@ -3084,6 +3089,7 @@ async def salaries_user_shifts_page(
     )
 
     return templates.TemplateResponse(
+        request,
         "salaries/shifts_page.html",
         {
             "request": request,
@@ -5583,6 +5589,7 @@ async def purchases_archive(request: Request, admin_id: int = Depends(require_ad
     items = [_purchase_card_view(p, actor_id=int(actor.id)) for p in purchases]
 
     return templates.TemplateResponse(
+        request,
         "purchases/archive.html",
         {
             "request": request,
@@ -6240,6 +6247,7 @@ async def schedule_page_public(
         ]
     )
     return templates.TemplateResponse(
+        request,
         "schedule/calendar.html",
         {
             "request": request,
@@ -6465,6 +6473,7 @@ async def schedule_api_month(
                 "start_time": _time_to_hhmm(st),
                 "end_time": _time_to_hhmm(et),
                 "is_emergency": bool(getattr(r, "is_emergency", False)),
+                "comment": (str(getattr(r, "comment", "") or "").strip() or None),
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
@@ -6499,6 +6508,7 @@ async def schedule_api_month(
                 "start_time": None,
                 "end_time": None,
                 "is_emergency": bool(getattr(fact, "is_emergency", False)) if fact is not None else False,
+                "comment": None,
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
@@ -6530,6 +6540,7 @@ async def schedule_api_month(
                 "start_time": None,
                 "end_time": None,
                 "is_emergency": bool(getattr(fact, "is_emergency", False)),
+                "comment": None,
                 "shift_status": status,
                 "shift_amount": amount,
                 "shift_approval_required": approval_required,
@@ -6564,6 +6575,11 @@ async def schedule_api_day(
     start_time_raw = body.get("start_time")
     end_time_raw = body.get("end_time")
     target_user_id = body.get("user_id")
+    comment_in_body = "comment" in body
+    comment_val = str(body.get("comment") or "").strip() or None
+
+    if comment_in_body and not is_admin_or_manager:
+        raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     if not day_raw:
         raise HTTPException(status_code=422, detail="Не задан день")
@@ -6590,7 +6606,42 @@ async def schedule_api_day(
         )
     ).scalar_one_or_none()
 
+    allowed_kinds = {"work", "off", "sick_leave", "vacation", "extra_day_off"}
+
     if not kind:
+        # If comment is explicitly provided, allow creating/updating a note without a plan kind.
+        if comment_in_body:
+            if existing is None:
+                if comment_val is None:
+                    return {"ok": True}
+                existing = WorkShiftDay(
+                    user_id=int(uid),
+                    day=day,
+                    kind="",
+                    hours=None,
+                    start_time=None,
+                    end_time=None,
+                    is_emergency=False,
+                    comment=comment_val,
+                )
+                session.add(existing)
+                await session.flush()
+                return {"ok": True}
+
+            existing.kind = ""
+            existing.hours = None
+            existing.start_time = None
+            existing.end_time = None
+            existing.is_emergency = bool(getattr(existing, "is_emergency", False))
+            existing.comment = comment_val
+            await session.flush()
+
+            if (str(getattr(existing, "kind", "") or "").strip() == "") and (str(getattr(existing, "comment", "") or "").strip() == ""):
+                await session.delete(existing)
+                await session.flush()
+            return {"ok": True}
+
+        # Default legacy behavior: empty kind removes the plan row.
         fact = (
             await session.execute(
                 select(ShiftInstance)
@@ -6615,7 +6666,7 @@ async def schedule_api_day(
             await session.flush()
         return {"ok": True}
 
-    if kind not in {"work", "off"}:
+    if kind not in allowed_kinds:
         raise HTTPException(status_code=422, detail="Неверный тип")
 
     hours: int | None = None
@@ -6631,7 +6682,9 @@ async def schedule_api_day(
     else:
         hours = None
 
-    # Defaults: if not provided, treat as default 10:00–18:00
+    # Defaults: if not provided, treat as default 10:00–18:00.
+    # If we update only comment/status for an existing WORK day without explicit times,
+    # keep the stored times instead of overwriting with defaults.
     start_time: time | None = None
     end_time: time | None = None
     if kind == "work":
@@ -6639,8 +6692,12 @@ async def schedule_api_day(
             start_time = _parse_hhmm_time(start_time_raw, field_name="Начало")
             end_time = _parse_hhmm_time(end_time_raw, field_name="Конец")
         else:
-            start_time = DEFAULT_SHIFT_START
-            end_time = DEFAULT_SHIFT_END
+            if existing is not None and getattr(existing, "kind", "") == "work":
+                start_time = getattr(existing, "start_time", None) or DEFAULT_SHIFT_START
+                end_time = getattr(existing, "end_time", None) or DEFAULT_SHIFT_END
+            else:
+                start_time = DEFAULT_SHIFT_START
+                end_time = DEFAULT_SHIFT_END
 
     start_time, end_time = _normalize_shift_times(kind=kind, start_time=start_time, end_time=end_time)
 
@@ -6667,6 +6724,9 @@ async def schedule_api_day(
         existing.start_time = start_time
         existing.end_time = end_time
         existing.is_emergency = bool(getattr(existing, "is_emergency", False))
+
+    if comment_in_body:
+        existing.comment = comment_val
 
     await session.flush()
 
@@ -6974,7 +7034,7 @@ async def index(request: Request, admin_id: int = Depends(require_staff), sessio
     await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(User).where(User.is_deleted == False).order_by(User.created_at.desc()))
     users: List[User] = res.scalars().all()
-    return templates.TemplateResponse("index.html", {"request": request, "users": users, "admin_id": admin_id})
+    return templates.TemplateResponse(request, "index.html", {"request": request, "users": users, "admin_id": admin_id})
 
 
 @app.get("/users/{user_id}", response_class=HTMLResponse)
@@ -6986,7 +7046,9 @@ async def user_modal(user_id: int, request: Request, admin_id: int = Depends(req
     if confirm_q is not None and str(confirm_q).lower() in ("1", "true", "yes", "y"): 
         confirm_initial = True
     return templates.TemplateResponse(
-        "partials/user_modal.html", {"request": request, "user": user, "confirm_initial": confirm_initial}
+        request,
+        "partials/user_modal.html",
+        {"request": request, "user": user, "confirm_initial": confirm_initial},
     )
 
 
@@ -7083,6 +7145,7 @@ async def user_update(
         pass
     # return refreshed table row as OOB swap
     return templates.TemplateResponse(
+        request,
         "partials/user_row.html",
         {"request": request, "u": user, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -7113,6 +7176,7 @@ async def user_blacklist(user_id: int, request: Request, admin_id: int = Depends
         # non-fatal
         pass
     return templates.TemplateResponse(
+        request,
         "partials/user_row.html",
         {"request": request, "u": user, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -7190,14 +7254,14 @@ async def broadcast_page(request: Request, admin_id: int = Depends(require_staff
     positions = []
     for (pos,) in res.all():
         positions.append(pos.value if hasattr(pos, "value") else str(pos or ""))
-    return templates.TemplateResponse("broadcast.html", {"request": request, "positions": positions})
+    return templates.TemplateResponse(request, "broadcast.html", {"request": request, "positions": positions})
 
 
 @app.get("/broadcast_modal", response_class=HTMLResponse)
 async def broadcast_modal(request: Request, admin_id: int = Depends(require_admin), session: AsyncSession = Depends(get_db)):
     res = await session.execute(select(User).where(User.status == UserStatus.APPROVED).where(User.is_deleted == False))
     users = res.scalars().all()
-    return templates.TemplateResponse("partials/broadcast_modal.html", {"request": request, "users": users})
+    return templates.TemplateResponse(request, "partials/broadcast_modal.html", {"request": request, "users": users})
 
 
 @app.get("/sm-mold", response_class=HTMLResponse, name="sm_mold_page")
@@ -7209,6 +7273,7 @@ async def sm_mold_page(
     # Access policy: same auth as CRM (cookie session). No extra role restrictions.
     await load_staff_user(session, admin_id)
     return templates.TemplateResponse(
+        request,
         "crm/sm_mold.html",
         {
             "request": request,
@@ -7221,6 +7286,7 @@ async def sm_mold_page(
 async def about_page(request: Request):
     # Public page (no auth). Telegram may prefetch links for preview.
     return templates.TemplateResponse(
+        request,
         "crm/sm_mold.html",
         {
             "request": request,
@@ -7372,6 +7438,7 @@ async def tasks_board(request: Request, admin_id: int = Depends(require_admin_or
     )
 
     return templates.TemplateResponse(
+        request,
         "tasks/board.html",
         {
             "request": request,
@@ -7491,6 +7558,7 @@ async def tasks_board_public(request: Request, admin_id: int = Depends(require_a
     )
 
     resp = templates.TemplateResponse(
+        request,
         "tasks/board.html",
         {
             "request": request,
@@ -7649,6 +7717,7 @@ async def tasks_archive(request: Request, admin_id: int = Depends(require_authen
         items.append(v)
 
     return templates.TemplateResponse(
+        request,
         "tasks/archive.html",
         {
             "request": request,
@@ -7741,6 +7810,7 @@ async def tasks_archive_public(request: Request, admin_id: int = Depends(require
         items.append(v)
 
     return templates.TemplateResponse(
+        request,
         "tasks/archive.html",
         {
             "request": request,
@@ -8460,6 +8530,7 @@ async def materials_types_create(request: Request, name: str = Form(...), admin_
     except IntegrityError:
         await session.rollback()
         return templates.TemplateResponse(
+            request,
             "materials/partials/types_create_modal.html",
             {"request": request, "name": name, "errors": {"name": "Такое название уже существует"}},
             status_code=400,
@@ -8467,6 +8538,7 @@ async def materials_types_create(request: Request, name: str = Form(...), admin_
     res = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/types_table.html",
         {"request": request, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -8486,6 +8558,7 @@ async def materials_types_update(type_id: int, request: Request, name: str = For
     except IntegrityError:
         await session.rollback()
         return templates.TemplateResponse(
+            request,
             "materials/partials/types_edit_modal.html",
             {"request": request, "t": mt, "name": name, "errors": {"name": "Такое название уже существует"}},
             status_code=400,
@@ -8493,6 +8566,7 @@ async def materials_types_update(type_id: int, request: Request, name: str = For
     res2 = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res2.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/types_table.html",
         {"request": request, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -8515,6 +8589,7 @@ async def materials_types_delete(type_id: int, request: Request, admin_id: int =
     res = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/types_table.html",
         {"request": request, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -8525,7 +8600,7 @@ async def materials_types_delete(type_id: int, request: Request, admin_id: int =
 @app.get("/materials/types/modal/create", response_class=HTMLResponse)
 async def materials_types_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    return templates.TemplateResponse("materials/partials/types_create_modal.html", {"request": request})
+    return templates.TemplateResponse(request, "materials/partials/types_create_modal.html", {"request": request})
 
 
 @app.get("/materials/types/{type_id}/modal/edit", response_class=HTMLResponse)
@@ -8535,7 +8610,7 @@ async def materials_types_modal_edit(type_id: int, request: Request, admin_id: i
     mt = res.scalar_one_or_none()
     if not mt:
         raise HTTPException(404)
-    return templates.TemplateResponse("materials/partials/types_edit_modal.html", {"request": request, "t": mt})
+    return templates.TemplateResponse(request, "materials/partials/types_edit_modal.html", {"request": request, "t": mt})
 
 
 @app.get("/materials/types/{type_id}/modal/delete", response_class=HTMLResponse)
@@ -8545,7 +8620,7 @@ async def materials_types_modal_delete(type_id: int, request: Request, admin_id:
     mats = (await session.execute(select(func.count()).select_from(Material).where(Material.material_type_id == type_id))).scalar_one()
     cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).join(Material, Material.id == MaterialConsumption.material_id).where(Material.material_type_id == type_id))).scalar_one()
     sups = (await session.execute(select(func.count()).select_from(MaterialSupply).join(Material, Material.id == MaterialSupply.material_id).where(Material.material_type_id == type_id))).scalar_one()
-    return templates.TemplateResponse("materials/partials/types_delete_modal.html", {"request": request, "type_id": type_id, "mats": mats, "cons": cons, "sups": sups})
+    return templates.TemplateResponse(request, "materials/partials/types_delete_modal.html", {"request": request, "type_id": type_id, "mats": mats, "cons": cons, "sups": sups})
 
 
 @app.get("/materials", response_class=HTMLResponse)
@@ -8626,6 +8701,7 @@ async def stocks_dashboard(request: Request, admin_id: int = Depends(require_sta
         )
 
     return templates.TemplateResponse(
+        request,
         "stocks/dashboard.html",
         {
             "request": request,
@@ -8741,6 +8817,7 @@ async def materials_modal_create(request: Request, admin_id: int = Depends(requi
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_create_modal.html",
         {"request": request, "types": types, "masters": masters, "selected_master_ids": []},
     )
@@ -8774,6 +8851,7 @@ async def materials_modal_edit(material_id: int, request: Request, admin_id: int
     )
     selected_master_ids = [int(u.id) for u in (getattr(m, "allowed_masters", None) or [])]
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_edit_modal.html",
         {"request": request, "m": m, "types": types, "masters": masters, "selected_master_ids": selected_master_ids},
     )
@@ -8785,7 +8863,7 @@ async def materials_modal_delete(material_id: int, request: Request, admin_id: i
     from sqlalchemy import func
     cons = (await session.execute(select(func.count()).select_from(MaterialConsumption).where(MaterialConsumption.material_id == material_id))).scalar_one()
     sups = (await session.execute(select(func.count()).select_from(MaterialSupply).where(MaterialSupply.material_id == material_id))).scalar_one()
-    return templates.TemplateResponse("materials/partials/materials_delete_modal.html", {"request": request, "material_id": material_id, "cons": cons, "sups": sups})
+    return templates.TemplateResponse(request, "materials/partials/materials_delete_modal.html", {"request": request, "material_id": material_id, "cons": cons, "sups": sups})
 
 
 @app.get("/materials/{material_id}/modal/set-remains", response_class=HTMLResponse, name="materials_modal_set_remains")
@@ -8795,7 +8873,7 @@ async def materials_modal_set_remains(material_id: int, request: Request, admin_
     m = res.scalar_one_or_none()
     if not m:
         raise HTTPException(404)
-    return templates.TemplateResponse("materials/partials/materials_set_remains_modal.html", {"request": request, "m": m})
+    return templates.TemplateResponse(request, "materials/partials/materials_set_remains_modal.html", {"request": request, "m": m})
 
 
 @app.post("/materials/{material_id}/set-remains", name="materials_set_remains")
@@ -8818,6 +8896,7 @@ async def materials_set_remains(
         v = Decimal(str(new_remains).strip())
     except Exception:
         return templates.TemplateResponse(
+            request,
             "materials/partials/materials_set_remains_modal.html",
             {"request": request, "m": m, "new_remains": new_remains, "errors": {"new_remains": "Некорректное число"}},
             status_code=400,
@@ -8835,6 +8914,7 @@ async def materials_set_remains(
         elif "not_found" in code:
             raise HTTPException(404)
         return templates.TemplateResponse(
+            request,
             "materials/partials/materials_set_remains_modal.html",
             {"request": request, "m": m, "new_remains": str(v), "errors": {"new_remains": msg}},
             status_code=400,
@@ -8900,6 +8980,7 @@ async def materials_set_remains(
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_table.html",
         {"request": request, "materials": materials, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -8947,6 +9028,7 @@ async def materials_create(
             .all()
         )
         return templates.TemplateResponse(
+            request,
             "materials/partials/materials_create_modal.html",
             {
                 "request": request,
@@ -8990,6 +9072,7 @@ async def materials_create(
                 .all()
             )
             return templates.TemplateResponse(
+                request,
                 "materials/partials/materials_create_modal.html",
                 {
                     "request": request,
@@ -9017,6 +9100,7 @@ async def materials_create(
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_table.html",
         {"request": request, "materials": materials, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9078,6 +9162,7 @@ async def materials_update(
             .all()
         )
         return templates.TemplateResponse(
+            request,
             "materials/partials/materials_edit_modal.html",
             {
                 "request": request,
@@ -9130,6 +9215,7 @@ async def materials_update(
                 .all()
             )
             return templates.TemplateResponse(
+                request,
                 "materials/partials/materials_edit_modal.html",
                 {
                     "request": request,
@@ -9159,6 +9245,7 @@ async def materials_update(
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_table.html",
         {"request": request, "materials": materials, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9181,6 +9268,7 @@ async def materials_delete(material_id: int, request: Request, admin_id: int = D
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/materials_table.html",
         {"request": request, "materials": materials, "types": types, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9303,6 +9391,7 @@ async def consumptions_create(
     )
     items = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/consumptions_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9320,6 +9409,7 @@ async def consumptions_delete(item_id: int, request: Request, admin_id: int = De
     )
     items = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/consumptions_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9361,6 +9451,7 @@ async def consumptions_update(
     )
     items = res2.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/consumptions_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9480,6 +9571,7 @@ async def supplies_create(
     )
     items = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/supplies_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9497,6 +9589,7 @@ async def supplies_delete(item_id: int, request: Request, admin_id: int = Depend
     )
     items = res.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/supplies_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},
@@ -9538,6 +9631,7 @@ async def supplies_update(
     )
     items = res2.scalars().all()
     return templates.TemplateResponse(
+        request,
         "materials/partials/supplies_table.html",
         {"request": request, "items": items, "is_oob": True},
         headers={"HX-Trigger": "close-modal"},

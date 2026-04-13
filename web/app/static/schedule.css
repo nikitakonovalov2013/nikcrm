@@ -18,6 +18,9 @@
 .schedule-day.emergency{box-shadow:0 0 0 4px rgba(245,158,11,.12)}
 .schedule-day.work{background:#ecfdf5;border-color:#bbf7d0}
 .schedule-day.off{background:#fff7ed;border-color:#fed7aa}
+.schedule-day.sick_leave{background:#ecfeff;border-color:#a5f3fc}
+.schedule-day.vacation{background:#eef2ff;border-color:#c7d2fe}
+.schedule-day.extra_day_off{background:#fdf2f8;border-color:#fbcfe8}
 .schedule-day-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .schedule-day-num{font-weight:900;color:#0f172a}
 .schedule-day-label{font-size:12px;font-weight:700;color:#334155;line-height:1.2}
@@ -43,6 +46,9 @@
 .schedule-dot{width:10px;height:10px;border-radius:999px;border:1px solid rgba(2,6,23,.14);display:inline-block}
 .schedule-dot.work{background:#22c55e}
 .schedule-dot.off{background:#f59e0b}
+.schedule-dot.sick_leave{background:#06b6d4}
+.schedule-dot.vacation{background:#6366f1}
+.schedule-dot.extra_day_off{background:#ec4899}
 .schedule-dot.none{background:#cbd5e1}
 .schedule-legend{margin-top:12px;display:flex;gap:14px;flex-wrap:wrap}
 .schedule-legend-item{display:flex;align-items:center;gap:8px;font-size:13px;color:#334155}

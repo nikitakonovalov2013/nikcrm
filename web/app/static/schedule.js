@@ -406,7 +406,20 @@
     if (!info || !info.kind) return 'none';
     if (info.kind === 'work') return 'work';
     if (info.kind === 'off') return 'off';
+    if (info.kind === 'sick_leave') return 'sick_leave';
+    if (info.kind === 'vacation') return 'vacation';
+    if (info.kind === 'extra_day_off') return 'extra_day_off';
     return 'none';
+  }
+
+  function kindLabel(kind){
+    const k = String(kind || '').trim();
+    if (k === 'work') return 'Рабочий день';
+    if (k === 'off') return 'Выходной';
+    if (k === 'sick_leave') return 'Больничный';
+    if (k === 'vacation') return 'Отпуск';
+    if (k === 'extra_day_off') return 'Доп. выходной';
+    return '';
   }
 
   function bindUserSelector(){
@@ -669,7 +682,7 @@
         const h = calcHoursInt(st, et);
         const hs = (h !== null) ? formatHours(h) : '';
         return hs ? hs : '';
-      })() : (info && info.kind === 'off' ? 'Выходной' : (shiftStatus ? 'Факт' : '')));
+      })() : (info && info.kind ? (kindLabel(info.kind) || '') : (shiftStatus ? 'Факт' : '')));
       const interval = (allMode || singleUserMode) ? '' : formatShiftInterval(info);
       const shiftAmount = (info && (info.shift_amount !== null && info.shift_amount !== undefined)) ? Number(info.shift_amount) : null;
       const factLabel = (allMode || singleUserMode) ? '' : (shiftStatus ? shiftStatusLabel(shiftStatus) : '');
@@ -715,6 +728,12 @@
     const kind = (info && info.kind) ? String(info.kind) : '';
     const isEmergency = !!(info && info.is_emergency);
 
+    const comment = (info && info.comment) ? String(info.comment) : '';
+    const canManage = canEditSchedule();
+    const canNote = !!(IS_ADMIN || IS_MANAGER);
+
+    const clsBtn = (k) => (String(kind || '') === String(k || '') ? 'btn' : 'btn-outline');
+
     const st = normalizeTimeValue(info && info.start_time ? info.start_time : '', '10:00');
     const et = normalizeTimeValue(info && info.end_time ? info.end_time : '', '18:00');
 
@@ -724,13 +743,15 @@
     const factStr = shiftStatus ? shiftStatusLabel(shiftStatus) : '';
     const ratingStr = (shiftRating !== null && Number.isFinite(shiftRating)) ? ('⭐' + String(shiftRating)) : '';
     const hoursF = (kind === 'work') ? calcHoursInt(st, et) : null;
-    const statusStr = kind === 'work'
-      ? ('Рабочий день' + (isEmergency ? ' ⚡' : ''))
-      : (kind === 'off' ? 'Выходной' : (shiftStatus ? 'План очищен (факт сохранён)' : 'Не задано'));
-    const intervalStr = (kind === 'work') ? (st + '–' + et + (hoursF !== null ? (' (' + formatHours(hoursF) + ')') : '')) : '';
+    const kLabel = kindLabel(kind);
+    const statusStr = kind
+      ? (kLabel ? (kLabel + (isEmergency && kind === 'work' ? ' ⚡' : '')) : (shiftStatus ? 'План очищен (факт сохранён)' : 'Не задано'))
+      : (shiftStatus ? 'План очищен (факт сохранён)' : 'Не задано');
+    const intervalStr = (kind === 'work')
+      ? (st + '–' + et + (hoursF !== null ? (' (' + formatHours(hoursF) + ')') : ''))
+      : '';
 
     const isAllMode = isAllViewMode() || !!(info && info.all_mode);
-    const canManage = canEditSchedule();
     const headerStatus = isAllMode ? 'Просмотр' : statusStr;
     return (
       '<div class="modal-header">' + escapeHtml(day) + '</div>' +
@@ -739,6 +760,7 @@
           '<div class="schedule-modal-date">' + escapeHtml(day) + '</div>' +
           '<div class="schedule-modal-status muted">' + escapeHtml(headerStatus) + (!isAllMode && intervalStr ? (' · ' + escapeHtml(intervalStr)) : '') + (!isAllMode && factStr ? (' · ' + escapeHtml(factStr) + (shiftAmount !== null ? (' · ' + escapeHtml(String(shiftAmount)) + ' ₽') : '')) : '') + (!isAllMode && ratingStr ? (' · ' + escapeHtml(ratingStr)) : '') + '</div>' +
         '</div>' +
+        ((!isAllMode && comment) ? ('<div class="muted" style="margin-top:6px">Примечание: ' + escapeHtml(comment) + '</div>') : '') +
         ((kind === 'work' && canManage && !isAllMode) ? (
           '<div class="task-field" style="margin-top:10px">' +
             '<div class="task-field-label">Время смены</div>' +
@@ -753,10 +775,14 @@
         ((canManage && !isAllMode) ? (
           '<div class="divider"></div>' +
           '<div class="schedule-modal-actions">' +
-            '<button class="btn" type="button" data-action="preset_10_18">10:00–18:00 (8 часов)</button>' +
-            '<button class="btn" type="button" data-action="preset_10_20">10:00–20:00 (10 часов)</button>' +
-            '<button class="btn" type="button" data-action="preset_10_22">10:00–22:00 (12 часов)</button>' +
-            '<button class="btn-outline" type="button" data-action="off">Выходной</button>' +
+            '<button class="' + ((kind === 'work' && st === '10:00' && et === '18:00') ? 'btn' : 'btn-outline') + '" type="button" data-action="preset_10_18">10:00–18:00 (8 часов)</button>' +
+            '<button class="' + ((kind === 'work' && st === '10:00' && et === '20:00') ? 'btn' : 'btn-outline') + '" type="button" data-action="preset_10_20">10:00–20:00 (10 часов)</button>' +
+            '<button class="' + ((kind === 'work' && st === '10:00' && et === '22:00') ? 'btn' : 'btn-outline') + '" type="button" data-action="preset_10_22">10:00–22:00 (12 часов)</button>' +
+            '<button class="' + clsBtn('off') + '" type="button" data-action="off">Выходной</button>' +
+            '<button class="' + clsBtn('sick_leave') + '" type="button" data-action="sick_leave">Больничный</button>' +
+            '<button class="' + clsBtn('vacation') + '" type="button" data-action="vacation">Отпуск</button>' +
+            '<button class="' + clsBtn('extra_day_off') + '" type="button" data-action="extra_day_off">Доп. выходной</button>' +
+            (canNote ? '<button class="btn-outline" type="button" data-action="note">Примечание</button>' : '') +
             '<button class="btn-outline" type="button" data-action="clear">Очистить</button>' +
             '<button class="btn-outline" type="button" data-action="delete_shift">Удалить смену</button>' +
           '</div>'
@@ -793,6 +819,9 @@
       payload = Object.assign(payload, { kind: 'work', start_time: quickStart, end_time: quickEnd });
     }
     if (act === 'off') payload = Object.assign(payload, { kind: 'off' });
+    if (act === 'sick_leave') payload = Object.assign(payload, { kind: 'sick_leave' });
+    if (act === 'vacation') payload = Object.assign(payload, { kind: 'vacation' });
+    if (act === 'extra_day_off') payload = Object.assign(payload, { kind: 'extra_day_off' });
     if (act === 'clear') payload = Object.assign(payload, { kind: '' });
     await apiJson('/crm/api/schedule/day', {
       method: 'POST',
@@ -1000,8 +1029,38 @@
         const preset = quickPresetTimes(act);
         if (preset) payload = Object.assign({ day: day, kind: 'work', start_time: preset.start, end_time: preset.end });
         if (act === 'off') payload = { day: day, kind: 'off' };
+        if (act === 'sick_leave') payload = { day: day, kind: 'sick_leave' };
+        if (act === 'vacation') payload = { day: day, kind: 'vacation' };
+        if (act === 'extra_day_off') payload = { day: day, kind: 'extra_day_off' };
         if (act === 'clear') payload = { day: day, kind: '' };
         if (selectedUserId) payload.user_id = Number(selectedUserId);
+
+        if (act === 'note') {
+          if (!(IS_ADMIN || IS_MANAGER)) return;
+          try {
+            let prev = '';
+            try { prev = String(info && info.comment ? info.comment : ''); } catch(_){ prev = ''; }
+            const txt = window.crmPrompt
+              ? await window.crmPrompt('Примечание к дню:', { title: 'Примечание', required: false, multiline: true, placeholder: 'Введите текст…', defaultValue: prev })
+              : window.prompt('Примечание к дню:', prev);
+            if (txt === null || txt === undefined) return;
+            const next = String(txt || '').trim();
+            let k2 = String(info && info.kind ? info.kind : '').trim();
+            if (!k2) k2 = '';
+            let p2 = { day: day, kind: k2, comment: next };
+            if (selectedUserId) p2.user_id = Number(selectedUserId);
+            await apiJson('/crm/api/schedule/day', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(p2)
+            });
+            closeModal();
+            await loadMonth();
+          } catch (e3) {
+            try { window.crmAlert && window.crmAlert((e3 && e3.message) || 'Не удалось сохранить примечание'); } catch (_){ }
+          }
+          return;
+        }
         try {
           await apiJson('/crm/api/schedule/day', {
             method: 'POST',
