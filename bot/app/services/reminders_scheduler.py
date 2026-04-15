@@ -131,77 +131,13 @@ async def shift_time_notifications_job() -> None:
                     except Exception:
                         _logger.exception("failed to send shift start notification", extra={"chat_id": chat_id})
 
-                # END notification
+                # END notification — prompt removed; auto-close is handled by shift_auto_close_job.
                 if getattr(wsd, "end_notified_at", None) is None and now >= end_dt:
-                    if shift_exists_block_end:
-                        wsd.end_notified_at = now
-                        wsd.end_snooze_until = None
-                        wsd.end_followup_notified_at = None
-                        await session.flush()
-                        continue
-                    text = (
-                        f"🏁 <b>Смена по графику закончилась</b>\n\n"
-                        f"Конец по графику: <b>{et.strftime('%H:%M')}</b>.\n"
-                        f"Завершить смену?"
-                    )
-                    finish_cb = f"shift:close_by_day:{today.isoformat()}"
-                    if shift is not None and is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
-                        finish_cb = f"sch:finish:{int(getattr(shift, 'id'))}"
-                    kb = {
-                        "inline_keyboard": [
-                            [{"text": "✅ Завершить", "callback_data": finish_cb}],
-                            [{"text": "⏰ Ещё работаю", "callback_data": f"shift:end_snooze:{today.isoformat()}"}],
-                            [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
-                        ]
-                    }
-                    try:
-                        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
-                        wsd.end_notified_at = now
-                        wsd.end_snooze_until = None
-                        wsd.end_followup_notified_at = None
-                        await session.flush()
-                        _logger.info("shift end notified", extra={"user_id": int(getattr(u, 'id')), "wsd_id": int(getattr(wsd, 'id'))})
-                    except Exception:
-                        _logger.exception("failed to send shift end notification", extra={"chat_id": chat_id})
+                    wsd.end_notified_at = now
+                    wsd.end_snooze_until = None
+                    wsd.end_followup_notified_at = None
+                    await session.flush()
 
-                # END follow-up after snooze (optional)
-                snooze_until = getattr(wsd, "end_snooze_until", None)
-                if (
-                    getattr(wsd, "end_notified_at", None) is not None
-                    and snooze_until is not None
-                    and now >= snooze_until.astimezone(tz)
-                    and getattr(wsd, "end_followup_notified_at", None) is None
-                ):
-                    if shift_exists_block_end:
-                        wsd.end_followup_notified_at = now
-                        wsd.end_snooze_until = None
-                        await session.flush()
-                        continue
-                    text = (
-                        f"⏰ <b>Напоминание</b>\n\n"
-                        f"Смена по графику закончилась в <b>{et.strftime('%H:%M')}</b>.\n"
-                        f"Завершить смену?"
-                    )
-                    finish_cb = f"shift:close_by_day:{today.isoformat()}"
-                    if shift is not None and is_shift_active_status(getattr(shift, "status", None), ended_at=getattr(shift, "ended_at", None)):
-                        finish_cb = f"sch:finish:{int(getattr(shift, 'id'))}"
-                    kb = {
-                        "inline_keyboard": [
-                            [{"text": "✅ Завершить", "callback_data": finish_cb}],
-                            [{"text": "⏰ Ещё работаю", "callback_data": f"shift:end_snooze:{today.isoformat()}"}],
-                            [{"text": "📅 Меню графика", "callback_data": "sched_menu:open"}],
-                        ]
-                    }
-                    try:
-                        await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
-                        wsd.end_followup_notified_at = now
-                        await session.flush()
-                        _logger.info(
-                            "shift end followup notified",
-                            extra={"user_id": int(getattr(u, 'id')), "wsd_id": int(getattr(wsd, 'id'))},
-                        )
-                    except Exception:
-                        _logger.exception("failed to send shift end followup notification", extra={"chat_id": chat_id})
     finally:
         await bot.session.close()
 
