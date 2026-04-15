@@ -793,6 +793,12 @@
           '<div class="schedule-staff-list" id="schedule-staff-list">Загрузка…</div>' +
           '<div id="schedule-swap-info"></div>' +
         '</div>' +
+        (isSingleUserMode() && day === iso(new Date()) && shiftStatus !== 'started' && shiftStatus !== 'approved' && shiftStatus !== 'pending_approval' && shiftStatus !== 'closed' ? (
+          '<div class="divider"></div>' +
+          '<div class="schedule-modal-actions">' +
+            '<button class="btn" type="button" data-action="start_shift">✅ Начать смену</button>' +
+          '</div>'
+        ) : '') +
         '<div class="schedule-modal-footer">' +
           '<button type="button" class="btn-outline" data-action="close">Закрыть</button>' +
         '</div>' +
@@ -997,6 +1003,28 @@
             await loadMonth();
           } catch (e2) {
             try { window.crmAlert && window.crmAlert((e2 && e2.message) || 'Не удалось сохранить время'); } catch (_){ }
+          }
+          return;
+        }
+
+        if (act === 'start_shift') {
+          let payload = {};
+          if (selectedUserId) payload.user_id = Number(selectedUserId);
+          payload.day = day;
+          try {
+            btn.disabled = true;
+            btn.textContent = 'Начинаем…';
+            await apiJson('/crm/api/shifts/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            closeModal();
+            await loadMonth();
+          } catch (e2) {
+            btn.disabled = false;
+            btn.textContent = '✅ Начать смену';
+            try { window.crmAlert && window.crmAlert((e2 && e2.message) || 'Не удалось начать смену'); } catch (_){ }
           }
           return;
         }

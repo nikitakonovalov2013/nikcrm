@@ -7029,6 +7029,134 @@ async def schedule_api_emergency(
     return {"ok": True, "created": True}
 
 
+@app.post("/api/shifts/start")
+@app.post("/crm/api/shifts/start")
+async def shifts_api_start(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+    rflags = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    is_admin_or_manager = bool(rflags.is_admin or rflags.is_manager)
+
+    body = {}
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        pass
+
+    target_user_id_raw = body.get("user_id")
+    day_raw = str(body.get("day") or "").strip()
+
+    uid = int(actor.id)
+    if target_user_id_raw is not None:
+        if not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
+        try:
+            uid = int(target_user_id_raw)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверный user_id")
+
+    today_msk = datetime.now(MOSCOW_TZ).date()
+    if day_raw:
+        try:
+            d = datetime.strptime(day_raw, "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(status_code=422, detail="Неверная дата")
+    else:
+        d = today_msk
+
+    target_user = (
+        await session.execute(select(User).where(User.id == int(uid)).where(User.is_deleted == False))
+    ).scalar_one_or_none()
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+
+    existing_shift = (
+        await session.execute(
+            select(ShiftInstance)
+            .where(ShiftInstance.user_id == int(uid))
+            .where(ShiftInstance.day == d)
+        )
+    ).scalar_one_or_none()
+
+    if existing_shift is not None:
+        st_val = getattr(existing_shift, "status", None)
+        ended_at = getattr(existing_shift, "ended_at", None)
+        if st_val == ShiftInstanceStatus.STARTED and ended_at is None:
+            raise HTTPException(status_code=409, detail="Смена уже открыта")
+        if ended_at is not None or st_val in (
+            ShiftInstanceStatus.CLOSED,
+            ShiftInstanceStatus.APPROVED,
+            ShiftInstanceStatus.PENDING_APPROVAL,
+        ):
+            raise HTTPException(status_code=409, detail="Смена уже завершена")
+
+    plan = (
+        await session.execute(
+            select(WorkShiftDay)
+            .where(WorkShiftDay.user_id == int(uid))
+            .where(WorkShiftDay.day == d)
+        )
+    ).scalar_one_or_none()
+
+    is_emergency = False
+    if plan is None or str(getattr(plan, "kind", "")) != "work":
+        is_emergency = True
+
+    start_time = getattr(plan, "start_time", None) if plan is not None else None
+    end_time = getattr(plan, "end_time", None) if plan is not None else None
+
+    if is_emergency and plan is None:
+        start_time = DEFAULT_SHIFT_START
+        end_time = DEFAULT_SHIFT_END
+        plan = WorkShiftDay(
+            user_id=int(uid),
+            day=d,
+            kind="work",
+            hours=8,
+            start_time=start_time,
+            end_time=end_time,
+            is_emergency=True,
+        )
+        session.add(plan)
+        await session.flush()
+
+    now = utc_now()
+    base_rate = int(getattr(target_user, "rate_k", 0) or 0)
+
+    if existing_shift is None:
+        si = ShiftInstance(
+            user_id=int(uid),
+            day=d,
+            planned_hours=int(getattr(plan, "hours", 0) or 0) or None,
+            is_emergency=is_emergency,
+            started_at=now,
+            status=ShiftInstanceStatus.STARTED,
+            base_rate=base_rate,
+        )
+        session.add(si)
+        await session.flush()
+        shift_id = int(si.id)
+    else:
+        existing_shift.started_at = now
+        existing_shift.status = ShiftInstanceStatus.STARTED
+        if existing_shift.base_rate is None:
+            existing_shift.base_rate = base_rate
+        await session.flush()
+        shift_id = int(existing_shift.id)
+
+    return {
+        "ok": True,
+        "shift_id": shift_id,
+        "day": str(d),
+        "interval": f"{start_time.strftime('%H:%M') if start_time else '10:00'}–{end_time.strftime('%H:%M') if end_time else '18:00'}",
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
@@ -8517,7 +8645,7 @@ async def materials_types_list(request: Request, admin_id: int = Depends(require
     await ensure_manager_allowed(request, admin_id, session)
     res = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res.scalars().all()
-    return templates.TemplateResponse("materials/types.html", {"request": request, "types": types})
+    return templates.TemplateResponse(request, "materials/types.html", {"request": request, "types": types})
 
 
 @app.post("/materials/types/create")
@@ -8634,7 +8762,7 @@ async def materials_list(request: Request, admin_id: int = Depends(require_staff
     materials = res.scalars().all()
     res_t = await session.execute(select(MaterialType).order_by(MaterialType.name))
     types = res_t.scalars().all()
-    return templates.TemplateResponse("materials/materials.html", {"request": request, "materials": materials, "types": types})
+    return templates.TemplateResponse(request, "materials/materials.html", {"request": request, "materials": materials, "types": types})
 
 
 @app.get("/stocks", response_class=HTMLResponse, name="stocks_dashboard")
@@ -9288,7 +9416,7 @@ async def consumptions_list(request: Request, admin_id: int = Depends(require_st
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
-    return templates.TemplateResponse("materials/consumptions.html", {"request": request, "items": items, "materials": materials, "users": users})
+    return templates.TemplateResponse(request, "materials/consumptions.html", {"request": request, "items": items, "materials": materials, "users": users})
 
 
 @app.get("/materials/consumptions/modal/create", response_class=HTMLResponse)
@@ -9300,13 +9428,13 @@ async def consumptions_modal_create(request: Request, admin_id: int = Depends(re
     users = res_u.scalars().all()
     from datetime import date as _date
     today = _date.today()
-    return templates.TemplateResponse("materials/partials/consumptions_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
+    return templates.TemplateResponse(request, "materials/partials/consumptions_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
 
 
 @app.get("/materials/consumptions/{item_id}/modal/delete", response_class=HTMLResponse)
 async def consumptions_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    return templates.TemplateResponse("materials/partials/consumptions_delete_modal.html", {"request": request, "item_id": item_id})
+    return templates.TemplateResponse(request, "materials/partials/consumptions_delete_modal.html", {"request": request, "item_id": item_id})
 
 
 @app.get("/materials/consumptions/{item_id}/modal/edit", response_class=HTMLResponse)
@@ -9320,7 +9448,7 @@ async def consumptions_modal_edit(item_id: int, request: Request, admin_id: int 
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
-    return templates.TemplateResponse("materials/partials/consumptions_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
+    return templates.TemplateResponse(request, "materials/partials/consumptions_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
 
 
 @app.post("/materials/consumptions/create")
@@ -9471,7 +9599,7 @@ async def supplies_list(request: Request, admin_id: int = Depends(require_staff)
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
-    return templates.TemplateResponse("materials/supplies.html", {"request": request, "items": items, "materials": materials, "users": users})
+    return templates.TemplateResponse(request, "materials/supplies.html", {"request": request, "items": items, "materials": materials, "users": users})
 
 
 @app.get("/materials/supplies/modal/create", response_class=HTMLResponse)
@@ -9483,13 +9611,13 @@ async def supplies_modal_create(request: Request, admin_id: int = Depends(requir
     users = res_u.scalars().all()
     from datetime import date as _date
     today = _date.today()
-    return templates.TemplateResponse("materials/partials/supplies_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
+    return templates.TemplateResponse(request, "materials/partials/supplies_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
 
 
 @app.get("/materials/supplies/{item_id}/modal/delete", response_class=HTMLResponse)
 async def supplies_modal_delete(item_id: int, request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
-    return templates.TemplateResponse("materials/partials/supplies_delete_modal.html", {"request": request, "item_id": item_id})
+    return templates.TemplateResponse(request, "materials/partials/supplies_delete_modal.html", {"request": request, "item_id": item_id})
 
 
 @app.get("/materials/supplies/{item_id}/modal/edit", response_class=HTMLResponse)
@@ -9503,7 +9631,7 @@ async def supplies_modal_edit(item_id: int, request: Request, admin_id: int = De
     materials = res_m.scalars().all()
     res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
     users = res_u.scalars().all()
-    return templates.TemplateResponse("materials/partials/supplies_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
+    return templates.TemplateResponse(request, "materials/partials/supplies_edit_modal.html", {"request": request, "rec": rec, "materials": materials, "users": users})
 
 
 @app.post("/materials/supplies/create")

@@ -492,26 +492,12 @@ async def _render_schedule_menu(*, session, user: User, is_admin: bool, is_manag
                 ]
             )
         else:
-            # No active shift
-            if is_finished:
-                pass
-            elif has_plan_work:
-                st0 = getattr(plan, "start_time", None) or dtime(10, 0)
-                start_dt = datetime.combine(today, st0, tzinfo=MOSCOW_TZ)
-                if datetime.now(MOSCOW_TZ) >= start_dt:
-                    rows.append(
-                        [
-                            InlineKeyboardButton(
-                                text="✅ Начать смену",
-                                callback_data=f"shift:start:{today.isoformat()}",
-                            )
-                        ]
-                    )
-            else:
+            # No active shift — always show start button regardless of time or plan
+            if not is_finished:
                 rows.append(
                     [
                         InlineKeyboardButton(
-                            text="⚡ Начать экстренную смену",
+                            text="✅ Начать смену",
                             callback_data="sched_em_start",
                         )
                     ]
@@ -543,7 +529,7 @@ async def _render_schedule_menu(*, session, user: User, is_admin: bool, is_manag
             f"Открыть календарь:\n{url}\n"
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="⚡ Начать экстренную смену", callback_data="sched_em_start")]]
+            inline_keyboard=[[InlineKeyboardButton(text="✅ Начать смену", callback_data="sched_em_start")]]
         )
         return text, kb
 
@@ -569,17 +555,38 @@ async def schedule_emergency_start(cb: CallbackQuery, state: FSMContext):
     if not (user.status == UserStatus.APPROVED or (bool(r.is_admin) or bool(r.is_manager))):
         await edit_html(cb, "⏳ Раздел «График работы» доступен только одобренным сотрудникам.")
         return
+    today = datetime.now(MOSCOW_TZ).date()
+    async with get_async_session() as session:
+        plan = (
+            await session.execute(
+                select(WorkShiftDay)
+                .where(WorkShiftDay.user_id == int(user.id))
+                .where(WorkShiftDay.day == today)
+                .where(WorkShiftDay.kind == "work")
+            )
+        ).scalar_one_or_none()
+
+    if plan is not None and getattr(plan, "start_time", None) and getattr(plan, "end_time", None):
+        start_t: dtime = plan.start_time
+        end_t: dtime = plan.end_time
+    else:
+        start_t = dtime(10, 0)
+        end_t = dtime(18, 0)
+    hrs = calc_int_hours_from_times(start_time=start_t, end_time=end_t) or 8
+    interval = f"{start_t.strftime('%H:%M')}\u2013{end_t.strftime('%H:%M')} ({hrs}\u00a0ч)"
+
     await state.clear()
-    await state.update_data(
-        actor_tg_id=int(cb.from_user.id),
-        is_admin=bool(r.is_admin),
-        is_manager=bool(r.is_manager),
-        target_user_id=int(user.id),
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="\u2705 Подтвердить начало смены", callback_data=f"shift:start:{today.isoformat()}")],
+            [InlineKeyboardButton(text="\u274c Отмена", callback_data="sched_em_cancel")],
+        ]
     )
-    # Default: 10:00–18:00
-    await state.update_data(start_time="10:00", end_time="18:00")
-    await state.set_state(ScheduleEmergencyState.pick_time)
-    await edit_html(cb, "Выберите время экстренной смены:", reply_markup=_kb_emergency_time_quick())
+    await edit_html(
+        cb,
+        f"Начать смену сегодня:\n\n\U0001f4cb <b>{interval}</b>\n\nПодтвердите:",
+        reply_markup=kb,
+    )
 
 
 @router.callback_query(F.data == "sched_em_cancel")

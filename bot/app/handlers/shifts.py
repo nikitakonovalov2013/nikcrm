@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as _time
 
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -419,6 +419,24 @@ async def shift_start(cb: CallbackQuery, state: FSMContext):
 
         start_time = getattr(plan, "start_time", None) if plan is not None else None
         end_time = getattr(plan, "end_time", None) if plan is not None else None
+
+        if is_emergency and plan is None:
+            _default_start = _time(10, 0)
+            _default_end = _time(18, 0)
+            new_wsd = WorkShiftDay(
+                user_id=int(user.id),
+                day=d,
+                kind="work",
+                hours=8,
+                start_time=_default_start,
+                end_time=_default_end,
+                is_emergency=True,
+            )
+            session.add(new_wsd)
+            await session.flush()
+            start_time = _default_start
+            end_time = _default_end
+            planned_hours = 8
 
         now = utc_now()
 

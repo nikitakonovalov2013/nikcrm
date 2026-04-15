@@ -15,6 +15,9 @@ from shared.utils import utc_now
 _DEC0 = Decimal("0")
 _Q2 = lambda v: Decimal(str(v or 0)).quantize(Decimal("0.01"))
 
+# Month from which finance balance tracking begins.  Do NOT move this earlier.
+FINANCE_START_DATE = date(2026, 3, 1)
+
 
 # ── Categories ───────────────────────────────────────────────────────────────
 
@@ -292,6 +295,8 @@ class FinanceDashboard:
     income_by_category: list[dict]
     top_expense_categories: list[dict]
     top_income_categories: list[dict]
+    opening_balance: Decimal = _DEC0
+    closing_balance: Decimal = _DEC0
 
 
 async def get_dashboard(
@@ -385,6 +390,31 @@ async def get_dashboard(
     ]
     top_income_categories = income_by_category[:5]
 
+    # ── Opening / closing balance (cumulative from FINANCE_START_DATE) ──────
+    period_start_date = date_from.date() if hasattr(date_from, "date") else FINANCE_START_DATE
+    if period_start_date > FINANCE_START_DATE:
+        _tzinfo = getattr(date_from, "tzinfo", None)
+        prior_from_dt = datetime(
+            FINANCE_START_DATE.year, FINANCE_START_DATE.month, FINANCE_START_DATE.day,
+            0, 0, 0, tzinfo=_tzinfo,
+        )
+        prior_inc = _Q2((await session.execute(
+            select(func.coalesce(func.sum(FinanceOperation.amount), 0))
+            .where(FinanceOperation.occurred_at >= prior_from_dt)
+            .where(FinanceOperation.occurred_at < date_from)
+            .where(FinanceOperation.type == "income")
+        )).scalar_one())
+        prior_exp = _Q2((await session.execute(
+            select(func.coalesce(func.sum(FinanceOperation.amount), 0))
+            .where(FinanceOperation.occurred_at >= prior_from_dt)
+            .where(FinanceOperation.occurred_at < date_from)
+            .where(FinanceOperation.type == "expense")
+        )).scalar_one())
+        opening_balance = _Q2(prior_inc - prior_exp)
+    else:
+        opening_balance = _DEC0
+    closing_balance = _Q2(opening_balance + income - expense)
+
     return FinanceDashboard(
         income=income,
         expense=expense,
@@ -398,6 +428,8 @@ async def get_dashboard(
         income_by_category=income_by_category,
         top_expense_categories=top_expense_categories,
         top_income_categories=top_income_categories,
+        opening_balance=opening_balance,
+        closing_balance=closing_balance,
     )
 
 

@@ -158,9 +158,11 @@
       <div id="fin-dash-empty" class="fin-empty" style="display:none">Нет данных за выбранный период</div>
       <div id="fin-dash-content" style="display:none">
         <div class="fin-kpi-grid">
+          <div class="fin-kpi"><div class="fin-kpi-k">Нач. баланс</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-opening">—</div></div><div class="fin-kpi-hint" id="kpi-opening-h"></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Кон. баланс</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-closing">—</div></div><div class="fin-kpi-hint" id="kpi-closing-h"></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Доходы</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-inc">—</div><span class="fin-delta delta-neutral" id="kpi-inc-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Расходы</div><div class="fin-kpi-row"><div class="fin-kpi-v red" id="kpi-exp">—</div><span class="fin-delta delta-neutral" id="kpi-exp-d"></span></div></div>
-          <div class="fin-kpi"><div class="fin-kpi-k">Баланс</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-profit">—</div><span class="fin-delta delta-neutral" id="kpi-profit-d"></span></div></div>
+          <div class="fin-kpi"><div class="fin-kpi-k">Прибыль за период</div><div class="fin-kpi-row"><div class="fin-kpi-v" id="kpi-profit">—</div><span class="fin-delta delta-neutral" id="kpi-profit-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Ср. расходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v blue" id="kpi-avg">—</div><span class="fin-delta delta-neutral" id="kpi-avg-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k">Ср. доходы / день</div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-avg-inc">—</div><span class="fin-delta delta-neutral" id="kpi-avg-inc-d"></span></div></div>
           <div class="fin-kpi"><div class="fin-kpi-k-row"><span class="fin-kpi-k">Баланс на счету</span><button class="fin-kpi-edit-btn" id="fin-cash-edit-btn" title="Редактировать">&#9998;</button></div><div class="fin-kpi-row"><div class="fin-kpi-v green" id="kpi-cash">—</div></div></div>
@@ -500,6 +502,15 @@ function setDelta(id,v){
   e.className='fin-delta '+cls;
 }
 let _avgExp7=0,_cashBalance=0;
+function renderBalanceKpis(opening,closing,startYear){
+  const ov=parseFloat(opening)||0,cv=parseFloat(closing)||0;
+  const ko=el('kpi-opening'),kc=el('kpi-closing');
+  if(ko){ko.textContent=fmt(ov);ko.className='fin-kpi-v '+(ov>=0?'green':'red');}
+  if(kc){kc.textContent=fmt(cv);kc.className='fin-kpi-v '+(cv>=0?'green':'red');}
+  const hint='с марта '+String(startYear||2026);
+  const ho=el('kpi-opening-h');if(ho)ho.textContent=hint;
+  const hc=el('kpi-closing-h');if(hc)hc.textContent=hint;
+}
 function renderCushion(cash,avg7){
   const c=parseFloat(cash)||0,a=parseFloat(avg7)||0;
   if(a>0){
@@ -530,6 +541,7 @@ function renderDash(d){
   const wv=parseInt(d.warehouse_value_rub||0,10);
   el('kpi-warehouse').textContent=isNaN(wv)?'—':wv.toLocaleString('ru-RU')+' ₽';
   renderCushion(_cashBalance,_avgExp7);
+  renderBalanceKpis(d.opening_balance||'0',d.closing_balance||'0',d.finance_start_year||2026);
   const byDay=normalizeByDay(d.by_day||[],el('fin-dash-from').value,el('fin-dash-to').value);
   _lastBarData=byDay;
   show('fin-dash-content');

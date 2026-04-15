@@ -41,6 +41,7 @@ from shared.services.finance_service import (
     get_avg_expense_last_7_days as _get_avg_exp7,
     export_operations as _export_ops,
     _serialize_operation,
+    FINANCE_START_DATE as _FINANCE_START_DATE,
 )
 from shared.services.warehouse import get_warehouse_value_rub as _get_warehouse_value_rub
 from sqlalchemy import select, func as _func
@@ -257,6 +258,9 @@ async def fin_dashboard(request: Request, session: AsyncSession = Depends(get_db
         "income": f"{dash.income:.2f}",
         "expense": f"{dash.expense:.2f}",
         "profit": f"{dash.profit:.2f}",
+        "opening_balance": f"{dash.opening_balance:.2f}",
+        "closing_balance": f"{dash.closing_balance:.2f}",
+        "finance_start_year": int(_FINANCE_START_DATE.year),
         "avg_expense_per_day": f"{dash.avg_expense_per_day:.2f}",
         "avg_income_per_day": f"{dash.avg_income_per_day:.2f}",
         "cash_balance": f"{cash_bal:.2f}",
