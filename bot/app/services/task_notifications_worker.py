@@ -374,17 +374,16 @@ def render_notification_html(*, n) -> str:
         snippet = text
         if len(snippet) > 700:
             snippet = snippet[:700] + "…"
-        extra = f"\n\n<b>Текст:</b>\n{esc(snippet)}" if snippet else ""
         task_title = ""
         if task is not None:
             task_title = str(getattr(task, "title", "") or "").strip()
         if not task_title:
             task_title = str(payload.get("task_title") or "").strip()
         if task_title:
-            head = f"💬 <b>Новый комментарий к задаче: {esc(task_title)}</b>"
+            head = f"💬 <b>КОММЕНТАРИЙ К ЗАДАЧЕ: {esc(task_title)}</b>"
         else:
-            head = "💬 <b>Новый комментарий к задаче</b>"
-        return f"{head}\n\n{base}\n\n<b>Автор:</b> {esc(actor_name)}{extra}"
+            head = "💬 <b>КОММЕНТАРИЙ К ЗАДАЧЕ</b>"
+        return f"{head}\n\n👤 <b>{esc(actor_name)}:</b> {esc(snippet)}"
     if typ == "remind":
         return f"🔔 <b>Напоминание</b>\n\n{base}\n\n<b>Инициатор:</b> {esc(actor_name)}"
 

@@ -582,9 +582,10 @@ async def add_task_comment(
             if len(snippet) > 700:
                 snippet = snippet[:700] + "…"
             task_title = str(getattr(t, 'title', '') or '').strip()
-            head = "💬 <b>Новый комментарий к задаче</b>"
             if task_title:
-                head = f"💬 <b>Новый комментарий к задаче: {task_title}</b>"
+                head = f"💬 <b>КОММЕНТАРИЙ К ЗАДАЧЕ: {html.escape(task_title)}</b>"
+            else:
+                head = "💬 <b>КОММЕНТАРИЙ К ЗАДАЧЕ</b>"
             msg = (
                 f"{head}\n\n"
                 f"👤 <b>{actor_name}:</b> {snippet}"
