@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Расход силикона</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f0f2f5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #0f172a;
+      min-height: 100vh;
+      padding: 28px 16px 48px;
+    }
+    .page-wrap { max-width: 480px; margin: 0 auto; }
+    .breadcrumb { font-size: 13px; color: #94a3b8; margin-bottom: 14px; line-height: 1.4; }
+    .breadcrumb a { color: #94a3b8; text-decoration: none; }
+    .breadcrumb span { margin: 0 5px; }
+    .page-title { font-size: 26px; font-weight: 800; color: #0f172a; margin-bottom: 24px; line-height: 1.2; }
+    .form-card { background: #fff; border-radius: 16px; box-shadow: 0 2px 16px rgba(15,23,42,.08); padding: 24px 20px; }
+    .field { margin-bottom: 20px; }
+    .field-label { display: block; font-size: 15px; font-weight: 600; color: #1e293b; margin-bottom: 8px; }
+    .field-label .req { color: #ef4444; margin-left: 2px; }
+    .field-select {
+      width: 100%; height: 52px; padding: 0 42px 0 14px;
+      border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 16px; color: #0f172a;
+      background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 12px center;
+      -webkit-appearance: none; appearance: none; outline: none; cursor: pointer; transition: border-color .15s;
+    }
+    .field-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .amount-wrap { position: relative; }
+    .field-input {
+      width: 100%; height: 52px; padding: 0 52px 0 14px;
+      border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 16px; color: #0f172a;
+      outline: none; transition: border-color .15s; -webkit-appearance: none; appearance: none;
+    }
+    .field-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .field-input-plain {
+      width: 100%; height: 52px; padding: 0 14px;
+      border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 16px; color: #0f172a;
+      outline: none; transition: border-color .15s; -webkit-appearance: none; appearance: none; background: #fff;
+    }
+    .field-input-plain:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+    .amount-unit { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: 500; color: #94a3b8; pointer-events: none; user-select: none; }
+    .field-hint { font-size: 13px; color: #94a3b8; margin-top: 8px; line-height: 1.4; }
+    .submit-btn {
+      width: 100%; height: 54px; background: #3b82f6; color: #fff;
+      border: none; border-radius: 10px; font-size: 17px; font-weight: 700;
+      cursor: pointer; margin-top: 6px; transition: background .15s, opacity .15s; letter-spacing: .01em;
+    }
+    .submit-btn:hover:not(:disabled) { background: #2563eb; }
+    .submit-btn:active:not(:disabled) { background: #1d4ed8; }
+    .submit-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .msg { border-radius: 8px; padding: 10px 14px; font-size: 14px; margin-bottom: 16px; display: none; line-height: 1.4; }
+    .msg-err { background: #fef2f2; border: 1.5px solid #fecaca; color: #dc2626; }
+    .msg-ok  { background: #f0fdf4; border: 1.5px solid #bbf7d0; color: #16a34a; }
+    .divider { border: none; border-top: 1.5px solid #f1f5f9; margin: 4px 0 20px; }
+    .section-label { font-size: 11px; font-weight: 700; letter-spacing: .1em; color: #94a3b8; text-transform: uppercase; margin-bottom: 14px; }
+    .last-section { margin-top: 20px; background: #f8fafc; border: 1.5px solid #e2e8f0; border-radius: 10px; padding: 14px 16px; }
+    .last-title { font-size: 11px; font-weight: 700; letter-spacing: .1em; color: #94a3b8; text-transform: uppercase; margin-bottom: 10px; }
+    .last-empty { font-size: 15px; color: #94a3b8; font-style: italic; }
+    .last-item { font-size: 14px; color: #334155; padding: 7px 0; border-bottom: 1px solid #e2e8f0; line-height: 1.4; }
+    .last-item:last-child { border-bottom: none; }
+    .last-item-name { font-weight: 600; color: #1e293b; }
+    .no-materials { text-align: center; padding: 32px 16px; color: #64748b; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <div class="page-wrap">
+    <div class="breadcrumb">CRM <span>/</span> Материалы <span>/</span> Внесение расхода</div>
+    <h1 class="page-title">Расход силикона</h1>
+    <div class="form-card">
+      {% if not materials %}
+        <div class="no-materials">Нет доступных материалов</div>
+      {% else %}
+        <div id="msg-err" class="msg msg-err"></div>
+        <div id="msg-ok"  class="msg msg-ok"></div>
+
+        <div class="field">
+          <label class="field-label" for="mat-select">Марка силикона <span class="req">*</span></label>
+          <select class="field-select" id="mat-select">
+            {% for m in materials %}
+            <option value="{{ m.id }}" data-unit="{{ m.unit }}">{{ m.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="amt-input">Количество <span class="req">*</span></label>
+          <div class="amount-wrap">
+            <input type="number" class="field-input" id="amt-input" step="0.01" min="0.01" placeholder="0.00" inputmode="decimal" />
+            <span class="amount-unit" id="unit-label">кг</span>
+          </div>
+          <div class="field-hint">Например: 3 или 1.5 — расходуется до сотых</div>
+        </div>
+
+        {% if is_admin_or_manager %}
+        <hr class="divider" />
+        <div class="section-label">Дополнительно</div>
+
+        <div class="field">
+          <label class="field-label" for="emp-select">Сотрудник</label>
+          <select class="field-select" id="emp-select">
+            <option value="">— себя —</option>
+            {% for e in employees %}
+            <option value="{{ e.id }}">{{ e.last_name or '' }} {{ e.first_name or '' }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="date-input">Дата</label>
+          <input type="date" class="field-input-plain" id="date-input" value="{{ today }}" />
+        </div>
+        {% endif %}
+
+        <button class="submit-btn" id="submit-btn" type="button">Внести расход</button>
+
+        <div class="last-section">
+          <div class="last-title">Последняя запись</div>
+          <div id="last-list"><div class="last-empty">Записей в этой сессии ещё нет</div></div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var selMat   = document.getElementById('mat-select');
+      var inputAmt = document.getElementById('amt-input');
+      var unitLbl  = document.getElementById('unit-label');
+      var btn      = document.getElementById('submit-btn');
+      var msgErr   = document.getElementById('msg-err');
+      var msgOk    = document.getElementById('msg-ok');
+      var lastList = document.getElementById('last-list');
+      var selEmp   = document.getElementById('emp-select');
+      var dateInp  = document.getElementById('date-input');
+
+      if (!selMat) return;
+
+      var sessionRecords = [];
+
+      function updateUnit() {
+        var opt = selMat.options[selMat.selectedIndex];
+        if (unitLbl) unitLbl.textContent = (opt && opt.dataset.unit) || 'кг';
+      }
+      selMat.addEventListener('change', updateUnit);
+      updateUnit();
+
+      function renderLast() {
+        if (!lastList) return;
+        if (sessionRecords.length === 0) {
+          lastList.innerHTML = '<div class="last-empty">Записей в этой сессии ещё нет</div>';
+          return;
+        }
+        var html = '';
+        for (var i = sessionRecords.length - 1; i >= 0; i--) {
+          var r = sessionRecords[i];
+          html += '<div class="last-item"><span class="last-item-name">' +
+            escHtml(r.material_name) + '</span>';
+          if (r.employee_name) html += ' / ' + escHtml(r.employee_name);
+          if (r.date) html += ' / ' + escHtml(r.date);
+          html += ' — ' + escHtml(r.amount) + ' ' + escHtml(r.unit) + '</div>';
+        }
+        lastList.innerHTML = html;
+      }
+
+      function escHtml(s) {
+        return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+      function showErr(msg) {
+        if (msgErr) { msgErr.textContent = msg; msgErr.style.display = 'block'; }
+        if (msgOk)  { msgOk.style.display = 'none'; }
+      }
+      function showOk(msg) {
+        if (msgOk)  { msgOk.textContent = msg; msgOk.style.display = 'block'; }
+        if (msgErr) { msgErr.style.display = 'none'; }
+        setTimeout(function () { if (msgOk) msgOk.style.display = 'none'; }, 3000);
+      }
+
+      if (btn) btn.addEventListener('click', async function () {
+        if (msgErr) msgErr.style.display = 'none';
+        if (msgOk)  msgOk.style.display  = 'none';
+
+        var materialId = selMat ? selMat.value : '';
+        var rawAmt = (inputAmt ? inputAmt.value : '').trim().replace(',', '.');
+        var amount = parseFloat(rawAmt);
+
+        if (!materialId) { showErr('Выберите материал'); return; }
+        if (!rawAmt || isNaN(amount) || amount <= 0) { showErr('Введите корректное количество (больше 0)'); return; }
+        var rounded = Math.round(amount * 100) / 100;
+        if (rounded <= 0) { showErr('Количество должно быть больше 0'); return; }
+
+        var payload = { material_id: parseInt(materialId, 10), amount: rounded };
+        var empName = '';
+        if (selEmp && selEmp.value) {
+          payload.employee_id = parseInt(selEmp.value, 10);
+          empName = selEmp.options[selEmp.selectedIndex].text.trim();
+        }
+        if (dateInp && dateInp.value) {
+          payload.date = dateInp.value;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Сохранение…';
+
+        try {
+          var resp = await fetch('/crm/api/materials/expense', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          var data = {};
+          try { data = await resp.json(); } catch (_) {}
+
+          if (!resp.ok) {
+            var errMsg = (data && (data.detail || data.error)) || ('Ошибка ' + resp.status);
+            if (resp.status === 401) {
+              errMsg = 'Сессия истекла. Обновите страницу.';
+              setTimeout(function () { window.location.reload(); }, 2000);
+            }
+            showErr(errMsg);
+            return;
+          }
+
+          sessionRecords.push({
+            material_name: data.material_name || '',
+            amount: data.amount || String(rounded),
+            unit: data.unit || 'кг',
+            employee_name: empName || '',
+            date: (dateInp && dateInp.value) ? dateInp.value : ''
+          });
+          renderLast();
+          if (inputAmt) inputAmt.value = '';
+          showOk('Расход внесён ✓');
+        } catch (e) {
+          showErr('Ошибка сети. Попробуйте ещё раз.');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Внести расход';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -125,6 +125,23 @@ async def build_task_board_magic_link(
     return base + rel
 
 
+async def build_expense_magic_link(
+    *,
+    session,
+    user,
+    ttl_minutes: int = 60,
+) -> str:
+    next_path = "/crm/materials/expense"
+    tok = await create_magic_token(session, user_id=int(getattr(user, "id")), ttl_minutes=int(ttl_minutes), scope="stocks")
+
+    base = _public_base_url()
+    rel = f"/crm/auth/tg?t={quote(str(tok))}&next={quote(str(next_path), safe='')}&scope=stocks"
+    if not base:
+        _logger.warning("PUBLIC base URL is empty; returning relative magic-link")
+        return rel
+    return base + rel
+
+
 def get_task_board_url(*, task_id: int, is_admin: bool, is_manager: bool) -> str:
     """Board URL with task hint.
 

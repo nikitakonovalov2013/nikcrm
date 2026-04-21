@@ -3,10 +3,25 @@
 {% block content %}
 <h2 class="subtitle">Остатки · Расходы</h2>
 <div class="actions">
-  <button class="btn"
+  <button id="btn-add-consumption" class="btn"
           hx-get="{{ url_for('consumptions_modal_create') }}"
           hx-target="#modal-body" hx-swap="innerHTML">+ Добавить</button>
-  <script>/* base.html opens modal on #modal-body swap */</script>
 </div>
 {% include "materials/partials/consumptions_table.html" %}
+<script>
+  (function () {
+    if (new URLSearchParams(window.location.search).get('open') !== 'create') return;
+    function tryAutoOpen() {
+      var btn = document.getElementById('btn-add-consumption');
+      if (!btn) { setTimeout(tryAutoOpen, 100); return; }
+      if (typeof htmx === 'undefined') { setTimeout(tryAutoOpen, 100); return; }
+      htmx.ajax('GET', btn.getAttribute('hx-get'), { target: '#modal-body', swap: 'innerHTML' });
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { setTimeout(tryAutoOpen, 150); });
+    } else {
+      setTimeout(tryAutoOpen, 150);
+    }
+  })();
+</script>
 {% endblock %}

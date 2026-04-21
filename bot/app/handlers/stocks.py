@@ -29,6 +29,7 @@ from bot.app.repository.users import UserRepository
 from bot.app.states.stocks import StocksState
 from shared.permissions import can_manage_stock_op, can_view_stocks, role_flags
 from bot.app.guards.user_guard import ensure_registered_or_reply
+from bot.app.utils.urls import build_expense_magic_link
 
 router = Router()
 
@@ -122,6 +123,19 @@ async def _render_stocks_menu(tg_id: int, *, expanded: bool) -> tuple[str, objec
     can_toggle = len(materials) > 8 and (r.is_admin or r.is_manager)
     allow_out = bool(r.is_admin or r.is_manager or r.is_master)
     allow_in = bool(r.is_admin or r.is_manager)
+
+    if allow_out and user:
+        try:
+            async with get_async_session() as session:
+                expense_url = await build_expense_magic_link(
+                    session=session,
+                    user=user,
+                    ttl_minutes=60,
+                )
+            text += f'\n\n🔗 <a href="{expense_url}">Внести расход</a>'
+        except Exception:
+            pass
+
     return text, stocks_menu_kb(allow_out=allow_out, allow_in=allow_in, expanded=expanded and can_toggle, can_toggle=can_toggle)
 
 
@@ -147,6 +161,7 @@ async def _edit_message_safe(cb: CallbackQuery, *, chat_id: int, message_id: int
             message_id=message_id,
             text=text,
             reply_markup=reply_markup,
+            disable_web_page_preview=True,
         )
         return
     except Exception:
@@ -154,7 +169,7 @@ async def _edit_message_safe(cb: CallbackQuery, *, chat_id: int, message_id: int
 
     # Fallback: if we can't edit (deleted/too old), send a new message.
     try:
-        await cb.message.answer(text, reply_markup=reply_markup)
+        await cb.message.answer(text, reply_markup=reply_markup, disable_web_page_preview=True)
     except Exception:
         pass
 
@@ -195,7 +210,7 @@ async def stocks_entry(message: Message, state: FSMContext):
 
     await state.clear()
     text, kb = await _render_stocks_menu(message.from_user.id, expanded=False)
-    sent = await message.answer(text, reply_markup=kb)
+    sent = await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await state.update_data(menu_chat_id=sent.chat.id, menu_message_id=sent.message_id, menu_expanded=False)
 
 
@@ -228,10 +243,10 @@ async def stocks_toggle_all(cb: CallbackQuery, state: FSMContext):
     text, kb = await _render_stocks_menu(cb.from_user.id, expanded=expanded)
     await state.update_data(menu_chat_id=cb.message.chat.id, menu_message_id=cb.message.message_id, menu_expanded=expanded)
     try:
-        await cb.message.edit_text(text, reply_markup=kb)
+        await cb.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
     except Exception:
         # Fallback if message can't be edited
-        await cb.message.answer(text, reply_markup=kb)
+        await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await cb.answer()
 
 

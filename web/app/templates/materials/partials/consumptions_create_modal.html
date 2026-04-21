@@ -1,34 +1,172 @@
-<div class="modal-header">Добавить расход</div>
-<form hx-post="{{ url_for('consumptions_create') }}"
-      hx-target="#modal-body"
-      hx-swap="innerHTML"
-      class="form-grid">
-  <div>
-    <label>Материал</label>
-    <select name="material_id" required>
+<style>
+  .nef-wrap { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0f172a; }
+  .nef-title { font-size: 20px; font-weight: 800; color: #0f172a; margin-bottom: 20px; line-height: 1.2; }
+  .nef-field { margin-bottom: 18px; }
+  .nef-label { display: block; font-size: 14px; font-weight: 600; color: #1e293b; margin-bottom: 7px; }
+  .nef-label .req { color: #ef4444; margin-left: 2px; }
+  .nef-select {
+    width: 100%; height: 48px; padding: 0 40px 0 13px;
+    border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 15px; color: #0f172a;
+    background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 11px center;
+    -webkit-appearance: none; appearance: none; outline: none; cursor: pointer; transition: border-color .15s; box-sizing: border-box;
+  }
+  .nef-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+  .nef-amt-wrap { position: relative; }
+  .nef-input {
+    width: 100%; height: 48px; padding: 0 48px 0 13px;
+    border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 15px; color: #0f172a;
+    outline: none; transition: border-color .15s; box-sizing: border-box; background: #fff;
+    -webkit-appearance: none; appearance: none;
+  }
+  .nef-input-plain {
+    width: 100%; height: 48px; padding: 0 13px;
+    border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 15px; color: #0f172a;
+    outline: none; transition: border-color .15s; box-sizing: border-box; background: #fff;
+    -webkit-appearance: none; appearance: none;
+  }
+  .nef-input:focus, .nef-input-plain:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+  .nef-unit { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); font-size: 13px; font-weight: 500; color: #94a3b8; pointer-events: none; user-select: none; }
+  .nef-hint { font-size: 12px; color: #94a3b8; margin-top: 6px; line-height: 1.4; }
+  .nef-divider { border: none; border-top: 1.5px solid #f1f5f9; margin: 4px 0 18px; }
+  .nef-section-label { font-size: 10px; font-weight: 700; letter-spacing: .1em; color: #94a3b8; text-transform: uppercase; margin-bottom: 13px; }
+  .nef-actions { display: flex; gap: 10px; margin-top: 6px; }
+  .nef-btn-submit {
+    flex: 1; height: 48px; background: #3b82f6; color: #fff;
+    border: none; border-radius: 10px; font-size: 15px; font-weight: 700;
+    cursor: pointer; transition: background .15s, opacity .15s;
+  }
+  .nef-btn-submit:hover:not(:disabled) { background: #2563eb; }
+  .nef-btn-submit:disabled { opacity: .55; cursor: not-allowed; }
+  .nef-btn-cancel {
+    height: 48px; padding: 0 20px; background: #f1f5f9; color: #475569;
+    border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background .15s;
+  }
+  .nef-btn-cancel:hover { background: #e2e8f0; }
+  .nef-msg { border-radius: 8px; padding: 9px 13px; font-size: 13px; margin-bottom: 14px; display: none; line-height: 1.4; }
+  .nef-msg-err { background: #fef2f2; border: 1.5px solid #fecaca; color: #dc2626; }
+</style>
+
+<div class="nef-wrap">
+  <div class="nef-title">Внести расход</div>
+
+  <div id="nef-msg-err" class="nef-msg nef-msg-err"></div>
+
+  <div class="nef-field">
+    <label class="nef-label" for="nef-mat">Марка силикона <span class="req">*</span></label>
+    <select class="nef-select" id="nef-mat">
       {% for m in materials %}
-        <option value="{{ m.id }}">{{ m.short_name or m.name }}</option>
+      <option value="{{ m.id }}" data-unit="{{ m.unit }}">{{ m.name }}</option>
       {% endfor %}
     </select>
   </div>
-  <div>
-    <label>Сотрудник</label>
-    <select name="employee_id" required>
-      {% for u in users %}
-        <option value="{{ u.id }}">{{ u.first_name or '' }} {{ u.last_name or '' }} ({{ u.tg_id }})</option>
+
+  <div class="nef-field">
+    <label class="nef-label" for="nef-amt">Количество <span class="req">*</span></label>
+    <div class="nef-amt-wrap">
+      <input type="number" class="nef-input" id="nef-amt" step="0.01" min="0.01" placeholder="0.00" inputmode="decimal" />
+      <span class="nef-unit" id="nef-unit">кг</span>
+    </div>
+    <div class="nef-hint">Например: 3 или 1.5 — до сотых</div>
+  </div>
+
+  <hr class="nef-divider" />
+  <div class="nef-section-label">Дополнительно</div>
+
+  <div class="nef-field">
+    <label class="nef-label" for="nef-emp">Сотрудник</label>
+    <select class="nef-select" id="nef-emp">
+      <option value="">— себя —</option>
+      {% for e in employees %}
+      <option value="{{ e.id }}">{{ e.last_name or '' }} {{ e.first_name or '' }}</option>
       {% endfor %}
     </select>
   </div>
-  <div>
-    <label>Количество</label>
-    <input type="number" name="amount" min="0.001" step="0.001" required />
+
+  <div class="nef-field">
+    <label class="nef-label" for="nef-date">Дата</label>
+    <input type="date" class="nef-input-plain" id="nef-date" value="{{ today }}" />
   </div>
-  <div>
-    <label>Дата</label>
-    <input type="date" name="date" value="{{ today }}" required />
+
+  <div class="nef-actions">
+    <button class="nef-btn-cancel" type="button" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
+    <button class="nef-btn-submit" id="nef-submit" type="button">Внести расход</button>
   </div>
-  <div class="modal-actions" style="grid-column: 1 / -1;">
-    <button type="button" class="btn-outline" onclick="window.dispatchEvent(new CustomEvent('close-modal'))">Отмена</button>
-    <button type="submit" class="btn">Добавить</button>
-  </div>
-</form>
+</div>
+
+<script>
+  (function () {
+    var selMat = document.getElementById('nef-mat');
+    var inputAmt = document.getElementById('nef-amt');
+    var unitLbl = document.getElementById('nef-unit');
+    var selEmp = document.getElementById('nef-emp');
+    var dateInp = document.getElementById('nef-date');
+    var btn = document.getElementById('nef-submit');
+    var msgErr = document.getElementById('nef-msg-err');
+
+    function updateUnit() {
+      var opt = selMat && selMat.options[selMat.selectedIndex];
+      if (unitLbl) unitLbl.textContent = (opt && opt.dataset.unit) || 'кг';
+    }
+    if (selMat) { selMat.addEventListener('change', updateUnit); updateUnit(); }
+
+    function showErr(msg) {
+      if (msgErr) { msgErr.textContent = msg; msgErr.style.display = 'block'; }
+    }
+    function hideErr() { if (msgErr) msgErr.style.display = 'none'; }
+
+    if (btn) btn.addEventListener('click', async function () {
+      hideErr();
+      var materialId = selMat ? selMat.value : '';
+      var rawAmt = (inputAmt ? inputAmt.value : '').trim().replace(',', '.');
+      var amount = parseFloat(rawAmt);
+
+      if (!materialId) { showErr('Выберите материал'); return; }
+      if (!rawAmt || isNaN(amount) || amount <= 0) { showErr('Введите корректное количество (больше 0)'); return; }
+      var rounded = Math.round(amount * 100) / 100;
+      if (rounded <= 0) { showErr('Количество должно быть больше 0'); return; }
+
+      var payload = { material_id: parseInt(materialId, 10), amount: rounded };
+      if (selEmp && selEmp.value) payload.employee_id = parseInt(selEmp.value, 10);
+      if (dateInp && dateInp.value) payload.date = dateInp.value;
+
+      btn.disabled = true;
+      btn.textContent = 'Сохранение…';
+
+      try {
+        var resp = await fetch('/crm/api/materials/expense', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = {};
+        try { data = await resp.json(); } catch (_) {}
+
+        if (!resp.ok) {
+          var errMsg = (data && (data.detail || data.error)) || ('Ошибка ' + resp.status);
+          if (resp.status === 401) {
+            errMsg = 'Сессия истекла. Перезагрузите страницу.';
+            setTimeout(function () { window.location.reload(); }, 1500);
+          }
+          showErr(errMsg);
+          return;
+        }
+
+        window.dispatchEvent(new CustomEvent('close-modal'));
+        if (typeof htmx !== 'undefined') {
+          htmx.ajax('GET', '/crm/materials/consumptions/table-partial', {
+            target: '#consumptions-table-wrap',
+            swap: 'outerHTML'
+          });
+        } else {
+          window.location.reload();
+        }
+      } catch (e) {
+        showErr('Ошибка сети. Попробуйте ещё раз.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Внести расход';
+      }
+    });
+  })();
+</script>

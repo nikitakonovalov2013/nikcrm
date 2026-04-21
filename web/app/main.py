@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import event
 from shared.enums import UserStatus, Schedule, Position, TaskStatus, TaskPriority, TaskEventType, ShiftInstanceStatus, PurchaseStatus, SalaryShiftState
 from shared.models import User
-from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply
+from shared.models import MaterialType, Material, MaterialConsumption, MaterialSupply, material_master_access
 from shared.models import Task, TaskComment, TaskCommentPhoto, TaskEvent
 from shared.models import Purchase, PurchaseEvent
 from shared.models import WorkShiftDay
@@ -9403,6 +9403,193 @@ async def materials_delete(material_id: int, request: Request, admin_id: int = D
     )
 
 
+@app.get("/materials/expense", response_class=HTMLResponse, name="materials_expense_page")
+async def materials_expense_page(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    actor = await load_staff_user(session, admin_id)
+    if not actor:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (r.is_admin or r.is_manager or r.is_master):
+        raise HTTPException(status_code=403, detail="Нет доступа к операциям с материалами")
+
+    from sqlalchemy import exists, and_, or_
+    if r.is_admin or r.is_manager:
+        mats = list(
+            (await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))).scalars().all()
+        )
+    else:
+        has_any_acl = exists(select(1).where(material_master_access.c.material_id == Material.id))
+        has_user_acl = exists(select(1).where(and_(
+            material_master_access.c.material_id == Material.id,
+            material_master_access.c.user_id == int(actor.id),
+        )))
+        mats = list(
+            (await session.execute(
+                select(Material)
+                .where(Material.is_active == True)
+                .where(or_(~has_any_acl, has_user_acl))
+                .order_by(Material.name)
+            )).scalars().all()
+        )
+
+    employees = []
+    if r.is_admin or r.is_manager:
+        res_emp = await session.execute(
+            select(User)
+            .where(User.status == UserStatus.APPROVED)
+            .order_by(User.last_name, User.first_name)
+        )
+        employees = list(res_emp.scalars().all())
+
+    from datetime import date as _date_cls
+    today_str = _date_cls.today().isoformat()
+
+    return templates.TemplateResponse(
+        request,
+        "materials/expense.html",
+        {
+            "request": request,
+            "materials": mats,
+            "employees": employees,
+            "is_admin_or_manager": bool(r.is_admin or r.is_manager),
+            "today": today_str,
+        },
+    )
+
+
+@app.post("/api/materials/expense")
+@app.post("/crm/api/materials/expense")
+async def materials_expense_create(
+    request: Request,
+    admin_id: int = Depends(require_authenticated_user),
+    session: AsyncSession = Depends(get_db),
+):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    actor = await load_staff_user(session, admin_id)
+    if not actor:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
+    r = role_flags(tg_id=int(admin_id), admin_ids=settings.admin_ids, status=actor.status, position=actor.position)
+    if not (r.is_admin or r.is_manager or r.is_master):
+        raise HTTPException(status_code=403, detail="Нет доступа к операциям с материалами")
+
+    material_id_raw = body.get("material_id")
+    amount_raw = body.get("amount")
+
+    if not material_id_raw:
+        raise HTTPException(status_code=422, detail="Не указан материал")
+    try:
+        material_id = int(material_id_raw)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверный material_id")
+
+    try:
+        from decimal import ROUND_HALF_UP
+        amount = Decimal(str(amount_raw or "0").replace(",", "."))
+        amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Неверное количество")
+
+    if amount <= 0:
+        raise HTTPException(status_code=422, detail="Количество должно быть больше 0")
+
+    from sqlalchemy import exists, and_, or_
+    if r.is_admin or r.is_manager:
+        mat = (await session.execute(
+            select(Material).where(Material.id == material_id).where(Material.is_active == True)
+        )).scalar_one_or_none()
+    else:
+        has_any_acl = exists(select(1).where(material_master_access.c.material_id == material_id))
+        has_user_acl = exists(select(1).where(and_(
+            material_master_access.c.material_id == material_id,
+            material_master_access.c.user_id == int(actor.id),
+        )))
+        mat = (await session.execute(
+            select(Material)
+            .where(Material.id == material_id)
+            .where(Material.is_active == True)
+            .where(or_(~has_any_acl, has_user_acl))
+        )).scalar_one_or_none()
+
+    if not mat:
+        raise HTTPException(status_code=403, detail="Материал недоступен")
+
+    from datetime import date as _date
+    today = _date.today()
+
+    employee_id = int(actor.id)
+    if r.is_admin or r.is_manager:
+        emp_id_raw = body.get("employee_id")
+        if emp_id_raw:
+            try:
+                employee_id = int(emp_id_raw)
+            except Exception:
+                raise HTTPException(status_code=422, detail="Неверный employee_id")
+            emp_check = (await session.execute(
+                select(User).where(User.id == employee_id).where(User.status == UserStatus.APPROVED)
+            )).scalar_one_or_none()
+            if not emp_check:
+                raise HTTPException(status_code=422, detail="Сотрудник не найден")
+        date_raw = body.get("date")
+        if date_raw:
+            try:
+                today = _date.fromisoformat(str(date_raw))
+            except Exception:
+                raise HTTPException(status_code=422, detail="Неверный формат даты (YYYY-MM-DD)")
+
+    rec = MaterialConsumption(
+        material_id=material_id,
+        employee_id=employee_id,
+        amount=amount,
+        date=today,
+    )
+    session.add(rec)
+    await session.flush()
+    await update_stock_on_new_consumption(session, rec)
+
+    await session.refresh(mat)
+    stock_after = Decimal(mat.current_stock)
+
+    fn = str(getattr(actor, "first_name", "") or "").strip()
+    ln = str(getattr(actor, "last_name", "") or "").strip()
+    full_name = (fn + " " + ln).strip() or f"Staff {admin_id}"
+    actor_ev = StockEventActor(name=full_name, tg_id=admin_id)
+    happened_at = getattr(rec, "created_at", None)
+    mat_name = str(mat.name)
+    mat_unit = str(mat.unit)
+    rec_amount = Decimal(rec.amount)
+    add_after_commit_callback(
+        session,
+        lambda: notify_reports_chat_about_stock_event(
+            kind="consumption",
+            material_name=mat_name,
+            amount=rec_amount,
+            unit=mat_unit,
+            actor=actor_ev,
+            happened_at=happened_at,
+            stock_after=stock_after,
+        ),
+    )
+
+    return {
+        "ok": True,
+        "id": int(rec.id),
+        "material_name": str(mat.name),
+        "amount": str(amount),
+        "unit": str(mat.unit),
+        "stock_after": str(stock_after),
+    }
+
+
 @app.get("/materials/consumptions", response_class=HTMLResponse)
 async def consumptions_list(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
@@ -9419,16 +9606,30 @@ async def consumptions_list(request: Request, admin_id: int = Depends(require_st
     return templates.TemplateResponse(request, "materials/consumptions.html", {"request": request, "items": items, "materials": materials, "users": users})
 
 
+@app.get("/materials/consumptions/table-partial", response_class=HTMLResponse, name="consumptions_table_partial")
+async def consumptions_table_partial(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
+    await ensure_manager_allowed(request, admin_id, session)
+    res = await session.execute(
+        select(MaterialConsumption)
+        .options(selectinload(MaterialConsumption.material), selectinload(MaterialConsumption.employee))
+        .order_by(MaterialConsumption.date.desc(), MaterialConsumption.id.desc())
+    )
+    items = res.scalars().all()
+    return templates.TemplateResponse(request, "materials/partials/consumptions_table.html", {"request": request, "items": items, "is_oob": False})
+
+
 @app.get("/materials/consumptions/modal/create", response_class=HTMLResponse)
 async def consumptions_modal_create(request: Request, admin_id: int = Depends(require_staff), session: AsyncSession = Depends(get_db)):
     await ensure_manager_allowed(request, admin_id, session)
     res_m = await session.execute(select(Material).where(Material.is_active == True).order_by(Material.name))
     materials = res_m.scalars().all()
-    res_u = await session.execute(select(User).where(User.is_deleted == False).order_by(User.first_name, User.last_name))
-    users = res_u.scalars().all()
+    res_u = await session.execute(
+        select(User).where(User.status == UserStatus.APPROVED).order_by(User.last_name, User.first_name)
+    )
+    employees = res_u.scalars().all()
     from datetime import date as _date
-    today = _date.today()
-    return templates.TemplateResponse(request, "materials/partials/consumptions_create_modal.html", {"request": request, "materials": materials, "users": users, "today": today})
+    today = _date.today().isoformat()
+    return templates.TemplateResponse(request, "materials/partials/consumptions_create_modal.html", {"request": request, "materials": materials, "employees": employees, "today": today})
 
 
 @app.get("/materials/consumptions/{item_id}/modal/delete", response_class=HTMLResponse)
