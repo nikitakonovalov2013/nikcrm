@@ -6590,12 +6590,12 @@ async def schedule_api_day(
 
     uid = int(actor.id)
     if target_user_id is not None:
-        if not is_admin_or_manager:
-            raise HTTPException(status_code=403, detail="Недостаточно прав")
         try:
             uid = int(target_user_id)
         except Exception:
             raise HTTPException(status_code=422, detail="Неверный user_id")
+        if uid != int(actor.id) and not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     # Load existing row
     existing = (
@@ -6764,12 +6764,12 @@ async def schedule_api_delete(
 
     uid = int(actor.id)
     if target_user_id is not None:
-        if not is_admin_or_manager:
-            raise HTTPException(status_code=403, detail="Недостаточно прав")
         try:
             uid = int(target_user_id)
         except Exception:
             raise HTTPException(status_code=422, detail="Неверный user_id")
+        if uid != int(actor.id) and not is_admin_or_manager:
+            raise HTTPException(status_code=403, detail="Недостаточно прав")
 
     plan = (
         await session.execute(

@@ -220,13 +220,14 @@
       const c = getSelectedUserColor();
       const tc = safeTextColor(c);
       const kind = (info && info.kind) ? String(info.kind) : '';
-      const hasPlan = (kind === 'work' || kind === 'off');
+      const hasPlan = !!(kind && kind !== '');
       const hasFact = !!(info && String(info.shift_status || '').trim());
       if (!hasPlan && !hasFact) return '';
       const st = normalizeTimeValue(info && info.start_time ? info.start_time : '', '10:00');
       const et = normalizeTimeValue(info && info.end_time ? info.end_time : '', '18:00');
       const h = (kind === 'work') ? calcHoursInt(st, et) : null;
       const interval = (kind === 'work') ? (st + '–' + et + (h !== null ? (' (' + formatHours(h) + ')') : '')) : (kind === 'off' ? 'Выходной' : '');
+      const kindHint = (!interval && kind && kind !== 'work' && kind !== 'off') ? (kindLabel(kind) || '') : '';
       const stShort = shortShiftStatusText(info && info.shift_status ? info.shift_status : '', !!(info && info.shift_approval_required));
       const rt = (info && info.shift_rating !== null && info.shift_rating !== undefined) ? Number(info.shift_rating) : null;
       const rtShort = (rt && Number.isFinite(rt)) ? ('⭐' + String(rt)) : '';
@@ -238,6 +239,7 @@
           + '</div>'
         + '</div>'
         + (interval ? ('<div class="schedule-day-label muted">' + escapeHtml(interval) + '</div>') : '')
+        + (kindHint ? ('<div class="schedule-day-label muted">' + escapeHtml(kindHint) + '</div>') : '')
         + (stShort ? ('<div class="schedule-day-label">' + escapeHtml(stShort) + '</div>') : '')
         + (rtShort ? ('<div class="schedule-day-label">' + escapeHtml(rtShort) + '</div>') : '')
         + '</div>';
